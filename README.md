@@ -5,8 +5,65 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/juancarlosrial76-code/BITCOIN4Traders/blob/main/BITCOIN4Traders_Colab.ipynb)
 
 A complete end-to-end trading system implementing state-of-the-art Deep Reinforcement Learning (DRL) with comprehensive risk management and anti-bias validation framework.
+
+---
+
+## Google Colab Training (empfohlen)
+
+Das Training laesst sich direkt im Browser starten - keine lokale Installation noetig:
+
+**Schritt 1 - Notebook oeffnen:**
+
+Klicke auf den Badge oben oder direkt auf diesen Link:
+
+```
+https://colab.research.google.com/github/juancarlosrial76-code/BITCOIN4Traders/blob/main/BITCOIN4Traders_Colab.ipynb
+```
+
+**Schritt 2 - GPU aktivieren:**
+
+```
+Runtime > Change runtime type > Hardware accelerator: GPU (T4)
+```
+
+**Schritt 3 - Alle Zellen ausfuehren:**
+
+```
+Runtime > Run all
+```
+
+Oder einzeln von oben nach unten:
+
+| Zelle | Beschreibung |
+|-------|-------------|
+| 1 | GPU pruefen |
+| 2 | Google Drive mounten (fuer Modell-Speicherung) |
+| 3 | Projekt von GitHub klonen |
+| 4 | Dependencies installieren (~2-3 Min) |
+| 5 | Python-Pfad setzen |
+| 6 | Daten von Drive laden (falls vorhanden) |
+| 7 | Training-Konfiguration anpassen |
+| 8 | Daten laden & Features berechnen |
+| 9 | Feature Engineering |
+| 10 | Trading Environment erstellen |
+| 11 | Trainer erstellen |
+| 12 | Checkpoint laden (optional, fuer Fortsetzung) |
+| 13 | Auto-Save auf Drive einrichten |
+| **14** | **Training starten** |
+| 15 | Evaluation |
+| 16 | Gespeicherte Modelle anzeigen |
+
+**Hinweise:**
+
+- Modelle werden automatisch auf deinem **Google Drive** gespeichert (`MyDrive/BITCOIN4Traders/models/`)
+- Bei Session-Timeout: Zellen 1-5 erneut ausfuehren, dann Zelle 12 laedt den letzten Checkpoint
+- Log-Dateien rotieren automatisch bei 50 MB (kein unkontrollierter Speicheranstieg)
+- `postgres_credentials.txt` und lokale Secrets werden nie auf GitHub hochgeladen
+
+---
 
 ## 🎯 Overview
 
