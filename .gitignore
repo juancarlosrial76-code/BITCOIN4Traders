@@ -35,8 +35,8 @@ ENV/
 # Jupyter Notebook
 .ipynb_checkpoints
 
-# Data
-data/
+# Data (nur Root-Level data/, nicht src/data/)
+/data/
 *.csv
 *.parquet
 *.h5
