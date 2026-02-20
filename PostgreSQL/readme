@@ -1,0 +1,10 @@
+chmod +x install_postgres.sh
+sudo ./install_postgres.sh
+
+DB_NAME="myapp_db"
+DB_USER="myapp_user"
+```
+
+ **Connection String** like:
+```
+postgresql://myapp_user:ABC123...@127.0.0.1:5432/myapp_db

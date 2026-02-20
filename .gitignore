@@ -66,6 +66,7 @@ htmlcov/
 
 # Config (keep templates, ignore secrets)
 .env
+.sql
 *.key
 *.secret
 
