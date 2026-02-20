@@ -1,0 +1,47 @@
+# ═══════════════════════════════════════════════
+#  PHASE 7 – LIVE EXECUTION ENGINE CONFIG
+#  Copy to config/phase7.yaml and fill in secrets
+# ═══════════════════════════════════════════════
+
+# ── Trading Instruments ─────────────────────
+symbols:
+  - BTCUSDT
+  - ETHUSDT
+
+# ── API Keys (prefer env vars over this file) ──
+# BINANCE_API_KEY and BINANCE_API_SECRET env vars
+# override these if set
+api_key:    ""
+api_secret: ""
+
+# ── Model Paths (Phase 5 output) ────────────
+model_checkpoint:      "data/models/ppo_best.pt"
+feature_scaler_path:   "data/features/scaler.pkl"
+
+# ── Risk Management ─────────────────────────
+max_position_usd:       10000    # Max total notional per symbol
+max_order_usd:          2000     # Max single order notional
+circuit_breaker_pct:    0.02     # 2% drawdown → halt
+daily_loss_limit_usd:   500      # Daily loss limit
+
+# ── Execution ───────────────────────────────
+use_limit_orders:       true
+limit_order_offset_bps: 2        # Place limit 2 bps inside best bid/ask
+order_timeout_s:        30       # Cancel unfilled limit after N seconds
+
+# ── Reconnect Policy ────────────────────────
+reconnect_max_attempts: 10
+reconnect_base_delay:   1.0      # seconds
+reconnect_max_delay:    60.0
+reconnect_backoff:      2.0      # exponential factor
+
+# ── Monitoring ──────────────────────────────
+dashboard_interval_s:   30       # Print P&L dashboard every N seconds
+
+# Telegram (optional – leave blank to disable)
+telegram_token:   ""             # or use TELEGRAM_BOT_TOKEN env var
+telegram_chat_id: ""             # or use TELEGRAM_CHAT_ID env var
+
+# ── Logging ─────────────────────────────────
+log_level: INFO
+log_file:  logs/phase7.log
