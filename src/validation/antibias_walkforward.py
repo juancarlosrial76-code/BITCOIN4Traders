@@ -1,8 +1,13 @@
 """
 ANTI-BIAS FRAMEWORK – Walk-Forward CV
 ======================================
-Purged Walk-Forward Cross-Validation mit Purging + Embargo.
-Verhindert Lookahead-Bias beim Training.
+Purged Walk-Forward Cross-Validation with purging and embargo zones.
+
+Prevents lookahead bias during training by ensuring that:
+- Training samples whose feature window overlaps the test period are removed (purging)
+- A gap (embargo) separates the training and test sets to prevent leakage
+  from autocorrelated features
+- A final holdout set is reserved and never touched during CV
 """
 
 from __future__ import annotations
@@ -18,7 +23,7 @@ logger = logging.getLogger("antibias.validation")
 
 @dataclass
 class WalkForwardConfig:
-    """Konfiguration für Walk-Forward Cross-Validation."""
+    """Configuration for Purged Walk-Forward Cross-Validation."""
 
     n_splits: int = 5
     test_pct: float = 0.20
@@ -32,7 +37,7 @@ class WalkForwardConfig:
 
 @dataclass
 class FoldSplit:
-    """Ergebnis eines Walk-Forward Splits."""
+    """Result of a single Walk-Forward split containing train/test/embargo indices."""
 
     fold_id: int
     train_idx: np.ndarray
@@ -79,10 +84,10 @@ class PurgedWalkForwardCV:
         timestamps: Optional[np.ndarray] = None,
     ) -> Tuple[List[FoldSplit], np.ndarray]:
         """
-        Erzeugt Walk-Forward Splits.
+        Generate walk-forward splits with purging and embargo.
 
         Returns:
-            (folds, holdout_idx)
+            (folds, holdout_idx): list of FoldSplit objects and holdout indices
         """
         cfg = self.config
         n = n_samples
@@ -102,7 +107,9 @@ class PurgedWalkForwardCV:
 
             if test_start < int(working_n * cfg.min_train_pct):
                 logger.warning(
-                    "Fold %d: test_start=%d zu früh, übersprungen.", fold_id, test_start
+                    "Fold %d: test_start=%d too early, skipping fold.",
+                    fold_id,
+                    test_start,
                 )
                 break
 
@@ -165,7 +172,8 @@ class PurgedWalkForwardCV:
         feature_lookback: int,
     ) -> Tuple[np.ndarray, int]:
         """
-        Entfernt Train-Samples deren Feature-Fenster in die Test-Zone ragt.
+        Remove training samples whose feature window overlaps the test zone.
+        Any train index >= (test_start - feature_lookback) is purged.
         """
         cutoff = test_start - feature_lookback
         purge_mask = train_idx >= cutoff
@@ -176,12 +184,12 @@ class PurgedWalkForwardCV:
 
 class PurgedScaler:
     """
-    Scaler der garantiert:
-      1. fit() nur auf Trainingsdaten
-      2. transform() auf Test-Daten verwendet gespeicherte Train-Statistiken
-      3. Live-Inference verwendet denselben gespeicherten State
+    Feature scaler that strictly prevents lookahead bias by guaranteeing:
+      1. fit() is called only on training data
+      2. transform() on test/live data uses the saved training statistics
+      3. Live inference reuses the same frozen state
 
-    Verhindert den häufigsten Lookahead-Bug!
+    This prevents the most common lookahead bug in ML pipelines!
     """
 
     def __init__(self, method: str = "zscore", clip: float = 5.0):
@@ -193,7 +201,7 @@ class PurgedScaler:
         self._scale: Optional[np.ndarray] = None
 
     def fit(self, X: np.ndarray) -> "PurgedScaler":
-        """Fit NUR auf Trainingsdaten."""
+        """Fit scaler statistics on training data ONLY. Never call on test/live data."""
         if self.method == "zscore":
             self._loc = X.mean(axis=0)
             self._scale = X.std(axis=0) + 1e-8
@@ -208,16 +216,14 @@ class PurgedScaler:
         return self
 
     def transform(self, X: np.ndarray) -> np.ndarray:
-        """Transform mit gespeicherten Train-Statistiken."""
+        """Transform data using frozen training statistics (safe for test and live data)."""
         if not self._fitted:
-            raise RuntimeError(
-                "PurgedScaler.fit() muss vor transform() aufgerufen werden."
-            )
+            raise RuntimeError("PurgedScaler.fit() must be called before transform().")
         scaled = (X - self._loc) / self._scale
         return np.clip(scaled, -self.clip, self.clip)
 
     def fit_transform(self, X: np.ndarray) -> np.ndarray:
-        """Nur für Trainingsdaten – fit + transform in einem."""
+        """For training data only: fit and transform in a single call."""
         return self.fit(X).transform(X)
 
     def inverse_transform(self, X: np.ndarray) -> np.ndarray:
@@ -241,7 +247,8 @@ class PurgedScaler:
 
 class LeakDetector:
     """
-    Automatischer Test ob Lookahead-Leak vorhanden ist.
+    Automatic test for lookahead leakage in feature sets.
+    Checks whether any feature is suspiciously correlated with future returns.
     """
 
     def __init__(self, significance_threshold: float = 0.52):
@@ -256,12 +263,12 @@ class LeakDetector:
         lag: int = 1,
     ) -> dict:
         """
-        Berechnet Korrelation jedes Features mit future_returns[+lag].
-        Hohe Korrelation (>0.3) deutet auf Lookahead hin.
+        Compute correlation of each feature with future_returns[+lag].
+        High correlation (>0.3) is a strong indicator of lookahead leakage.
         """
         n = len(X)
         if len(future_returns) != n:
-            raise ValueError("X und future_returns müssen gleiche Länge haben.")
+            raise ValueError("X and future_returns must have the same length.")
 
         results = {}
         for i in range(X.shape[1]):
@@ -273,7 +280,7 @@ class LeakDetector:
 
             if abs(corr) > 0.3:
                 logger.warning(
-                    "POTENTIELLER LOOKAHEAD: Feature '%s' korreliert %.3f mit future_return[+%d]",
+                    "POTENTIAL LOOKAHEAD: Feature '%s' correlates %.3f with future_return[+%d]",
                     feat_name,
                     corr,
                     lag,
@@ -283,12 +290,14 @@ class LeakDetector:
         high_corr = {k: v for k, v in results.items() if abs(v) > 0.3}
         if high_corr:
             logger.error(
-                "LEAK VERDACHT: %d Features mit |corr| > 0.3: %s",
+                "LEAK SUSPECTED: %d features with |corr| > 0.3: %s",
                 len(high_corr),
                 high_corr,
             )
         else:
-            logger.info("Leak-Check OK: kein Feature mit |corr| > 0.3 zur Zukunft.")
+            logger.info(
+                "Leak check OK: no feature with |corr| > 0.3 to future returns."
+            )
 
         return results
 

@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """
-12-Stunden Training mit automatisierter Überwachung und Fehlerkorrektur
+12-Hour automated training with monitoring and automatic error recovery.
+
+Differences from auto_train.py:
+- Longer runtime (12h vs 8h)
+- Targets the tr2win/complete_trading_system working directory
+- Runs fix_common_errors() at startup and after each failure
 """
 
 import subprocess
@@ -16,7 +21,7 @@ CHECK_INTERVAL = 300  # Alle 5 Minuten
 LOG_FILE = Path("logs/training/12h_auto.log")
 ERROR_FILE = Path("logs/training/12h_errors.log")
 
-# Arbeitsverzeichnis
+# Target working directory for the tr2win system
 WORK_DIR = Path("/home/hp17/Tradingbot/tr2win/complete_trading_system")
 os.chdir(WORK_DIR)
 
@@ -36,7 +41,7 @@ def log_error(msg):
 
 
 def get_best_return():
-    """Hole beste Return aus Logs."""
+    """Parse all 12h training log files and return the best observed return."""
     log_dir = WORK_DIR / "logs/training"
     log_files = sorted(log_dir.glob("12h_*.log"), key=lambda x: x.stat().st_mtime)
 
@@ -60,34 +65,35 @@ def get_best_return():
 
 
 def fix_common_errors():
-    """Behebe häufige Fehler automatisch."""
-    log("🔧 Prüfe auf bekannte Fehler...")
+    """Automatically fix known configuration issues that block training."""
+    log("🔧 Checking for known errors...")
 
-    # Prüfe Config
+    # Check and patch the environment config if values are too restrictive
     config_file = WORK_DIR / "config/environment/realistic_env.yaml"
     if config_file.exists():
         with open(config_file) as f:
             content = f.read()
 
-        # Stelle sicher, dass Parameter korrekt sind
+        # Relax max_position_size if it is too conservative
         if "max_position_size: 0.10" in content:
             content = content.replace(
                 "max_position_size: 0.10", "max_position_size: 0.30"
             )
-            log("  → max_position auf 30% gesetzt")
+            log("  → max_position set to 30%")
 
+        # Relax max_drawdown to give the agent more learning room
         if "max_drawdown: 0.70" in content:
             content = content.replace("max_drawdown: 0.70", "max_drawdown: 0.80")
-            log("  → max_drawdown auf 80% gesetzt")
+            log("  → max_drawdown set to 80%")
 
         with open(config_file, "w") as f:
             f.write(content)
 
-    log("✅ Fehlerprüfung abgeschlossen")
+    log("✅ Error check complete")
 
 
 def run_training():
-    """Starte Training."""
+    """Launch a single training run as a subprocess and return (success, stdout, stderr)."""
     env = os.environ.copy()
     env["PYTHONPATH"] = str(WORK_DIR / "src")
 
@@ -102,14 +108,14 @@ def run_training():
 
 def main():
     log("=" * 60)
-    log("🚀 12-STUNDEN TRAINING GESTARTET")
+    log("🚀 12-HOUR TRAINING STARTED")
     log("=" * 60)
 
     start_time = time.time()
     iteration = 0
     last_best = get_best_return()
 
-    # Initiale Fehlerbehebung
+    # Fix any known issues before the first run
     fix_common_errors()
 
     while time.time() - start_time < MAX_RUNTIME:
@@ -118,43 +124,43 @@ def main():
         remaining = MAX_RUNTIME - elapsed
 
         log(f"\n{'=' * 40}")
-        log(f"Runde {iteration} | Verbleibend: {remaining / 3600:.1f}h")
+        log(f"Round {iteration} | Remaining: {remaining / 3600:.1f}h")
         log(f"{'=' * 40}")
 
         try:
             success, stdout, stderr = run_training()
 
             if not success:
-                log_error(f"Training fehlgeschlagen: {stderr[:500]}")
+                log_error(f"Training failed: {stderr[:500]}")
                 fix_common_errors()
                 time.sleep(30)
                 continue
 
-            # Metriken prüfen
+            # Check for improvement
             current_best = get_best_return()
-            log(f"📊 Aktuell: Best={current_best:.2f}%")
+            log(f"📊 Current: Best={current_best:.2f}%")
 
             if current_best > last_best + 1.0:
-                log(f"✅ FORTSCHRITT! {last_best:.2f}% → {current_best:.2f}%")
+                log(f"✅ PROGRESS! {last_best:.2f}% → {current_best:.2f}%")
                 last_best = current_best
             else:
-                log(f"⏳ Keine Verbesserung")
+                log(f"⏳ No improvement")
 
         except subprocess.TimeoutExpired:
-            log_error("Timeout - neustarten")
+            log_error("Timeout - restarting")
             fix_common_errors()
         except Exception as e:
             log_error(f"Exception: {e}")
             fix_common_errors()
 
-        # Backup alle 10 Runden
+        # Periodic checkpoint reminder every 10 rounds
         if iteration % 10 == 0:
-            log(f"💾 Backup bei Runde {iteration}")
+            log(f"💾 Checkpoint reminder at round {iteration}")
 
-    # Abschluss
+    # Final summary
     final_best = get_best_return()
     log("\n" + "=" * 60)
-    log("🏁 12-STUNDEN TRAINING ABGESCHLOSSEN")
+    log("🏁 12-HOUR TRAINING COMPLETE")
     log(f"Final Best Return: {final_best:.2f}%")
     log("=" * 60)
 

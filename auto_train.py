@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """
-8-Stunden Training mit automatischer Überwachung und Selbstoptimierung
-- Alle 5 Min: Fortschritt prüfen
-- Nach 1h ohne Verbesserung: Parameter anpassen
+8-Hour automated training with self-monitoring and parameter self-tuning.
+
+Behaviour:
+- Every 5 minutes: check training progress via log file parsing
+- After 1 hour without improvement: automatically relax config parameters
+- Runs until MAX_RUNTIME is reached, then prints final summary
 """
 
 import subprocess
@@ -35,7 +38,7 @@ def log_error(msg):
 
 
 def get_latest_metrics():
-    """Hole neueste Trainingsmetriken."""
+    """Parse the most recent training log file and extract return metrics."""
     log_dir = Path("logs/training")
     log_files = sorted(log_dir.glob("train_*.log"), key=lambda x: x.stat().st_mtime)
 
@@ -72,42 +75,42 @@ def get_latest_metrics():
 
 
 def adjust_parameters():
-    """Passe Parameter an wenn kein Fortschritt."""
-    log("⚠️ Kein Fortschritt seit 1h - Optimiere Parameter...")
+    """Relax config parameters when no training progress has been made for 1 hour."""
+    log("⚠️ No progress for 1h - adjusting parameters...")
 
     config_file = Path("config/environment/realistic_env.yaml")
 
-    # Lese aktuelle Config
+    # Read current config
     with open(config_file) as f:
         content = f.read()
 
-    # Erhöhe max_drawdown für mehr Lernspielraum
+    # Increase max_drawdown to give the agent more learning room
     if "max_drawdown: 0.70" in content:
         content = content.replace("max_drawdown: 0.70", "max_drawdown: 0.80")
-        log("  → max_drawdown erhöht auf 80%")
+        log("  → max_drawdown increased to 80%")
 
-    # Reduziere Reward-Penalty für mehr Exploration
+    # Reduce drawdown penalty to encourage more exploration
     if "weight: -0.5" in content:
         content = content.replace("weight: -0.5", "weight: -0.2")
-        log("  → drawdown penalty reduziert")
+        log("  → drawdown penalty reduced")
 
     if "weight: -0.3" in content:
         content = content.replace("weight: -0.3", "weight: -0.1")
-        log("  → transaction cost penalty reduziert")
+        log("  → transaction cost penalty reduced")
 
-    # Erhöhe max_position_size
+    # Increase max_position_size to allow larger positions
     if "max_position_size: 0.10" in content:
         content = content.replace("max_position_size: 0.10", "max_position_size: 0.20")
-        log("  → max_position auf 20% erhöht")
+        log("  → max_position increased to 20%")
 
     with open(config_file, "w") as f:
         f.write(content)
 
-    log("✅ Parameter angepasst - Training wird fortgesetzt")
+    log("✅ Parameters adjusted - training continues")
 
 
 def run_training_batch(iterations=50):
-    """Führe Training für eine Batch aus."""
+    """Launch a single training batch as a subprocess and return success status."""
     try:
         result = subprocess.run(
             ["python", "train.py", "--device", "cpu", "--iterations", str(iterations)],
@@ -124,26 +127,26 @@ def run_training_batch(iterations=50):
 
 def main():
     log("=" * 60)
-    log("🚀 START: 8-Stunden Training mit Auto-Überwachung")
+    log("🚀 START: 8-hour training with auto-monitoring")
     log("=" * 60)
 
     start_time = time.time()
     no_progress_count = 0
     last_best_return = -999
 
-    # Initiale Metrics
+    # Read initial baseline metrics from existing logs
     initial_metrics = get_latest_metrics()
     if initial_metrics:
         last_best_return = initial_metrics.get("best_return", -999)
-        log(f"Start-Metriken: Best Return = {last_best_return:.2f}%")
+        log(f"Baseline metrics: Best Return = {last_best_return:.2f}%")
 
     while time.time() - start_time < MAX_RUNTIME:
         remaining = MAX_RUNTIME - (time.time() - start_time)
         log(
-            f"\n--- Verbleibend: {remaining / 3600:.1f}h | No-Progress: {no_progress_count}/{NO_PROGRESS_LIMIT} ---"
+            f"\n--- Remaining: {remaining / 3600:.1f}h | No-Progress streak: {no_progress_count}/{NO_PROGRESS_LIMIT} ---"
         )
 
-        # Training starten
+        # Launch training batch
         success = run_training_batch(iterations=30)
 
         if not success:
@@ -151,39 +154,41 @@ def main():
             time.sleep(10)
             continue
 
-        # Metriken prüfen nach jeder Runde
-        time.sleep(5)  # Kurze Pause für Log-Schreiben
+        # Wait briefly for the log file to be flushed before reading metrics
+        time.sleep(5)
         metrics = get_latest_metrics()
 
         if metrics:
             current_best = metrics.get("best_return", -999)
             log(
-                f"📊 Aktuell: Best={current_best:.2f}%, Latest={metrics.get('latest_return', 0):.2f}%, Length={metrics.get('latest_length', 0):.0f}"
+                f"📊 Current: Best={current_best:.2f}%, Latest={metrics.get('latest_return', 0):.2f}%, Length={metrics.get('latest_length', 0):.0f}"
             )
 
-            # Prüfe Verbesserung
-            if current_best > last_best_return + 1.0:  # >1% Verbesserung
-                log(f"✅ FORTSCHRITT! {last_best_return:.2f}% → {current_best:.2f}%")
+            # Check for improvement (threshold: >1% better than previous best)
+            if current_best > last_best_return + 1.0:
+                log(f"✅ PROGRESS! {last_best_return:.2f}% → {current_best:.2f}%")
                 last_best_return = current_best
                 no_progress_count = 0
             else:
                 no_progress_count += 1
-                log(f"⏳ Kein Fortschritt ({no_progress_count}x)")
+                log(f"⏳ No improvement ({no_progress_count}x)")
 
-                # Nach 1h keine Verbesserung → optimieren
+                # After 1h with no improvement: relax parameters and reset
                 if no_progress_count >= NO_PROGRESS_LIMIT:
                     adjust_parameters()
-                    last_best_return = -999  # Reset für neue Runde
+                    last_best_return = (
+                        -999
+                    )  # reset baseline for the new parameter regime
                     no_progress_count = 0
 
-        # Prüfe ob Zeit fast um
-        if remaining < 600:  # <10 Min
+        # Stop early if less than 10 minutes remain
+        if remaining < 600:
             break
 
-    # Abschluss
+    # Final summary
     final_metrics = get_latest_metrics()
     log("\n" + "=" * 60)
-    log("🏁 TRAINING ABGESCHLOSSEN")
+    log("🏁 TRAINING COMPLETE")
     log("=" * 60)
     if final_metrics:
         log(f"Final Results:")

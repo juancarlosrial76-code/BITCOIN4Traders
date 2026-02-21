@@ -1,7 +1,13 @@
 """
 ANTI-BIAS FRAMEWORK – Statistical Validation
 =============================================
-Validierungssuite: CPCV + Permutation + DSR + MTRL.
+Full validation suite: CPCV + Permutation Test + DSR + MTRL.
+
+Four independent checks to confirm a strategy is real and not overfitted:
+1. CPCV (Combinatorial Purged CV): tests stability across time periods
+2. Permutation Test: confirms performance is not due to random chance
+3. DSR (Deflated Sharpe Ratio): corrects Sharpe for multiple testing bias
+4. MTRL (Min Track Record Length): how much data is needed for significance
 """
 
 from __future__ import annotations
@@ -18,7 +24,7 @@ logger = logging.getLogger("antibias.evaluation")
 
 @dataclass
 class PerformanceMetrics:
-    """Performance-Metriken für eine Strategie."""
+    """Complete set of performance metrics for a trading strategy."""
 
     sharpe: float
     sortino: float
@@ -48,7 +54,7 @@ class PerformanceMetrics:
 def compute_metrics(
     returns: np.ndarray, positions: Optional[np.ndarray] = None
 ) -> PerformanceMetrics:
-    """Berechnet vollständige Performance-Metriken."""
+    """Compute the full set of performance metrics from a return series."""
     r = np.asarray(returns, dtype=np.float64)
     r = r[~np.isnan(r)]
     if len(r) == 0:
@@ -97,7 +103,7 @@ def compute_metrics(
 
 @dataclass
 class CPCVResult:
-    """Ergebnis des Combinatorial Purged CV."""
+    """Result container for Combinatorial Purged Cross-Validation."""
 
     fold_metrics: List[PerformanceMetrics]
     n_splits: int
@@ -112,7 +118,7 @@ class CPCVResult:
 
     @property
     def sharpe_stability(self) -> float:
-        """Anteil Folds mit positivem Sharpe."""
+        """Fraction of folds with positive Sharpe ratio (robustness indicator)."""
         dist = self.sharpe_distribution
         return float((dist > 0).mean())
 
@@ -148,7 +154,7 @@ class CPCVEvaluator:
         returns: np.ndarray,
         positions: np.ndarray,
     ) -> CPCVResult:
-        """Teilt Returns in n_splits Gruppen und berechnet Metriken."""
+        """Split returns into n_splits groups and compute per-fold metrics."""
         n = len(returns)
         fold_size = n // self.n_splits
         purge_n = max(1, int(n * self.purge_pct))
@@ -178,7 +184,7 @@ class CPCVEvaluator:
 
 @dataclass
 class PermutationResult:
-    """Ergebnis des Permutation Tests."""
+    """Result of the Monte Carlo permutation test."""
 
     observed: float
     null_mean: float
@@ -221,7 +227,7 @@ class PermutationTest:
         positions: np.ndarray,
         metric: str = "sharpe",
     ) -> PermutationResult:
-        """Testet ob Performance durch Zufall erklärbar ist."""
+        """Test whether observed performance can be explained by random chance."""
         rng = np.random.default_rng(42)
         observed = self._compute_metric(returns, positions, metric)
 
@@ -255,7 +261,7 @@ class PermutationTest:
 
 @dataclass
 class DSRResult:
-    """Ergebnis des Deflated Sharpe Ratio."""
+    """Result of the Deflated Sharpe Ratio computation."""
 
     observed_sr: float
     sr_benchmark: float
@@ -284,7 +290,8 @@ class DSRResult:
 class DeflatedSharpeRatio:
     """
     Bailey & Lopez de Prado (2014) Deflated Sharpe Ratio.
-    Korrigiert Sharpe für Multiple Testing.
+    Corrects the Sharpe ratio for multiple testing (strategy selection bias).
+    The more strategies you test, the higher the chance of finding a spurious winner.
     """
 
     @staticmethod
@@ -333,7 +340,7 @@ class DeflatedSharpeRatio:
 
 @dataclass
 class MTRLResult:
-    """Minimum Track Record Length Ergebnis."""
+    """Result of the Minimum Track Record Length calculation."""
 
     n_min: float
     sharpe: float
@@ -357,7 +364,7 @@ class MTRLResult:
 
 
 class MinTrackRecordLength:
-    """Berechnet minimale Track Record Länge für statistische Signifikanz."""
+    """Computes the minimum number of observations required for statistical significance."""
 
     @staticmethod
     def compute(
@@ -388,7 +395,7 @@ class MinTrackRecordLength:
 
 @dataclass
 class ValidationReport:
-    """Vollständiger Validierungsbericht."""
+    """Complete validation report combining all four statistical checks."""
 
     metrics: PerformanceMetrics
     cpcv: CPCVResult
@@ -433,7 +440,8 @@ class ValidationReport:
 
 class BacktestValidator:
     """
-    Master Validator – führt alle 4 Validierungsebenen durch.
+    Master validator that runs all four validation layers in sequence.
+    Returns a single ValidationReport with pass/fail verdict.
     """
 
     def __init__(
@@ -451,7 +459,7 @@ class BacktestValidator:
         returns: np.ndarray,
         positions: np.ndarray,
     ) -> ValidationReport:
-        """Führt vollständige Validierung durch."""
+        """Run the full validation suite and return a combined report."""
         logger.info("Running full backtest validation suite...")
 
         metrics = compute_metrics(returns * np.sign(positions + 1e-9))

@@ -3,7 +3,7 @@ PHASE 7 – MONITORING & ALERTING
 =================================
 Real-time monitoring with:
   - Telegram bot alerts (fills, errors, circuit breaker)
-  - Prometheus metrics exposition (für Grafana)
+  - Prometheus metrics exposition (for Grafana dashboards)
   - Rolling P&L console dashboard
   - Structured JSON log enrichment
 """
@@ -27,17 +27,19 @@ logger = logging.getLogger("phase7.monitoring")
 #  Alert Levels
 # ─────────────────────────────────────────────
 
+
 class AlertLevel:
-    INFO     = "ℹ️"
-    WARNING  = "⚠️"
+    INFO = "ℹ️"
+    WARNING = "⚠️"
     CRITICAL = "🚨"
-    FILL     = "✅"
-    ERROR    = "❌"
+    FILL = "✅"
+    ERROR = "❌"
 
 
 # ─────────────────────────────────────────────
 #  Telegram Notifier
 # ─────────────────────────────────────────────
+
 
 class TelegramNotifier:
     """
@@ -48,15 +50,15 @@ class TelegramNotifier:
     _API = "https://api.telegram.org/bot{token}/sendMessage"
 
     def __init__(self, bot_token: str, chat_id: str):
-        self._token   = bot_token
+        self._token = bot_token
         self._chat_id = chat_id
-        self._queue:  asyncio.Queue = asyncio.Queue(maxsize=200)
+        self._queue: asyncio.Queue = asyncio.Queue(maxsize=200)
         self._session: Optional[aiohttp.ClientSession] = None
-        self._task:    Optional[asyncio.Task] = None
+        self._task: Optional[asyncio.Task] = None
 
     async def start(self) -> None:
         self._session = aiohttp.ClientSession()
-        self._task    = asyncio.create_task(self._send_loop(), name="telegram_sender")
+        self._task = asyncio.create_task(self._send_loop(), name="telegram_sender")
         logger.info("Telegram notifier started.")
 
     async def stop(self) -> None:
@@ -78,7 +80,7 @@ class TelegramNotifier:
             try:
                 text = await self._queue.get()
                 await self._send_one(text)
-                await asyncio.sleep(0.3)    # Telegram rate limit ~30 msg/s
+                await asyncio.sleep(0.3)  # Telegram rate limit ~30 msg/s
             except asyncio.CancelledError:
                 return
             except Exception as exc:
@@ -87,12 +89,14 @@ class TelegramNotifier:
     async def _send_one(self, text: str) -> None:
         url = self._API.format(token=self._token)
         payload = {
-            "chat_id":    self._chat_id,
-            "text":       text,
+            "chat_id": self._chat_id,
+            "text": text,
             "parse_mode": "Markdown",
         }
         try:
-            async with self._session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+            async with self._session.post(
+                url, json=payload, timeout=aiohttp.ClientTimeout(total=5)
+            ) as resp:
                 if resp.status != 200:
                     body = await resp.text()
                     logger.warning("Telegram API %d: %s", resp.status, body[:200])
@@ -104,19 +108,20 @@ class TelegramNotifier:
 #  Metrics (Prometheus-compatible exposition)
 # ─────────────────────────────────────────────
 
+
 @dataclass
 class EngineMetrics:
-    ticks_processed:    int     = 0
-    orders_submitted:   int     = 0
-    orders_filled:      int     = 0
-    orders_canceled:    int     = 0
-    orders_rejected:    int     = 0
-    total_fills:        int     = 0
-    realized_pnl_usd:   float   = 0.0
-    unrealized_pnl_usd: float   = 0.0
-    circuit_breaker_trips: int  = 0
-    ws_reconnects:      int     = 0
-    last_updated:       float   = field(default_factory=time.time)
+    ticks_processed: int = 0
+    orders_submitted: int = 0
+    orders_filled: int = 0
+    orders_canceled: int = 0
+    orders_rejected: int = 0
+    total_fills: int = 0
+    realized_pnl_usd: float = 0.0
+    unrealized_pnl_usd: float = 0.0
+    circuit_breaker_trips: int = 0
+    ws_reconnects: int = 0
+    last_updated: float = field(default_factory=time.time)
 
     def to_prometheus(self) -> str:
         lines = []
@@ -135,6 +140,7 @@ class EngineMetrics:
 #  Monitor
 # ─────────────────────────────────────────────
 
+
 class EngineMonitor:
     """
     Central monitoring hub.
@@ -147,11 +153,11 @@ class EngineMonitor:
         metrics_port: int = 9090,
         dashboard_interval_s: int = 30,
     ):
-        self._telegram          = telegram
-        self._metrics           = EngineMetrics()
+        self._telegram = telegram
+        self._metrics = EngineMetrics()
         self._dashboard_interval = dashboard_interval_s
         self._dashboard_task: Optional[asyncio.Task] = None
-        self._metrics_task: Optional[asyncio.Task]   = None
+        self._metrics_task: Optional[asyncio.Task] = None
 
     # ── Lifecycle ───────────────────────────
 
@@ -183,7 +189,7 @@ class EngineMonitor:
         self._metrics.realized_pnl_usd += float(pnl)
         self.alert(
             AlertLevel.FILL,
-            f"Fill: qty={qty} @{price} | realized PnL=${float(pnl):+.2f}"
+            f"Fill: qty={qty} @{price} | realized PnL=${float(pnl):+.2f}",
         )
 
     def on_order_canceled(self, reason: str = "") -> None:
@@ -205,14 +211,18 @@ class EngineMonitor:
         self.alert(AlertLevel.ERROR, msg)
 
     def update_pnl(self, realized: float, unrealized: float) -> None:
-        self._metrics.realized_pnl_usd   = realized
+        self._metrics.realized_pnl_usd = realized
         self._metrics.unrealized_pnl_usd = unrealized
         self._metrics.last_updated = time.time()
 
     # ── Alerting ─────────────────────────────
 
     def alert(self, level: str, message: str) -> None:
-        log_fn = logger.info if level in (AlertLevel.INFO, AlertLevel.FILL) else logger.warning
+        log_fn = (
+            logger.info
+            if level in (AlertLevel.INFO, AlertLevel.FILL)
+            else logger.warning
+        )
         log_fn("[ALERT %s] %s", level, message)
         if self._telegram:
             self._telegram.send(level, message)
@@ -232,7 +242,7 @@ class EngineMonitor:
     def _print_dashboard(self) -> None:
         m = self._metrics
         total_pnl = m.realized_pnl_usd + m.unrealized_pnl_usd
-        pnl_sign  = "+" if total_pnl >= 0 else ""
+        pnl_sign = "+" if total_pnl >= 0 else ""
         logger.info(
             "\n┌─────────────────────────────────────────┐\n"
             "│         PHASE 7  │  LIVE DASHBOARD       │\n"
@@ -243,10 +253,15 @@ class EngineMonitor:
             "│ Total PnL: %s$%-9.2f  CB Trips: %-6d│\n"
             "│ WS Reconnects: %-6d                    │\n"
             "└─────────────────────────────────────────┘",
-            m.ticks_processed, m.orders_submitted,
-            m.total_fills,     m.orders_canceled,
-            m.realized_pnl_usd, m.unrealized_pnl_usd,
-            pnl_sign, total_pnl, m.circuit_breaker_trips,
+            m.ticks_processed,
+            m.orders_submitted,
+            m.total_fills,
+            m.orders_canceled,
+            m.realized_pnl_usd,
+            m.unrealized_pnl_usd,
+            pnl_sign,
+            total_pnl,
+            m.circuit_breaker_trips,
             m.ws_reconnects,
         )
 

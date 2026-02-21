@@ -1,7 +1,14 @@
 """
 ANTI-BIAS FRAMEWORK – Risk-Adjusted Reward Functions
 =====================================================
-Ersetzt naiven Return-Reward durch risikobereinigte Funktionen.
+Replaces the naive return-based reward with risk-adjusted alternatives.
+
+Naive reward (just raw return) causes the agent to:
+- Take excessive risk for short-term gains
+- Ignore transaction costs (churn)
+- Ignore drawdowns
+
+These reward functions fix that by penalising risk and costs.
 """
 
 from __future__ import annotations
@@ -18,7 +25,7 @@ logger = logging.getLogger("antibias.reward")
 
 
 class BaseReward(abc.ABC):
-    """Interface für alle Reward-Funktionen."""
+    """Abstract interface for all reward function implementations."""
 
     @abc.abstractmethod
     def compute(
@@ -30,10 +37,10 @@ class BaseReward(abc.ABC):
         cost_this_bar: float,
         **kwargs,
     ) -> float:
-        """Berechnet den Reward für einen Schritt."""
+        """Compute the scalar reward for a single environment step."""
 
     def reset(self) -> None:
-        """Reset am Episode-Anfang."""
+        """Reset internal state at the beginning of a new episode."""
         pass
 
 
@@ -41,7 +48,8 @@ class SharpeIncrementReward(BaseReward):
     """
     reward_t = (r_t - μ_rolling) / σ_rolling
 
-    Normalisiert Return durch lokale Volatilität.
+    Normalises the return by local rolling volatility.
+    This rewards consistent, low-volatility returns over lucky spikes.
     """
 
     def __init__(self, window: int = 50, risk_free_rate: float = 0.0):
@@ -75,7 +83,8 @@ class CalmarIncrementReward(BaseReward):
     """
     reward_t = r_t / (max_drawdown_rolling + ε)
 
-    Asymmetrische Bestrafung von Drawdowns.
+    Asymmetric penalty for drawdowns: the deeper the drawdown,
+    the harder it is to earn a positive reward. Encourages capital preservation.
     """
 
     def __init__(self, window: int = 100):
@@ -110,7 +119,9 @@ class CostAwareReward(BaseReward):
     """
     reward_t = net_pnl - λ_cost × |Δpos| × cost_rate - λ_draw × drawdown_penalty
 
-    Verhindert Churning und bestraft Drawdowns.
+    Prevents churning (excessive trading) and penalises drawdowns.
+    The cost penalty grows with every position change, discouraging
+    the agent from trading for no reason.
     """
 
     def __init__(
@@ -156,18 +167,20 @@ class CostAwareReward(BaseReward):
 
 @dataclass
 class RegimeState:
-    """Regime-Information für RegimeAwareReward."""
+    """Market regime information passed into RegimeAwareReward."""
 
     regime: int  # 0=Bear, 1=Neutral, 2=Bull
-    vol_regime: int  # 0=Low Vol, 1=High Vol
-    trend_strength: float  # 0..1
+    vol_regime: int  # 0=Low volatility, 1=High volatility
+    trend_strength: float  # 0..1  (0=no trend, 1=strong trend)
 
 
 class RegimeAwareReward(BaseReward):
     """
-    Kombiniert alle Reward-Komponenten + Regime-Kongruenz-Bonus.
+    Combines all reward components plus a regime-congruence bonus.
 
-    Empfohlen für Multi-Timeframe Systeme.
+    Recommended for multi-timeframe systems.
+    Bonus: if the agent trades in the direction of the detected market regime,
+    it receives extra reward. Penalty if it trades against the regime.
     """
 
     def __init__(
@@ -189,7 +202,7 @@ class RegimeAwareReward(BaseReward):
         self._regime: Optional[RegimeState] = None
 
     def set_regime(self, regime: RegimeState) -> None:
-        """Aktualisiert den Regime-State."""
+        """Update the current market regime state (called by environment each step)."""
         self._regime = regime
 
     def compute(
@@ -214,7 +227,7 @@ class RegimeAwareReward(BaseReward):
         return float(np.clip(reward, -5, 5))
 
     def _compute_regime_bonus(self, position: float, regime: RegimeState) -> float:
-        """Berechnet Bonus/Malus basierend auf Signal-Regime-Kongruenz."""
+        """Compute bonus/penalty based on signal-regime alignment."""
         ts = regime.trend_strength
         bonus = self.lambda_regime
 
@@ -237,7 +250,7 @@ class RegimeAwareReward(BaseReward):
 
 
 class RewardAnalyzer:
-    """Vergleicht verschiedene Reward-Funktionen."""
+    """Compares all reward function variants on the same data for benchmarking."""
 
     @staticmethod
     def compare(
@@ -246,7 +259,7 @@ class RewardAnalyzer:
         cost_rate: float = 0.001,
         equity_start: float = 10_000,
     ) -> dict:
-        """Berechnet alle Reward-Varianten auf denselben Daten."""
+        """Run all reward variants on the same return/position sequence and return statistics."""
         rewards: dict[str, list] = {
             "naive": [],
             "sharpe": [],

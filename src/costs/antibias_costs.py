@@ -1,7 +1,13 @@
 """
 ANTI-BIAS FRAMEWORK – Transaction Costs
 ========================================
-Realistische Transaktionskosten-Engine für Spot/Futures.
+Realistic transaction cost engine for Spot and Futures markets.
+
+Covers all cost components that reduce actual profitability:
+- Exchange fees (maker/taker)
+- Bid-ask spread
+- Market impact (how large orders move the price)
+- Funding rate (for futures positions held overnight)
 """
 
 from __future__ import annotations
@@ -34,7 +40,7 @@ class OrderType(Enum):
     LIMIT = "limit"
 
 
-# Binance Fee Schedule (konservativ, kein VIP)
+# Binance Fee Schedule (conservative, no VIP tier)
 BINANCE_SPOT_FEES = {
     "taker": 0.0010,
     "maker": 0.0010,
@@ -45,12 +51,12 @@ BINANCE_FUTURES_FEES = {
     "maker": 0.00020,
 }
 
-# Funding Rate Statistiken (historisch BTC Perp, 8h)
+# Funding Rate statistics (historical BTC perpetual, 8h period)
 FUNDING_MEAN_8H = 0.0001
 FUNDING_STD_8H = 0.0003
 FUNDING_MAX_8H = 0.0075
 
-# Spread-Multiplikatoren per Timeframe
+# Spread multipliers per timeframe (shorter TF = wider relative spread)
 SPREAD_MULT = {
     Timeframe.M1: 3.5,
     Timeframe.M5: 2.5,
@@ -59,7 +65,7 @@ SPREAD_MULT = {
     Timeframe.H4: 0.8,
 }
 
-# BTC/USDT typischer Spread in % (1h Baseline)
+# BTC/USDT typical bid-ask spread in basis points (1h baseline)
 BASE_SPREAD_BPS = {
     "BTCUSDT": 1.0,
     "ETHUSDT": 1.5,
@@ -114,7 +120,13 @@ class CostBreakdown:
 
 class TransactionCostEngine:
     """
-    Berechnet vollständige Round-Trip Kosten für einen Trade.
+    Computes complete round-trip transaction costs for a single trade.
+
+    A round-trip includes entry and exit costs:
+    - Fee (paid twice: open + close)
+    - Spread (paid twice: open + close)
+    - Market impact (paid twice)
+    - Funding rate (paid once per holding period)
     """
 
     def __init__(self, config: Optional[CostConfig] = None):
@@ -129,13 +141,14 @@ class TransactionCostEngine:
         side: str = "buy",
     ) -> CostBreakdown:
         """
-        Berechnet Gesamtkosten für einen Trade.
+        Compute total transaction costs for a single trade.
 
         Args:
-            price: Orderpreis in USD
-            quantity: Ordermenge in Base-Asset
-            adv: 24h Volume in USD
-            volatility: Tagesvolatilität
+            price: Order price in USD
+            quantity: Order size in base asset units
+            adv: 24-hour average daily volume in USD
+            volatility: Daily volatility (e.g. 0.02 = 2%)
+            side: Trade direction ('buy' or 'sell')
         """
         cfg = self.config
         notional = price * quantity
@@ -211,7 +224,7 @@ class TransactionCostEngine:
         return min(impact, 0.01)
 
     def _compute_funding(self) -> float:
-        """Funding Rate Kosten für die Halteperiode."""
+        """Compute funding rate costs for the holding period."""
         cfg = self.config
         bars_per_8h = {
             Timeframe.M1: 480,
@@ -236,7 +249,7 @@ class TransactionCostEngine:
 
 
 class BreakEvenAnalyzer:
-    """Berechnet Break-Edge für verschiedene Szenarien."""
+    """Computes the minimum required edge (break-even) for various trading scenarios."""
 
     @staticmethod
     def analyze_all_scenarios(
@@ -291,9 +304,9 @@ class BreakEvenAnalyzer:
             "═" * 72,
             "  Interpretation:",
             "  ─────────────────────────────────────────────────────────────",
-            "  1m MARKET orders: >0.15% edge pro Trade nötig → extrem schwer",
-            "  1h LIMIT orders:  ~0.04% edge nötig → machbar mit gutem Signal",
-            "  4h LIMIT orders:  ~0.03% edge nötig → realistische Zielgröße",
+            "  1m MARKET orders: >0.15% edge per trade required → extremely hard",
+            "  1h LIMIT orders:  ~0.04% edge required → achievable with good signal",
+            "  4h LIMIT orders:  ~0.03% edge required → realistic target",
             "═" * 72,
         ]
         return "\n".join(lines)
