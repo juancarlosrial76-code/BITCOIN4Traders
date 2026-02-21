@@ -1,0 +1,33 @@
+version: "3.9"
+
+# Local PostgreSQL for development.
+# Do NOT use this in production — use a managed database with proper credentials.
+#
+# Usage:
+#   docker compose up -d        # start database in background
+#   docker compose down         # stop (data is preserved in the volume)
+#   docker compose down -v      # stop AND delete all data
+#
+# Set DATABASE_URL in your .env file:
+#   DATABASE_URL=postgresql://btc4t_dev:devpassword@localhost:5432/btc4t_dev
+
+services:
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: btc4t_dev
+      POSTGRES_PASSWORD: devpassword   # local dev only — change for any shared environment
+      POSTGRES_DB: btc4t_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U btc4t_dev -d btc4t_dev"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

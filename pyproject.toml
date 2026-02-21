@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "bitcoin4traders"
+version = "0.1.0"
+description = "Institutional-grade Bitcoin trading system with Deep Reinforcement Learning"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "BITCOIN4Traders Team" }]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+    "F401",  # unused imports (too many false positives in __init__ files)
+]
+exclude = ["tests/", "examples/", "docs/"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_return_any = false
+warn_unused_configs = true
+exclude = ["tests/", "examples/"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "--tb=short -q"
+timeout = 120
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["tests/*", "examples/*", "docs/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+fail_under = 30      # start at 30%, raise over time as tests are added

@@ -3,9 +3,12 @@ Database Models and Persistence Layer
 ======================================
 PostgreSQL storage for trades, orders, and market data.
 
-Connection: postgresql://myapp_user:VrSHl0M1h5AaHQ1dO7PQ@127.0.0.1:5432/myapp_db
+Connection is configured via the DATABASE_URL environment variable.
+Set it in your .env file (see .env.example for the format):
+  DATABASE_URL=postgresql://user:password@host:port/dbname
 """
 
+import os
 from datetime import datetime
 from typing import Optional, List
 from sqlalchemy import create_engine, Column, String, Float, DateTime, Integer, Boolean
@@ -15,8 +18,15 @@ from sqlalchemy.sql import func
 import pandas as pd
 from loguru import logger
 
-# Database configuration
-DATABASE_URL = "postgresql://myapp_user:VrSHl0M1h5AaHQ1dO7PQ@127.0.0.1:5432/myapp_db"
+# Database configuration — read from environment, never hardcoded
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if DATABASE_URL is None:
+    logger.warning(
+        "DATABASE_URL environment variable is not set. "
+        "Database operations will fail. "
+        "Add DATABASE_URL to your .env file (see .env.example)."
+    )
+    DATABASE_URL = ""  # placeholder so module loads without crash
 
 Base = declarative_base()
 engine = create_engine(DATABASE_URL)
@@ -210,9 +220,7 @@ class DatabaseManager:
                 records.append(
                     MarketData(
                         symbol=symbol,
-                        timestamp=index
-                        if isinstance(index, datetime)
-                        else pd.to_datetime(index),
+                        timestamp=index if isinstance(index, datetime) else pd.to_datetime(index),
                         open=float(row["open"]),
                         high=float(row["high"]),
                         low=float(row["low"]),
@@ -259,9 +267,7 @@ class DatabaseManager:
         finally:
             session.close()
 
-    def get_trades(
-        self, symbol: str = None, start_date: datetime = None
-    ) -> pd.DataFrame:
+    def get_trades(self, symbol: str = None, start_date: datetime = None) -> pd.DataFrame:
         """Get trade history."""
         session = self.get_session()
         try:
@@ -331,9 +337,7 @@ class DatabaseManager:
             cutoff_date = datetime.now() - pd.Timedelta(days=days)
 
             # Delete old market data
-            session.query(MarketData).filter(
-                MarketData.timestamp < cutoff_date
-            ).delete()
+            session.query(MarketData).filter(MarketData.timestamp < cutoff_date).delete()
 
             # Delete old portfolio snapshots
             session.query(PortfolioSnapshot).filter(
@@ -360,5 +364,6 @@ if __name__ == "__main__":
     # Initialize database
     print("Initializing database...")
     db = init_database()
-    print("✓ Database initialized successfully!")
-    print(f"✓ Connected to: {DATABASE_URL}")
+    print("Database initialized successfully!")
+    url_display = DATABASE_URL.split("@")[-1] if DATABASE_URL else "(not configured)"
+    print(f"Connected to: {url_display}")

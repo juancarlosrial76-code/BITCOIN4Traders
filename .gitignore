@@ -67,6 +67,7 @@ htmlcov/
 # Config (keep templates, ignore secrets)
 .env
 .sql
+# Keep .env.example (it has no real secrets)
 *.key
 *.secret
 
@@ -78,3 +79,12 @@ temp/
 # German documentation (local only, never push to GitHub)
 BITCOIN4Traders-DE-DOKU/
 ../BITCOIN4Traders-DE-DOKU/
+
+# Personal experiment configs (keep README, ignore individual yaml files)
+config/experiments/*.yaml
+
+# Auto-generated config backups (created by auto_train.py / auto_12h_train.py)
+*.yaml.bak
+
+# Large files that must never be committed
+project.zip

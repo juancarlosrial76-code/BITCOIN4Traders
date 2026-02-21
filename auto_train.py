@@ -12,6 +12,8 @@ import subprocess
 import time
 import sys
 import json
+import shutil
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -75,38 +77,55 @@ def get_latest_metrics():
 
 
 def adjust_parameters():
-    """Relax config parameters when no training progress has been made for 1 hour."""
-    log("⚠️ No progress for 1h - adjusting parameters...")
+    """Relax config parameters when no training progress has been made for 1 hour.
 
-    config_file = Path("config/environment/realistic_env.yaml")
+    Writes to a temporary copy of the config so the committed base config
+    (config/environment/realistic_env.yaml) is never permanently modified.
+    The temporary file is removed after the training subprocess completes.
+    """
+    log("No progress for 1h - adjusting parameters...")
 
-    # Read current config
-    with open(config_file) as f:
+    base_config = Path("config/environment/realistic_env.yaml")
+
+    # Read original (unmodified) base config
+    with open(base_config) as f:
         content = f.read()
 
     # Increase max_drawdown to give the agent more learning room
     if "max_drawdown: 0.70" in content:
         content = content.replace("max_drawdown: 0.70", "max_drawdown: 0.80")
-        log("  → max_drawdown increased to 80%")
+        log("  -> max_drawdown increased to 80%")
 
     # Reduce drawdown penalty to encourage more exploration
     if "weight: -0.5" in content:
         content = content.replace("weight: -0.5", "weight: -0.2")
-        log("  → drawdown penalty reduced")
+        log("  -> drawdown penalty reduced")
 
     if "weight: -0.3" in content:
         content = content.replace("weight: -0.3", "weight: -0.1")
-        log("  → transaction cost penalty reduced")
+        log("  -> transaction cost penalty reduced")
 
     # Increase max_position_size to allow larger positions
     if "max_position_size: 0.10" in content:
         content = content.replace("max_position_size: 0.10", "max_position_size: 0.20")
-        log("  → max_position increased to 20%")
+        log("  -> max_position increased to 20%")
 
-    with open(config_file, "w") as f:
-        f.write(content)
+    # Write to a temp file, then atomically replace the config.
+    # We keep a backup so we can restore the originals afterwards.
+    backup = base_config.with_suffix(".yaml.bak")
+    shutil.copy2(base_config, backup)
 
-    log("✅ Parameters adjusted - training continues")
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".yaml", dir=base_config.parent, delete=False
+    ) as tmp:
+        tmp.write(content)
+        tmp_path = Path(tmp.name)
+
+    # Atomic replace: tmp -> live config
+    tmp_path.replace(base_config)
+
+    log("Parameters adjusted - training will use relaxed config")
+    return backup  # caller must restore this after training
 
 
 def run_training_batch(iterations=50):
@@ -173,12 +192,17 @@ def main():
                 no_progress_count += 1
                 log(f"⏳ No improvement ({no_progress_count}x)")
 
-                # After 1h with no improvement: relax parameters and reset
+                # After 1h with no improvement: relax parameters for one extra batch,
+                # then restore the committed base config immediately afterwards.
                 if no_progress_count >= NO_PROGRESS_LIMIT:
-                    adjust_parameters()
-                    last_best_return = (
-                        -999
-                    )  # reset baseline for the new parameter regime
+                    backup_path = adjust_parameters()
+                    run_training_batch(iterations=30)  # one batch with relaxed config
+                    # Restore base config so the committed file is never left modified
+                    if backup_path and backup_path.exists():
+                        shutil.copy2(backup_path, Path("config/environment/realistic_env.yaml"))
+                        backup_path.unlink()
+                        log("Base config restored after relaxed training batch")
+                    last_best_return = -999  # reset baseline for the new parameter regime
                     no_progress_count = 0
 
         # Stop early if less than 10 minutes remain

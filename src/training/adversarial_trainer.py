@@ -130,9 +130,7 @@ class AdversarialTrainer:
         logger.info("AdversarialTrainer initialized")
         logger.info(f"  Iterations: {config.n_iterations}")
         logger.info(f"  Steps/iteration: {config.steps_per_iteration}")
-        logger.info(
-            f"  Adversary starts at: iteration {config.adversary_start_iteration}"
-        )
+        logger.info(f"  Adversary starts at: iteration {config.adversary_start_iteration}")
 
     def collect_trajectories(self, n_steps: int, use_adversary: bool = False) -> Dict:
         """
@@ -181,16 +179,12 @@ class AdversarialTrainer:
             # Trader selects action
             # Store hidden state used for this step
             current_trader_hidden = trader_hidden
-            action, log_prob, value, trader_hidden = self.trader.select_action(
-                obs, trader_hidden
-            )
+            action, log_prob, value, trader_hidden = self.trader.select_action(obs, trader_hidden)
 
             # Adversary modifies environment (if active)
             adversary_reward = 0.0
-            if (
-                use_adversary
-                and self.iteration >= self.config.adversary_start_iteration
-            ):
+            challenge_info: dict = {}  # default: no challenge applied
+            if use_adversary and self.iteration >= self.config.adversary_start_iteration:
                 # Adversary observes current state and selects modification
                 current_adversary_hidden = adversary_hidden
                 adv_action, adv_log_prob, adv_value, adversary_hidden = (
@@ -220,10 +214,7 @@ class AdversarialTrainer:
             done = terminated or truncated
 
             # Compute adversary reward: negative of trader reward + challenge bonus
-            if (
-                use_adversary
-                and self.iteration >= self.config.adversary_start_iteration
-            ):
+            if use_adversary and self.iteration >= self.config.adversary_start_iteration:
                 # Base reward: trader performs poorly (negative reward is good for adversary)
                 adversary_reward = -reward * 0.5
 
@@ -260,13 +251,8 @@ class AdversarialTrainer:
                 episode_lengths.append(episode_length)
 
                 # Track adversary episode reward
-                if (
-                    use_adversary
-                    and self.iteration >= self.config.adversary_start_iteration
-                ):
-                    adversary_episode_rewards.append(
-                        sum(self.adversary_rewards[-episode_length:])
-                    )
+                if use_adversary and self.iteration >= self.config.adversary_start_iteration:
+                    adversary_episode_rewards.append(sum(self.adversary_rewards[-episode_length:]))
 
                 obs, info = self.env.reset()
                 episode_reward = 0
@@ -280,13 +266,8 @@ class AdversarialTrainer:
 
         if not done:
             _, _, next_value, _ = self.trader.select_action(obs, trader_hidden)
-            if (
-                use_adversary
-                and self.iteration >= self.config.adversary_start_iteration
-            ):
-                _, _, adv_next_value, _ = self.adversary.select_action(
-                    obs, adversary_hidden
-                )
+            if use_adversary and self.iteration >= self.config.adversary_start_iteration:
+                _, _, adv_next_value, _ = self.adversary.select_action(obs, adversary_hidden)
             else:
                 adv_next_value = 0.0
         else:
@@ -479,9 +460,7 @@ class AdversarialTrainer:
 
             # Log metrics
             if iteration % self.config.log_frequency == 0:
-                self._log_iteration(
-                    iteration, traj_metrics, trader_stats, adversary_stats
-                )
+                self._log_iteration(iteration, traj_metrics, trader_stats, adversary_stats)
 
             # Checkpoint
             if iteration % self.config.save_frequency == 0:
@@ -523,9 +502,7 @@ class AdversarialTrainer:
             hidden = None
             while not done:
                 # Deterministic action selection
-                action, _, _, hidden = self.trader.select_action(
-                    obs, hidden, deterministic=True
-                )
+                action, _, _, hidden = self.trader.select_action(obs, hidden, deterministic=True)
                 obs, reward, terminated, truncated, info = self.env.step(action)
                 done = terminated or truncated
 
@@ -583,11 +560,9 @@ class AdversarialTrainer:
         if adversary_stats:
             logger.info(f"\nAdversary Training:")
             logger.info(f"  Loss: {adversary_stats.get('adversary_loss', 0):.4f}")
-            logger.info(
-                f"  Success: {adversary_stats.get('adversary_success_rate', 0) * 100:.1f}%"
-            )
+            logger.info(f"  Success: {adversary_stats.get('adversary_success_rate', 0) * 100:.1f}%")
 
-    def _save_checkpoint(self, iteration: int, mean_return: float = None):
+    def _save_checkpoint(self, iteration: int, mean_return: Optional[float] = None):
         """Save training checkpoint only if it's better than previous best."""
         # Track best return
         if not hasattr(self, "_best_return"):

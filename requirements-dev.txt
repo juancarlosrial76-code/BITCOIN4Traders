@@ -1,0 +1,29 @@
+# Development dependencies (not needed in production/Colab)
+# Install with: pip install -r requirements-dev.txt
+
+# Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-timeout>=2.1.0      # prevents hanging tests
+pytest-xdist>=3.3.0        # parallel test execution: pytest -n auto
+
+# Linting & formatting
+ruff>=0.1.0                # fast linter (replaces flake8 + isort + pyupgrade)
+
+# Type checking
+mypy>=1.5.0
+pandas-stubs>=2.0.0        # type stubs for pandas
+types-PyYAML>=6.0.0        # type stubs for pyyaml
+
+# Code quality
+pre-commit>=3.4.0          # run checks before every commit
+
+# Coverage reporting
+coverage[toml]>=7.3.0
+codecov>=2.1.0
+
+# Database testing
+sqlalchemy[mypy]>=2.0.0    # already in main deps, needed for type checking
+
+# Optional: interactive development
+ipython>=8.0.0
