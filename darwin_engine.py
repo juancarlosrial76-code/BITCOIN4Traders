@@ -2365,6 +2365,919 @@ def run_colab(
 
 
 # ============================================================================
+# 10. SCENARIO GENERATOR  (Stress-Test Suite)
+# ============================================================================
+
+
+@dataclass
+class ScenarioConfig:
+    """
+    Parameters for the Multiverse scenario suite.
+    All numbers are explicit - zero magic values.
+    """
+
+    # Flash Crash
+    flash_crash_depth: float = 0.30  # 30% sudden drop
+    flash_crash_duration: int = 12  # bars over which crash unfolds
+    flash_crash_recovery: float = 0.50  # fraction of drop recovered afterwards
+
+    # Slow Bear
+    slow_bear_slope: float = -0.00015  # per-bar downtrend slope (GBM drift)
+    slow_bear_noise_scale: float = 1.2  # extra volatility multiplier
+
+    # Sideways Hell  (Choppy Water)
+    sideways_noise_scale: float = 2.5  # strong noise kills trend bots
+    sideways_drift: float = 0.0  # zero net drift
+
+    # Parabolic Run
+    parabolic_slope: float = 0.00025  # strong upward drift per bar
+    parabolic_noise_scale: float = 0.8  # lower noise = cleaner up-move
+
+    # Monte Carlo
+    n_mc_scenarios: int = 50  # number of GBM timelines per regime
+    mc_seed_offset: int = 1000  # seed offset so MC != base data seeds
+
+
+class ScenarioGenerator:
+    """
+    Generates named market scenario DataFrames from a base OHLCV DataFrame.
+
+    Deterministic scenarios (always included):
+        original       - the real / base data unchanged
+        flash_crash    - sudden 30% drop + partial recovery
+        slow_bear      - persistent downtrend over all bars
+        sideways_hell  - zero-drift high-noise chop (destroys trend bots)
+        parabolic_run  - strong bull run (tests premature exit)
+
+    Monte Carlo scenarios (stochastic):
+        mc_bull_{i}    - GBM with positive drift, varied volatility seeds
+        mc_bear_{i}    - GBM with negative drift, varied volatility seeds
+        mc_chop_{i}    - GBM with zero drift, high noise
+
+    Parameters
+    ----------
+    config : ScenarioConfig   All parameters explicit
+    """
+
+    def __init__(self, config: Optional[ScenarioConfig] = None):
+        self.cfg = config or ScenarioConfig()
+
+    # ------------------------------------------------------------------
+    # Deterministic scenarios
+    # ------------------------------------------------------------------
+
+    def _inject_flash_crash(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Apply a sudden deep crash at the midpoint of the series."""
+        out = df.copy()
+        closes = out["close"].values.copy()
+        n = len(closes)
+        crash_start = n // 2
+        crash_end = crash_start + self.cfg.flash_crash_duration
+        crash_end = min(crash_end, n - 1)
+
+        # Crash phase: multiply prices down
+        depth = self.cfg.flash_crash_depth
+        for i in range(crash_start, crash_end):
+            progress = (i - crash_start) / max(self.cfg.flash_crash_duration, 1)
+            closes[i] *= 1.0 - depth * progress
+
+        # Recovery phase: partial bounce
+        recovery_bars = self.cfg.flash_crash_duration
+        recovery_end = min(crash_end + recovery_bars, n)
+        crash_low = closes[crash_end - 1]
+        pre_crash = closes[crash_start - 1]
+        target = crash_low + (pre_crash - crash_low) * self.cfg.flash_crash_recovery
+        for i in range(crash_end, recovery_end):
+            t = (i - crash_end) / max(recovery_bars, 1)
+            closes[i] = crash_low + (target - crash_low) * t
+
+        out["close"] = closes
+        out["high"] = np.maximum(out["high"].values, closes)
+        out["low"] = np.minimum(out["low"].values, closes)
+        return out
+
+    def _apply_trend(
+        self, df: pd.DataFrame, slope: float, noise_scale: float = 1.0
+    ) -> pd.DataFrame:
+        """Warp closes with a persistent linear drift on top of original returns."""
+        out = df.copy()
+        closes = out["close"].values.copy()
+        n = len(closes)
+
+        # Recompute log-returns, add slope bias, re-exponentiate
+        log_ret = np.diff(np.log(np.maximum(closes, 1e-9)))
+        rng = np.random.default_rng(seed=99)
+        noise = rng.normal(0, 0.005 * noise_scale, len(log_ret))
+        biased = log_ret * noise_scale + slope + noise
+        new_close = np.empty(n, dtype=np.float64)
+        new_close[0] = closes[0]
+        for i in range(1, n):
+            new_close[i] = new_close[i - 1] * np.exp(biased[i - 1])
+
+        out["close"] = new_close
+        out["high"] = new_close * 1.005
+        out["low"] = new_close * 0.995
+        return out
+
+    # ------------------------------------------------------------------
+    # Monte Carlo timelines
+    # ------------------------------------------------------------------
+
+    def _generate_mc_timeline(
+        self,
+        n_bars: int,
+        start_price: float,
+        mu: float,
+        sigma: float,
+        seed: int,
+        index: pd.DatetimeIndex,
+    ) -> pd.DataFrame:
+        """Single GBM timeline with given drift (mu) and volatility (sigma)."""
+        rng = np.random.default_rng(seed)
+        dt = 1.0 / 24.0  # hourly
+        log_ret = rng.normal(mu * dt, sigma * np.sqrt(dt), n_bars)
+        close = start_price * np.exp(np.cumsum(log_ret))
+        high = close * (1 + np.abs(rng.normal(0, 0.005, n_bars)))
+        low = close * (1 - np.abs(rng.normal(0, 0.005, n_bars)))
+        open_ = np.roll(close, 1)
+        open_[0] = close[0]
+        vol = rng.uniform(100, 1000, n_bars) * 1e6
+        return pd.DataFrame(
+            {"open": open_, "high": high, "low": low, "close": close, "volume": vol},
+            index=index[:n_bars],
+        )
+
+    # ------------------------------------------------------------------
+    # Public: build full scenario dict
+    # ------------------------------------------------------------------
+
+    def generate(self, base_df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
+        """
+        Build all named scenario DataFrames from base_df.
+
+        Returns
+        -------
+        dict mapping scenario_name -> pd.DataFrame (OHLCV)
+        """
+        scenarios: Dict[str, pd.DataFrame] = {}
+        cfg = self.cfg
+        n = len(base_df)
+        start_price = float(base_df["close"].iloc[0])
+        idx = base_df.index
+
+        # --- Deterministic ---
+        scenarios["original"] = base_df.copy()
+        scenarios["flash_crash"] = self._inject_flash_crash(base_df)
+        scenarios["slow_bear"] = self._apply_trend(
+            base_df, slope=cfg.slow_bear_slope, noise_scale=cfg.slow_bear_noise_scale
+        )
+        scenarios["sideways_hell"] = self._apply_trend(
+            base_df, slope=cfg.sideways_drift, noise_scale=cfg.sideways_noise_scale
+        )
+        scenarios["parabolic_run"] = self._apply_trend(
+            base_df, slope=cfg.parabolic_slope, noise_scale=cfg.parabolic_noise_scale
+        )
+
+        # --- Monte Carlo: bull / bear / chop ---
+        sigma_base = 0.02
+        for i in range(cfg.n_mc_scenarios):
+            seed = cfg.mc_seed_offset + i
+            # Bull
+            scenarios[f"mc_bull_{i}"] = self._generate_mc_timeline(
+                n,
+                start_price,
+                mu=0.0004 + i * 0.000005,
+                sigma=sigma_base,
+                seed=seed,
+                index=idx,
+            )
+            # Bear
+            scenarios[f"mc_bear_{i}"] = self._generate_mc_timeline(
+                n,
+                start_price,
+                mu=-0.0003 - i * 0.000005,
+                sigma=sigma_base,
+                seed=seed + 500,
+                index=idx,
+            )
+            # Chop
+            scenarios[f"mc_chop_{i}"] = self._generate_mc_timeline(
+                n,
+                start_price,
+                mu=0.0,
+                sigma=sigma_base * 2.0,
+                seed=seed + 1000,
+                index=idx,
+            )
+
+        logger.info(
+            f"ScenarioGenerator: {len(scenarios)} scenarios created "
+            f"(5 deterministic + {3 * cfg.n_mc_scenarios} Monte Carlo)"
+        )
+        return scenarios
+
+
+# ============================================================================
+# 11. MULTIVERSE EVALUATOR
+# ============================================================================
+
+
+@dataclass
+class MultiverseStats:
+    """Aggregated fitness across all scenarios for one bot."""
+
+    bot_name: str
+    multiverse_score: float  # Mean score across surviving scenarios (0 if eliminated)
+    scenarios_tested: int
+    scenarios_survived: int  # Scenarios where DD <= max_dd_threshold
+    survival_rate: float  # survived / tested
+    worst_drawdown: float  # worst DD across all scenarios
+    avg_return: float
+    avg_sharpe: float
+    eliminated: bool  # True if bot failed any DD gate
+    elimination_scenario: str  # Which scenario triggered elimination (if any)
+
+    def summary(self) -> str:
+        status = (
+            "ELIMINATED" if self.eliminated else f"SURVIVED ({self.survival_rate:.0%})"
+        )
+        return (
+            f"{self.bot_name[:28]:<28} | "
+            f"MV-Score={self.multiverse_score:>7.3f} | "
+            f"Status={status} | "
+            f"Worst-DD={self.worst_drawdown:.1%} | "
+            f"AvgRet={self.avg_return:.2%} | "
+            f"Scenarios={self.scenarios_survived}/{self.scenarios_tested}"
+        )
+
+
+class MultiverseEvaluator:
+    """
+    "Survival of the Fittest" multi-scenario fitness evaluator.
+
+    A bot's Multiverse Score is the mean fitness across ALL scenarios.
+    If the bot suffers a drawdown > max_dd_threshold in ANY scenario,
+    its score is immediately set to 0 (genetic elimination).
+
+    This forces evolution to find strategies that are robust across
+    all market regimes, not just historically optimised to one dataset.
+
+    Parameters
+    ----------
+    scenarios         : Dict of {name: DataFrame} from ScenarioGenerator
+    config            : ArenaConfig (for fee_rate and scoring parameters)
+    max_dd_threshold  : Max allowed drawdown in any single scenario (default: 0.20)
+    """
+
+    def __init__(
+        self,
+        scenarios: Dict[str, pd.DataFrame],
+        config: ArenaConfig,
+        max_dd_threshold: float = 0.20,
+    ):
+        self.scenarios = scenarios
+        self.config = config
+        self.max_dd_threshold = max_dd_threshold
+        self._evaluator = EliteEvaluator(config)
+
+    def evaluate(self, bot: DarwinBot) -> MultiverseStats:
+        """
+        Run bot across all scenarios and compute aggregated Multiverse fitness.
+
+        Early exit (elimination) if bot exceeds max_dd_threshold in any scenario.
+        """
+        scores: List[float] = []
+        returns: List[float] = []
+        sharpes: List[float] = []
+        worst_dd = 0.0
+        elimination_scenario = ""
+
+        for name, scenario_df in self.scenarios.items():
+            try:
+                curve = bot.run_simulation(scenario_df)
+                stats = self._evaluator.evaluate(curve, bot)
+            except Exception as exc:
+                logger.debug(f"  Bot {bot.name} failed on scenario '{name}': {exc}")
+                # Treat crash as max drawdown -> elimination
+                return MultiverseStats(
+                    bot_name=bot.name,
+                    multiverse_score=0.0,
+                    scenarios_tested=len(self.scenarios),
+                    scenarios_survived=0,
+                    survival_rate=0.0,
+                    worst_drawdown=1.0,
+                    avg_return=-1.0,
+                    avg_sharpe=-99.0,
+                    eliminated=True,
+                    elimination_scenario=name,
+                )
+
+            # Track worst drawdown
+            if stats.max_drawdown > worst_dd:
+                worst_dd = stats.max_drawdown
+
+            # ELIMINATION: any scenario with DD > threshold -> score = 0
+            if stats.max_drawdown > self.max_dd_threshold:
+                return MultiverseStats(
+                    bot_name=bot.name,
+                    multiverse_score=0.0,
+                    scenarios_tested=len(self.scenarios),
+                    scenarios_survived=len(scores),
+                    survival_rate=len(scores) / max(len(self.scenarios), 1),
+                    worst_drawdown=worst_dd,
+                    avg_return=float(np.mean(returns)) if returns else -1.0,
+                    avg_sharpe=float(np.mean(sharpes)) if sharpes else -99.0,
+                    eliminated=True,
+                    elimination_scenario=name,
+                )
+
+            scores.append(stats.score)
+            returns.append(stats.total_return)
+            sharpes.append(stats.sharpe_ratio)
+
+        n_survived = len(scores)
+        multiverse_score = float(np.mean(scores)) if scores else 0.0
+
+        return MultiverseStats(
+            bot_name=bot.name,
+            multiverse_score=multiverse_score,
+            scenarios_tested=len(self.scenarios),
+            scenarios_survived=n_survived,
+            survival_rate=n_survived / max(len(self.scenarios), 1),
+            worst_drawdown=worst_dd,
+            avg_return=float(np.mean(returns)) if returns else -1.0,
+            avg_sharpe=float(np.mean(sharpes)) if sharpes else -99.0,
+            eliminated=False,
+            elimination_scenario="",
+        )
+
+
+# ============================================================================
+# 12. MULTIVERSE ARENA
+# ============================================================================
+
+
+@dataclass
+class MultiverseArenaConfig:
+    """
+    Configuration for the MultiverseArena.
+    Extends ArenaConfig with scenario + persistence parameters.
+    """
+
+    # Evolution
+    generations: int = 15
+    pop_size: int = 20
+    elite_fraction: float = 0.2
+    crossover_rate: float = 0.6
+    mutation_strength: float = 1.0
+    fee_rate: float = 0.001
+    slippage_rate: float = 0.0005
+    risk_per_trade: float = 0.01
+    pfr_threshold: float = 2.0
+    sharpe_window: int = 252
+    seed: Optional[int] = 42
+
+    # Scenario
+    n_mc_scenarios: int = 50  # Monte Carlo timelines per regime
+    max_dd_threshold: float = 0.20  # Max DD in any scenario -> elimination
+
+    # Persistence
+    champion_save_path: str = "data/cache/multiverse_champion.pkl"
+    metadata_save_path: str = "data/cache/multiverse_champion_meta.json"
+    auto_load_champion: bool = True  # Load saved champion on startup if exists
+
+    def to_arena_config(self) -> ArenaConfig:
+        return ArenaConfig(
+            generations=self.generations,
+            pop_size=self.pop_size,
+            elite_fraction=self.elite_fraction,
+            crossover_rate=self.crossover_rate,
+            mutation_strength=self.mutation_strength,
+            fee_rate=self.fee_rate,
+            slippage_rate=self.slippage_rate,
+            risk_per_trade=self.risk_per_trade,
+            pfr_threshold=self.pfr_threshold,
+            sharpe_window=self.sharpe_window,
+            seed=self.seed,
+        )
+
+
+class MultiverseArena:
+    """
+    Full-auto evolutionary cycle with Monte Carlo multiverse fitness.
+
+    Each bot is evaluated not on a single dataset, but across ALL scenario
+    timelines (deterministic + Monte Carlo). Only bots that survive every
+    single scenario without crossing the drawdown threshold can propagate.
+
+    Evolutionary cycle:
+        1. ScenarioGenerator builds 5 deterministic + N*3 MC scenarios
+        2. Each bot is evaluated via MultiverseEvaluator (all scenarios)
+        3. Bots with DD > threshold in any scenario: score = 0
+        4. Survivors ranked by mean score across all scenarios
+        5. Elite preserved, crossover + mutation + immigrants
+        6. Champion saved to disk after each generation (persistence)
+
+    Parameters
+    ----------
+    data   : Base OHLCV DataFrame (real or synthetic BTC data)
+    config : MultiverseArenaConfig
+    """
+
+    def __init__(
+        self,
+        data: pd.DataFrame,
+        config: Optional[MultiverseArenaConfig] = None,
+        verbose: bool = True,
+    ):
+        if "close" not in data.columns:
+            raise ValueError("DataFrame must contain a 'close' column.")
+        self.data = data.copy()
+        self.cfg = config or MultiverseArenaConfig()
+        self.verbose = verbose
+        self.history: List[Dict] = []
+        self.champion: Optional[DarwinBot] = None
+        self.champion_mv_stats: Optional[MultiverseStats] = None
+
+        if self.cfg.seed is not None:
+            random.seed(self.cfg.seed)
+            np.random.seed(self.cfg.seed)
+
+        # Build scenario suite once (reused across all generations)
+        scenario_cfg = ScenarioConfig(n_mc_scenarios=self.cfg.n_mc_scenarios)
+        self._scenario_gen = ScenarioGenerator(scenario_cfg)
+        self._scenarios: Dict[str, pd.DataFrame] = {}
+
+        # Multi-evaluator (built after scenarios are generated)
+        self._mv_evaluator: Optional[MultiverseEvaluator] = None
+
+        # Arena config for crossover/mutation helpers
+        self._arena_cfg = self.cfg.to_arena_config()
+
+    def _build_scenarios(self) -> None:
+        """Build scenario suite from base data (called once per run)."""
+        logger.info("Building multiverse scenario suite...")
+        self._scenarios = self._scenario_gen.generate(self.data)
+        self._mv_evaluator = MultiverseEvaluator(
+            scenarios=self._scenarios,
+            config=self._arena_cfg,
+            max_dd_threshold=self.cfg.max_dd_threshold,
+        )
+        logger.info(f"  {len(self._scenarios)} scenarios ready.")
+
+    # ------------------------------------------------------------------
+    # Evaluation
+    # ------------------------------------------------------------------
+
+    def _eval_one_mv(self, bot: DarwinBot) -> Tuple[DarwinBot, MultiverseStats]:
+        """Evaluate one bot across all scenarios (runs in worker or sequentially)."""
+        assert self._mv_evaluator is not None
+        mv_stats = self._mv_evaluator.evaluate(bot)
+        return bot, mv_stats
+
+    def _evaluate_population_mv(
+        self, population: List[DarwinBot]
+    ) -> List[Tuple[DarwinBot, MultiverseStats]]:
+        """Parallel or sequential multiverse evaluation of full population."""
+        if _JOBLIB_AVAILABLE and _N_JOBS > 1:
+            results: List[Tuple[DarwinBot, MultiverseStats]] = Parallel(
+                n_jobs=_N_JOBS, backend="loky", prefer="processes"
+            )(delayed(self._eval_one_mv)(bot) for bot in population)
+        else:
+            results = [self._eval_one_mv(bot) for bot in population]
+
+        results.sort(key=lambda x: x[1].multiverse_score, reverse=True)
+        return results
+
+    # ------------------------------------------------------------------
+    # Reproduction (reuses DarwinArena logic)
+    # ------------------------------------------------------------------
+
+    def _next_generation(
+        self,
+        scored: List[Tuple[DarwinBot, MultiverseStats]],
+        gen: int,
+    ) -> List[DarwinBot]:
+        """Elite preservation + crossover + mutation + immigrants."""
+        n = self.cfg.pop_size
+        n_elite = max(1, int(n * self.cfg.elite_fraction))
+        n_immigrants = max(1, int(n * 0.10))
+        n_offspring = n - n_elite - n_immigrants
+
+        next_gen: List[DarwinBot] = [
+            copy.deepcopy(scored[i][0]) for i in range(min(n_elite, len(scored)))
+        ]
+
+        n_winners = max(2, int(len(scored) * 0.3))
+        winners = [scored[i][0] for i in range(n_winners)]
+
+        for i in range(n_offspring):
+            pa = random.choice(winners)
+            pb = random.choice(winners)
+            if random.random() < self.cfg.crossover_rate and type(pa) is type(pb):
+                child = pa.crossover(pb)
+            else:
+                child = copy.deepcopy(pa)
+            child.mutate()
+            child.name = f"MV_Gen{gen}_{child.name}_{i}"
+            next_gen.append(child)
+
+        for i in range(n_immigrants):
+            next_gen.append(_spawn_random_bot(self._arena_cfg, gen, 900 + i))
+
+        return next_gen
+
+    # ------------------------------------------------------------------
+    # Main run loop
+    # ------------------------------------------------------------------
+
+    def run(self) -> DarwinBot:
+        """
+        Execute the full Multiverse evolutionary loop.
+
+        Returns
+        -------
+        DarwinBot  The champion that survived ALL scenarios.
+        """
+        logger.info(
+            f"MultiverseArena | generations={self.cfg.generations} | "
+            f"pop={self.cfg.pop_size} | "
+            f"mc_scenarios={self.cfg.n_mc_scenarios} | "
+            f"max_dd={self.cfg.max_dd_threshold:.0%}"
+        )
+
+        # Try loading saved champion first
+        if self.cfg.auto_load_champion:
+            saved = ChampionPersistence.load(
+                self.cfg.champion_save_path, self.cfg.metadata_save_path
+            )
+            if saved is not None:
+                logger.info(
+                    f"Loaded saved champion: {saved.name} — "
+                    "skipping evolution. Set auto_load_champion=False to re-evolve."
+                )
+                self.champion = saved
+                return saved
+
+        # Build scenarios
+        self._build_scenarios()
+
+        # Spawn initial population
+        population = [
+            _spawn_random_bot(self._arena_cfg, 0, i) for i in range(self.cfg.pop_size)
+        ]
+
+        gen_iter = _tqdm(
+            range(self.cfg.generations),
+            desc="Multiverse Evolving",
+            unit="gen",
+            disable=not (self.verbose and _TQDM_AVAILABLE),
+        )
+
+        for gen in gen_iter:
+            scored = self._evaluate_population_mv(population)
+            best_bot, best_mv = scored[0]
+
+            # tqdm postfix
+            if _TQDM_AVAILABLE and self.verbose:
+                gen_iter.set_postfix(  # type: ignore[union-attr]
+                    {
+                        "champion": best_bot.name[:22],
+                        "mv_score": f"{best_mv.multiverse_score:.3f}",
+                        "survival": f"{best_mv.survival_rate:.0%}",
+                        "worst_dd": f"{best_mv.worst_drawdown:.1%}",
+                    }
+                )
+
+            logger.info(
+                f"MV Gen {gen:>3}/{self.cfg.generations - 1} | {best_mv.summary()}"
+            )
+
+            self.history.append(
+                {
+                    "generation": gen,
+                    "champion": best_bot.name,
+                    "mv_score": best_mv.multiverse_score,
+                    "survival_rate": best_mv.survival_rate,
+                    "scenarios_survived": best_mv.scenarios_survived,
+                    "scenarios_tested": best_mv.scenarios_tested,
+                    "worst_dd": best_mv.worst_drawdown,
+                    "avg_return": best_mv.avg_return,
+                    "avg_sharpe": best_mv.avg_sharpe,
+                    "eliminated": best_mv.eliminated,
+                }
+            )
+
+            self.champion = best_bot
+            self.champion_mv_stats = best_mv
+
+            # Log progress every 5 generations
+            if gen % 5 == 0 or gen == self.cfg.generations - 1:
+                logger.info(
+                    f"  Gen {gen}: Best MV-Score={best_mv.multiverse_score:.3f} | "
+                    f"Survival={best_mv.survival_rate:.0%} | "
+                    f"Worst-DD={best_mv.worst_drawdown:.1%}"
+                )
+
+            # Save champion after every generation (state persistence)
+            ChampionPersistence.save(
+                best_bot,
+                self.cfg.champion_save_path,
+                self.cfg.metadata_save_path,
+                extra={
+                    "generation": gen,
+                    "mv_score": best_mv.multiverse_score,
+                    "survival_rate": best_mv.survival_rate,
+                    "worst_dd": best_mv.worst_drawdown,
+                    "scenarios_tested": best_mv.scenarios_tested,
+                },
+            )
+
+            if gen < self.cfg.generations - 1:
+                population = self._next_generation(scored, gen + 1)
+
+            gc.collect()
+
+        logger.info(
+            f"MultiverseArena complete. Champion: {self.champion.name} | "  # type: ignore[union-attr]
+            f"MV-Score={self.champion_mv_stats.multiverse_score:.3f}"  # type: ignore[union-attr]
+        )
+        return self.champion  # type: ignore[return-value]
+
+    def get_history_df(self) -> pd.DataFrame:
+        """Return generational history as a tidy DataFrame."""
+        return pd.DataFrame(self.history).set_index("generation")
+
+    def print_leaderboard(self, top_n: int = 5) -> None:
+        """Print multiverse leaderboard."""
+        if not self.history:
+            logger.warning("No history available. Run MultiverseArena first.")
+            return
+        df = self.get_history_df()
+        cols = [
+            "champion",
+            "mv_score",
+            "survival_rate",
+            "worst_dd",
+            "avg_return",
+            "avg_sharpe",
+        ]
+        print(f"\n{'=' * 80}")
+        print(f"  MULTIVERSE ARENA LEADERBOARD  (top {top_n} of {len(df)} generations)")
+        print(f"{'=' * 80}")
+        print(df[cols].head(top_n).to_string())
+        print(f"{'=' * 80}\n")
+
+
+# ============================================================================
+# 13. CHAMPION PERSISTENCE  (State Save / Load)
+# ============================================================================
+
+
+class ChampionPersistence:
+    """
+    Save and load the Champion bot to/from disk so it survives restarts.
+
+    Format:
+        .pkl  - pickled DarwinBot object (full strategy with parameters)
+        .json - human-readable metadata (name, type, score, timestamp)
+
+    Usage:
+        ChampionPersistence.save(champion, "data/cache/champion.pkl")
+        champion = ChampionPersistence.load("data/cache/champion.pkl")
+    """
+
+    @staticmethod
+    def save(
+        bot: DarwinBot,
+        pkl_path: str,
+        meta_path: str,
+        extra: Optional[Dict] = None,
+    ) -> None:
+        """Persist champion bot to .pkl and metadata to .json."""
+        import pickle
+        import json
+        from datetime import datetime, timezone
+
+        pkl_path_obj = Path(pkl_path)
+        pkl_path_obj.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            with open(pkl_path_obj, "wb") as f:
+                pickle.dump(bot, f, protocol=pickle.HIGHEST_PROTOCOL)
+        except Exception as exc:
+            logger.warning(f"ChampionPersistence.save: pickle failed: {exc}")
+            return
+
+        meta: Dict = {
+            "name": bot.name,
+            "strategy_type": type(bot).__name__,
+            "fee_rate": bot.fee_rate,
+            "slippage_rate": bot.slippage_rate,
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+            "pkl_path": str(pkl_path_obj),
+        }
+
+        # Attach strategy-specific params
+        for attr in (
+            "rsi_period",
+            "rsi_lower",
+            "rsi_upper",
+            "fast_period",
+            "slow_period",
+            "signal_period",
+            "period",
+            "num_std",
+            "mode",
+        ):
+            if hasattr(bot, attr):
+                meta[attr] = getattr(bot, attr)
+
+        if extra:
+            meta.update(extra)
+
+        try:
+            with open(Path(meta_path), "w", encoding="utf-8") as f:
+                json.dump(meta, f, indent=2, default=str)
+            logger.debug(f"Champion saved: {pkl_path_obj}")
+        except Exception as exc:
+            logger.warning(f"ChampionPersistence.save: JSON write failed: {exc}")
+
+    @staticmethod
+    def load(pkl_path: str, meta_path: Optional[str] = None) -> Optional[DarwinBot]:
+        """
+        Load champion from .pkl file.
+
+        Returns None if file does not exist or unpickling fails.
+        """
+        import pickle
+        import json
+
+        pkl_path_obj = Path(pkl_path)
+        if not pkl_path_obj.exists():
+            return None
+
+        try:
+            with open(pkl_path_obj, "rb") as f:
+                bot = pickle.load(f)
+
+            # Print metadata if available
+            if meta_path and Path(meta_path).exists():
+                with open(Path(meta_path), "r", encoding="utf-8") as mf:
+                    meta = json.load(mf)
+                logger.info(
+                    f"ChampionPersistence: Loaded '{meta.get('name')}' "
+                    f"(type={meta.get('strategy_type')}, "
+                    f"saved_at={meta.get('saved_at', 'unknown')})"
+                )
+
+            return bot  # type: ignore[return-value]
+        except Exception as exc:
+            logger.warning(f"ChampionPersistence.load failed: {exc}")
+            return None
+
+    @staticmethod
+    def print_meta(meta_path: str) -> None:
+        """Print metadata of saved champion."""
+        import json
+
+        mp = Path(meta_path)
+        if not mp.exists():
+            print(f"No metadata found at {meta_path}")
+            return
+        with open(mp, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+        print(f"\n{'=' * 60}")
+        print("  SAVED CHAMPION METADATA")
+        print(f"{'=' * 60}")
+        for k, v in meta.items():
+            print(f"  {k:<24}: {v}")
+        print(f"{'=' * 60}\n")
+
+
+# ============================================================================
+# 14. MULTIVERSE COLAB ENTRY POINT
+# ============================================================================
+
+
+def run_multiverse(
+    symbol: str = "BTC/USDT",
+    timeframe: str = "1h",
+    n_bars: int = 2000,
+    generations: int = 15,
+    pop_size: int = 20,
+    n_mc_scenarios: int = 50,
+    max_dd_threshold: float = 0.20,
+    auto_load_champion: bool = True,
+    save_dir: str = "data/cache",
+    exchange_id: str = "binance",
+    seed: int = 42,
+) -> Optional[DarwinBot]:
+    """
+    One-call Multiverse Evolution entry point for Colab / scripts.
+
+    Pipeline:
+        1. Load real Binance data (fallback: synthetic GBM)
+        2. ScenarioGenerator: 5 deterministic + n_mc_scenarios*3 MC timelines
+        3. MultiverseArena evolution (bots that fail ANY scenario are eliminated)
+        4. Champion saved to disk automatically
+        5. Returns the Multiverse Champion
+
+    Parameters
+    ----------
+    symbol            : Trading pair (e.g. "BTC/USDT")
+    timeframe         : Bar timeframe (e.g. "1h")
+    n_bars            : Number of bars for base dataset
+    generations       : Evolution generations (more = better, slower)
+    pop_size          : Population size per generation
+    n_mc_scenarios    : Monte Carlo timelines per regime (bull/bear/chop each)
+    max_dd_threshold  : Max DD in any scenario -> immediate elimination (0.20 = 20%)
+    auto_load_champion: If True and a saved champion exists, skip evolution
+    save_dir          : Directory for champion persistence files
+    exchange_id       : CCXT exchange id
+    seed              : Random seed for reproducibility
+
+    Returns
+    -------
+    DarwinBot  The Multiverse Champion, or None if evolution produced no survivor.
+    """
+    print("=" * 70)
+    print("  MULTIVERSE EVOLUTION ENGINE")
+    print(
+        f"  {n_mc_scenarios * 3 + 5} Scenarios  |  {generations} Generations  |  Pop={pop_size}"
+    )
+    print("=" * 70)
+
+    # --- 1. Load data ---
+    cache_file = (
+        Path(save_dir)
+        / f"{exchange_id}_{symbol.replace('/', '_')}_{timeframe}_{n_bars}.parquet"
+    )
+    print(f"\n[1/3] Loading data: {symbol} {timeframe} x{n_bars} bars ...")
+    try:
+        df = load_live_data(
+            symbol=symbol,
+            timeframe=timeframe,
+            limit=n_bars,
+            exchange_id=exchange_id,
+            cache_path=cache_file,
+        )
+        print(
+            f"      {len(df)} bars loaded | {df.index[0].date()} -> {df.index[-1].date()}"
+        )
+    except Exception as exc:
+        print(f"      Live fetch failed ({exc}). Using synthetic data.")
+        df = generate_synthetic_btc(n_bars=n_bars, seed=seed)
+
+    # --- 2. Configure Multiverse Arena ---
+    mv_cfg = MultiverseArenaConfig(
+        generations=generations,
+        pop_size=pop_size,
+        n_mc_scenarios=n_mc_scenarios,
+        max_dd_threshold=max_dd_threshold,
+        auto_load_champion=auto_load_champion,
+        champion_save_path=str(Path(save_dir) / "multiverse_champion.pkl"),
+        metadata_save_path=str(Path(save_dir) / "multiverse_champion_meta.json"),
+        seed=seed,
+    )
+
+    print(f"\n[2/3] Running MultiverseArena ...")
+    print(f"      Scenarios: 5 deterministic + {n_mc_scenarios * 3} Monte Carlo")
+    print(f"      Elimination threshold: DD > {max_dd_threshold:.0%} in ANY scenario")
+
+    arena = MultiverseArena(data=df, config=mv_cfg, verbose=True)
+    champion = arena.run()
+
+    if champion is None:
+        print(
+            "\n  No champion survived all scenarios. Increase generations or relax max_dd_threshold."
+        )
+        return None
+
+    # --- 3. Summary ---
+    print(f"\n[3/3] Multiverse Champion: {champion.name}")
+    arena.print_leaderboard(top_n=5)
+
+    if arena.champion_mv_stats:
+        ms = arena.champion_mv_stats
+        print(f"\n  Multiverse Score  : {ms.multiverse_score:.4f}")
+        print(
+            f"  Survival Rate     : {ms.survival_rate:.1%}  ({ms.scenarios_survived}/{ms.scenarios_tested} scenarios)"
+        )
+        print(f"  Worst Drawdown    : {ms.worst_drawdown:.2%}  (across all scenarios)")
+        print(f"  Avg Return        : {ms.avg_return:.2%}")
+        print(f"  Avg Sharpe        : {ms.avg_sharpe:.2f}")
+
+    meta_path = str(Path(save_dir) / "multiverse_champion_meta.json")
+    ChampionPersistence.print_meta(meta_path)
+
+    print("=" * 70)
+    print(f"  Champion persisted to: {save_dir}/multiverse_champion.pkl")
+    print("=" * 70)
+    return champion
+
+
+# ============================================================================
 # 8. STANDALONE ENTRY POINT
 # ============================================================================
 
