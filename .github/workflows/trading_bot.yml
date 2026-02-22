@@ -1,0 +1,112 @@
+name: BITCOIN4Traders - Stündlicher Signal-Check
+
+# ============================================================
+# Cron: Läuft jede Stunde automatisch (GitHub Actions)
+# Aufgabe: Champion laden -> Signal berechnen -> Telegram
+# Redundanz: Schreibt Heartbeat damit Colab weiss ob GH lebt
+# ============================================================
+
+on:
+  schedule:
+    - cron: "0 * * * *"   # Jede Stunde zur vollen Stunde (UTC)
+  workflow_dispatch:        # Manueller Start über GitHub UI jederzeit möglich
+
+jobs:
+  signal_check:
+    name: Signal-Check & Heartbeat
+    runs-on: ubuntu-latest
+    timeout-minutes: 15     # Sicherheitslimit - verhindert hängende Jobs
+
+    env:
+      # Telegram Credentials (in GitHub Secrets hinterlegen)
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+      # Binance API (optional - public endpoints funktionieren ohne Keys)
+      BINANCE_API_KEY:    ${{ secrets.BINANCE_API_KEY }}
+      BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
+      # GitHub Actions Marker (wird von detect_environment() ausgelesen)
+      GITHUB_ACTIONS: "true"
+
+    steps:
+      # ----------------------------------------------------------
+      # 1. Repository auschecken
+      # ----------------------------------------------------------
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      # ----------------------------------------------------------
+      # 2. Python einrichten
+      # ----------------------------------------------------------
+      - name: Python 3.11 einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      # ----------------------------------------------------------
+      # 3. Dependencies installieren (nur was für Signal-Check nötig)
+      # ----------------------------------------------------------
+      - name: Dependencies installieren
+        run: |
+          pip install --quiet --upgrade pip
+          pip install --quiet \
+            numpy pandas ccxt pyarrow numba joblib tqdm loguru
+
+      # ----------------------------------------------------------
+      # 4. Champion aus Cache laden (aus vorherigem Workflow-Run)
+      # ----------------------------------------------------------
+      - name: Champion-Cache laden
+        uses: actions/cache@v4
+        with:
+          path: data/cache/
+          key: champion-cache-${{ runner.os }}
+          restore-keys: |
+            champion-cache-
+
+      # ----------------------------------------------------------
+      # 5. Signal-Check ausführen (hybrid_main -> GITHUB Pfad)
+      # ----------------------------------------------------------
+      - name: Signal-Check ausführen
+        run: |
+          python3 - <<'EOF'
+          import sys
+          sys.path.insert(0, ".")
+
+          from darwin_engine import hybrid_main, detect_environment
+
+          env = detect_environment()
+          print(f"Umgebung erkannt: {env}")
+
+          hybrid_main(
+              symbol="BTC/USDT",
+              timeframe="1h",
+              n_bars=200,           # Nur letzte 200 Bars für schnellen Check
+              save_dir="data/cache",
+              heartbeat_path="data/cache/heartbeat.txt",
+          )
+          EOF
+
+      # ----------------------------------------------------------
+      # 6. Heartbeat + Champion-Cache zurückspeichern
+      # ----------------------------------------------------------
+      - name: Champion-Cache speichern
+        uses: actions/cache/save@v4
+        if: always()   # Auch bei Fehlern speichern
+        with:
+          path: data/cache/
+          key: champion-cache-${{ runner.os }}-${{ github.run_id }}
+
+      # ----------------------------------------------------------
+      # 7. Status-Zusammenfassung
+      # ----------------------------------------------------------
+      - name: Status ausgeben
+        if: always()
+        run: |
+          echo "========================================"
+          echo "  BITCOIN4Traders Signal-Check beendet"
+          echo "  Zeit: $(date -u '+%Y-%m-%d %H:%M UTC')"
+          echo "  Run:  ${{ github.run_number }}"
+          echo "========================================"
+          if [ -f data/cache/heartbeat.txt ]; then
+            echo "  Heartbeat: $(cat data/cache/heartbeat.txt)"
+          fi

@@ -3278,6 +3278,520 @@ def run_multiverse(
 
 
 # ============================================================================
+# 15. ENVIRONMENT DETECTOR
+# ============================================================================
+
+
+def detect_environment() -> str:
+    """
+    Detect the runtime environment automatically.
+
+    Returns
+    -------
+    str
+        "COLAB"   - running inside Google Colab
+        "GITHUB"  - running inside a GitHub Actions workflow
+        "LOCAL"   - any other environment (developer machine, server)
+
+    Detection logic:
+        COLAB  : 'google.colab' present in sys.modules
+        GITHUB : environment variable GITHUB_ACTIONS == 'true'
+        LOCAL  : fallback
+    """
+    import sys as _sys
+
+    if "google.colab" in _sys.modules:
+        return "COLAB"
+    if os.getenv("GITHUB_ACTIONS", "").lower() == "true":
+        return "GITHUB"
+    return "LOCAL"
+
+
+# ============================================================================
+# 16. TELEGRAM NOTIFIER
+# ============================================================================
+
+
+class TelegramNotifier:
+    """
+    Lightweight synchronous Telegram notifier.
+
+    Sends messages via the Telegram Bot API (HTTP POST).
+    All network errors are caught and logged - never raises.
+
+    Parameters
+    ----------
+    token   : Bot token from @BotFather  (or env var TELEGRAM_BOT_TOKEN)
+    chat_id : Target chat/channel ID     (or env var TELEGRAM_CHAT_ID)
+
+    Usage
+    -----
+        notifier = TelegramNotifier.from_env()
+        notifier.send("Champion gewechselt: RSI_p14")
+        notifier.send_signal("RSI_p14", signal=1, price=45000.0)
+    """
+
+    _API = "https://api.telegram.org/bot{token}/sendMessage"
+
+    def __init__(self, token: str, chat_id: str):
+        self.token = token
+        self.chat_id = str(chat_id)
+        self._enabled = bool(token and chat_id)
+
+    @classmethod
+    def from_env(cls) -> "TelegramNotifier":
+        """Build from TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID env vars."""
+        token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+        chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+        if not (token and chat_id):
+            logger.warning(
+                "TelegramNotifier: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set. "
+                "Notifications disabled. Set env vars to enable."
+            )
+        return cls(token=token, chat_id=chat_id)
+
+    def send(self, message: str) -> bool:
+        """
+        Send a plain text message. Returns True on success, False on failure.
+        Never raises.
+        """
+        if not self._enabled:
+            logger.debug(f"[Telegram disabled] {message}")
+            return False
+        try:
+            import urllib.request
+            import urllib.parse
+
+            url = self._API.format(token=self.token)
+            data = urllib.parse.urlencode(
+                {"chat_id": self.chat_id, "text": message, "parse_mode": "HTML"}
+            ).encode()
+            req = urllib.request.Request(url, data=data, method="POST")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                ok = resp.status == 200
+            if ok:
+                logger.debug(f"Telegram sent: {message[:60]}")
+            return ok
+        except Exception as exc:
+            logger.warning(f"TelegramNotifier.send failed: {exc}")
+            return False
+
+    def send_signal(
+        self,
+        champion_name: str,
+        signal: int,
+        price: float,
+        environment: str = "",
+    ) -> bool:
+        """Send a formatted trading signal notification."""
+        direction = {1: "LONG", -1: "SHORT", 0: "FLAT"}.get(signal, "UNKNOWN")
+        env_tag = f" [{environment}]" if environment else ""
+        msg = (
+            f"<b>BITCOIN4Traders Signal{env_tag}</b>\n"
+            f"Champion : {champion_name}\n"
+            f"Signal   : {direction}\n"
+            f"Preis    : ${price:,.2f}\n"
+            f"Zeit     : {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M UTC')}"
+        )
+        return self.send(msg)
+
+    def send_champion_update(
+        self,
+        champion_name: str,
+        mv_score: float,
+        survival_rate: float,
+        worst_dd: float,
+    ) -> bool:
+        """Notify when a new better champion is found during evolution."""
+        msg = (
+            f"<b>Neuer Multiverse Champion</b>\n"
+            f"Name          : {champion_name}\n"
+            f"MV-Score      : {mv_score:.4f}\n"
+            f"Survival-Rate : {survival_rate:.1%}\n"
+            f"Worst DD      : {worst_dd:.2%}\n"
+            f"Gespeichert   : {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M UTC')}"
+        )
+        return self.send(msg)
+
+    def send_alert(self, title: str, message: str) -> bool:
+        """Send a warning/alert message."""
+        msg = f"<b>WARNUNG: {title}</b>\n{message}"
+        return self.send(msg)
+
+
+def send_telegram_msg(message: str) -> bool:
+    """
+    Module-level convenience function.
+    Reads token + chat_id from environment variables automatically.
+    """
+    return TelegramNotifier.from_env().send(message)
+
+
+# ============================================================================
+# 17. HEARTBEAT SYSTEM
+# ============================================================================
+
+
+class HeartbeatSystem:
+    """
+    Filesystem-based heartbeat for High Availability / Redundancy monitoring.
+
+    The active system writes a timestamp to heartbeat.txt on every run.
+    The backup system checks this file and raises an alert if the timestamp
+    is older than `max_age_minutes`.
+
+    File format: ISO 8601 UTC timestamp string (e.g. "2026-02-22T14:30:00+00:00")
+
+    Parameters
+    ----------
+    path            : Path to heartbeat file (default: "data/cache/heartbeat.txt")
+    max_age_minutes : Alert threshold in minutes (default: 90)
+    notifier        : Optional TelegramNotifier for alerts
+    """
+
+    def __init__(
+        self,
+        path: str = "data/cache/heartbeat.txt",
+        max_age_minutes: int = 90,
+        notifier: Optional["TelegramNotifier"] = None,
+    ):
+        self.path = Path(path)
+        self.max_age_minutes = max_age_minutes
+        self.notifier = notifier or TelegramNotifier.from_env()
+
+    def write(self, environment: str = "") -> None:
+        """Write current UTC timestamp to heartbeat file."""
+        from datetime import datetime, timezone
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(timezone.utc).isoformat()
+        env_tag = f" [{environment}]" if environment else ""
+        try:
+            self.path.write_text(f"{ts}{env_tag}", encoding="utf-8")
+            logger.debug(f"Heartbeat written: {ts}{env_tag}")
+        except Exception as exc:
+            logger.warning(f"HeartbeatSystem.write failed: {exc}")
+
+    def read(self) -> Optional[pd.Timestamp]:
+        """Read last heartbeat timestamp. Returns None if file missing or corrupt."""
+        if not self.path.exists():
+            return None
+        try:
+            content = self.path.read_text(encoding="utf-8").strip()
+            # Strip optional [ENV] tag
+            ts_str = content.split(" [")[0]
+            return pd.Timestamp(ts_str)
+        except Exception as exc:
+            logger.warning(f"HeartbeatSystem.read failed: {exc}")
+            return None
+
+    def age_minutes(self) -> Optional[float]:
+        """Return age of last heartbeat in minutes. None if no heartbeat exists."""
+        last = self.read()
+        if last is None:
+            return None
+        now = pd.Timestamp.now(tz="UTC")
+        if last.tzinfo is None:
+            last = last.tz_localize("UTC")
+        return (now - last).total_seconds() / 60.0
+
+    def check(self) -> str:
+        """
+        Check heartbeat health.
+
+        Returns
+        -------
+        str
+            "OK"   - heartbeat is fresh (age < max_age_minutes)
+            "WARN" - heartbeat is stale (age >= max_age_minutes) -> alert sent
+            "INIT" - no heartbeat file found yet (first run)
+        """
+        age = self.age_minutes()
+
+        if age is None:
+            logger.info("HeartbeatSystem: No heartbeat file found (INIT).")
+            return "INIT"
+
+        if age >= self.max_age_minutes:
+            msg = (
+                f"REDUNDANZ-WARNUNG: Letzter Heartbeat vor {age:.0f} Min. "
+                f"(Limit: {self.max_age_minutes} Min.). "
+                f"GitHub Actions moeglicherweise ausgefallen. Colab uebernimmt!"
+            )
+            logger.warning(msg)
+            self.notifier.send_alert("Heartbeat ausgefallen", msg)
+            return "WARN"
+
+        logger.debug(f"HeartbeatSystem: OK (age={age:.1f} min)")
+        return "OK"
+
+
+# ============================================================================
+# 18. REDUNDANCY HEALTH CHECK
+# ============================================================================
+
+
+def check_redundancy_health(
+    heartbeat_path: str = "data/cache/heartbeat.txt",
+    max_age_minutes: int = 90,
+    notifier: Optional["TelegramNotifier"] = None,
+) -> str:
+    """
+    Check system redundancy health via heartbeat file.
+
+    - Reads last heartbeat timestamp
+    - If older than max_age_minutes: sends Telegram alert, returns "WARN"
+    - If file missing: returns "INIT" (first run, no problem)
+    - If fresh: returns "OK"
+
+    Parameters
+    ----------
+    heartbeat_path  : Path to heartbeat.txt
+    max_age_minutes : Age threshold for WARN (default: 90 minutes)
+    notifier        : TelegramNotifier (auto-built from env if None)
+
+    Returns
+    -------
+    str  "OK" | "WARN" | "INIT"
+    """
+    hb = HeartbeatSystem(
+        path=heartbeat_path,
+        max_age_minutes=max_age_minutes,
+        notifier=notifier or TelegramNotifier.from_env(),
+    )
+    return hb.check()
+
+
+# ============================================================================
+# 19. KEEP-ALIVE FOR COLAB
+# ============================================================================
+
+
+def keep_colab_alive(drive_path: str = "/content/drive/MyDrive/keep_alive.txt") -> None:
+    """
+    Prevent Colab session timeout by writing a timestamp to Google Drive.
+
+    Call this inside long-running loops (e.g. every 5 generations of evolution).
+    Writing to Drive simulates user activity and prevents the idle-timeout.
+
+    Parameters
+    ----------
+    drive_path : Path on mounted Google Drive (default standard Drive mount)
+    """
+    import time
+
+    try:
+        drive_dir = Path(drive_path).parent
+        drive_dir.mkdir(parents=True, exist_ok=True)
+        Path(drive_path).write_text(
+            f"{time.time():.0f} | {pd.Timestamp.now().isoformat()}", encoding="utf-8"
+        )
+        logger.debug(f"Colab keep-alive written: {drive_path}")
+    except Exception as exc:
+        logger.debug(f"keep_colab_alive: {exc} (Drive not mounted? Skipping.)")
+
+
+# ============================================================================
+# 20. HYBRID MAIN - ENVIRONMENT-AWARE TASK DISTRIBUTION
+# ============================================================================
+
+
+def hybrid_main(
+    symbol: str = "BTC/USDT",
+    timeframe: str = "1h",
+    n_bars: int = 2000,
+    # Evolution params (COLAB task)
+    generations: int = 15,
+    pop_size: int = 20,
+    n_mc_scenarios: int = 50,
+    max_dd_threshold: float = 0.20,
+    # Paths
+    save_dir: str = "data/cache",
+    heartbeat_path: str = "data/cache/heartbeat.txt",
+    drive_keep_alive_path: str = "/content/drive/MyDrive/keep_alive.txt",
+    # Telegram
+    telegram_token: str = "",
+    telegram_chat_id: str = "",
+    seed: int = 42,
+) -> Optional[DarwinBot]:
+    """
+    Environment-aware hybrid entry point.
+
+    Detects the runtime environment and assigns the appropriate task:
+
+    GITHUB Actions  -> stündlicher Wächter
+        1. Lade gespeicherten Champion (.pkl)
+        2. Lade neue Marktdaten
+        3. Generiere Signal
+        4. Sende Signal via Telegram
+        5. Schreibe Heartbeat
+        6. Prüfe Redundanz-Health
+
+    COLAB / LOCAL   -> Hochleistungs-Labor
+        1. Lade echte Daten (Binance) oder synthetisch
+        2. Führe vollständige Multiversum-Evolution durch
+        3. Speichere Champion auf Drive / Disk
+        4. Sende Telegram-Update
+        5. Schreibe Heartbeat
+
+    Parameters
+    ----------
+    All params forwarded to run_multiverse() for COLAB/LOCAL path.
+    telegram_token / telegram_chat_id override env vars if provided.
+    """
+    env = detect_environment()
+    logger.info(f"Standort-Analyse: System laeuft auf {env}")
+    print(f"\n{'=' * 64}")
+    print(f"  BITCOIN4Traders - Hybrid Main")
+    print(f"  Umgebung: {env}")
+    print(f"{'=' * 64}\n")
+
+    # --- Telegram setup ---
+    if telegram_token and telegram_chat_id:
+        notifier = TelegramNotifier(token=telegram_token, chat_id=telegram_chat_id)
+    else:
+        notifier = TelegramNotifier.from_env()
+
+    # --- Heartbeat system ---
+    hb = HeartbeatSystem(
+        path=heartbeat_path,
+        max_age_minutes=90,
+        notifier=notifier,
+    )
+
+    # ------------------------------------------------------------------
+    # GITHUB ACTIONS: stündlicher Wächter
+    # ------------------------------------------------------------------
+    if env == "GITHUB":
+        logger.info("GitHub Actions: Fuehre stündlichen Signal-Check aus...")
+
+        # 1. Redundanz-Health prüfen (hat Colab zuletzt gearbeitet?)
+        health = hb.check()
+        if health == "WARN":
+            logger.warning("GitHub: Heartbeat veraltet! Fahre trotzdem fort.")
+
+        # 2. Champion laden
+        champ_path = str(Path(save_dir) / "multiverse_champion.pkl")
+        meta_path = str(Path(save_dir) / "multiverse_champion_meta.json")
+        champion = ChampionPersistence.load(champ_path, meta_path)
+
+        if champion is None:
+            msg = "Kein gespeicherter Champion gefunden. Bitte zuerst COLAB Evolution ausfuehren."
+            logger.warning(msg)
+            notifier.send_alert("Kein Champion", msg)
+            hb.write(env)
+            return None
+
+        # 3. Neue Marktdaten laden
+        try:
+            df = load_live_data(
+                symbol=symbol, timeframe=timeframe, limit=100, exchange_id="binance"
+            )
+        except Exception as exc:
+            logger.warning(f"Live data fetch failed: {exc}. Using last cached data.")
+            cache_file = (
+                Path(save_dir)
+                / f"binance_{symbol.replace('/', '_')}_{timeframe}_{n_bars}.parquet"
+            )
+            if cache_file.exists():
+                df = pd.read_parquet(cache_file)
+            else:
+                notifier.send_alert("Datenfehler", f"Keine Daten verfügbar: {exc}")
+                hb.write(env)
+                return champion
+
+        # 4. Signal berechnen
+        closes = df["close"].values.astype(np.float64)
+        signals = champion.compute_signals(closes)
+        last_signal = int(signals[-1]) if len(signals) > 0 else 0
+        last_price = float(closes[-1])
+
+        logger.info(
+            f"Signal: {last_signal} | Preis: ${last_price:,.2f} | Champion: {champion.name}"
+        )
+
+        # 5. Telegram-Benachrichtigung
+        notifier.send_signal(
+            champion_name=champion.name,
+            signal=last_signal,
+            price=last_price,
+            environment=env,
+        )
+
+        # 6. Heartbeat schreiben
+        hb.write(env)
+        logger.info("GitHub Actions: Signal-Check abgeschlossen.")
+        return champion
+
+    # ------------------------------------------------------------------
+    # COLAB / LOCAL: Hochleistungs-Labor
+    # ------------------------------------------------------------------
+    else:
+        logger.info(f"{env}: Starte Multiversum-Evolution und Stress-Tests...")
+
+        # Redundanz-Check: läuft GitHub noch?
+        health = check_redundancy_health(
+            heartbeat_path=heartbeat_path,
+            max_age_minutes=120,
+            notifier=notifier,
+        )
+
+        # Keep-alive Thread für Colab
+        if env == "COLAB":
+            keep_colab_alive(drive_keep_alive_path)
+
+        # Multiversum-Evolution
+        champion = run_multiverse(
+            symbol=symbol,
+            timeframe=timeframe,
+            n_bars=n_bars,
+            generations=generations,
+            pop_size=pop_size,
+            n_mc_scenarios=n_mc_scenarios,
+            max_dd_threshold=max_dd_threshold,
+            auto_load_champion=False,  # Im Labor immer frisch neu trainieren
+            save_dir=save_dir,
+            exchange_id="binance",
+            seed=seed,
+        )
+
+        if champion is not None:
+            # Telegram-Benachrichtigung
+            mv_score = 0.0
+            survival = 0.0
+            worst_dd = 0.0
+
+            # Versuche Metadaten aus gespeicherter JSON zu lesen
+            try:
+                import json as _json
+
+                meta_p = Path(save_dir) / "multiverse_champion_meta.json"
+                if meta_p.exists():
+                    with open(meta_p) as _mf:
+                        _meta = _json.load(_mf)
+                    mv_score = float(_meta.get("mv_score", 0))
+                    survival = float(_meta.get("survival_rate", 0))
+                    worst_dd = float(_meta.get("worst_dd", 0))
+            except Exception:
+                pass
+
+            notifier.send_champion_update(
+                champion_name=champion.name,
+                mv_score=mv_score,
+                survival_rate=survival,
+                worst_dd=worst_dd,
+            )
+
+            if env == "COLAB":
+                keep_colab_alive(drive_keep_alive_path)
+
+        # Heartbeat schreiben
+        hb.write(env)
+        logger.info(f"{env}: Evolution abgeschlossen. Heartbeat geschrieben.")
+        return champion
+
+
+# ============================================================================
 # 8. STANDALONE ENTRY POINT
 # ============================================================================
 
