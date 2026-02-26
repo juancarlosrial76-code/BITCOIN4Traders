@@ -48,11 +48,14 @@ data/cache/*.csv
 
 # Models & Checkpoints (gross, nicht ins Repo)
 *.pth
-*.pt
 *.pkl
 *.pickle
 checkpoints/
 models/
+
+# Ausnahmen: Diese Modell-Dateien WERDEN getrackt (Ergebnis aus Colab-Training)
+!data/models/ppo_best.pt
+!data/models/champion.json
 
 # Logs
 logs/
