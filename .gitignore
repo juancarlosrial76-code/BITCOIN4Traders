@@ -35,14 +35,18 @@ ENV/
 # Jupyter Notebook
 .ipynb_checkpoints
 
-# Data (nur Root-Level data/, nicht src/data/)
-/data/
-*.csv
-*.parquet
+# Data: Unterordner selektiv ignorieren
+# data/cache/ ist NICHT ignoriert - Rohdaten werden getrackt
+data/processed/
+data/models/
+data/sqlite/
+data/cache/multiverse_champion*
+data/cache/*.pkl
+data/cache/*.csv
 *.h5
 *.hdf5
 
-# Models & Checkpoints
+# Models & Checkpoints (gross, nicht ins Repo)
 *.pth
 *.pt
 *.pkl
