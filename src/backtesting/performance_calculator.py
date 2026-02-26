@@ -130,32 +130,44 @@ class PerformanceCalculator:
         # Return metrics
         total_return = (equity.iloc[-1] - equity.iloc[0]) / equity.iloc[0]
 
-        years = (equity.index[-1] - equity.index[0]).days / 365.25
-        cagr = (1 + total_return) ** (1 / years) - 1 if years > 0 else 0.0
+        years = (
+            equity.index[-1] - equity.index[0]
+        ).days / 365.25  # fractional years elapsed
+        cagr = (
+            (1 + total_return) ** (1 / years) - 1 if years > 0 else 0.0
+        )  # compound annual growth rate
 
-        monthly_return = cagr / 12
+        monthly_return = cagr / 12  # approximate monthly return from CAGR
 
         # Risk metrics
-        volatility = returns.std() * np.sqrt(252)
+        volatility = returns.std() * np.sqrt(252)  # annualised daily volatility
 
         negative_returns = returns[returns < 0]
         downside_deviation = (
-            negative_returns.std() * np.sqrt(252) if len(negative_returns) > 0 else 0.0
+            negative_returns.std() * np.sqrt(252)
+            if len(negative_returns) > 0
+            else 0.0  # annualised downside vol
         )
 
-        var_95 = np.percentile(returns, 5)
-        cvar_95 = returns[returns <= var_95].mean()
+        var_95 = np.percentile(returns, 5)  # 5th percentile = 95% VaR (daily)
+        cvar_95 = returns[
+            returns <= var_95
+        ].mean()  # expected loss beyond VaR (tail average)
 
         # Risk-adjusted metrics
-        excess_returns = returns - self.risk_free_rate / 252
+        excess_returns = (
+            returns - self.risk_free_rate / 252
+        )  # daily risk-free rate deducted
         sharpe_ratio = (
-            (excess_returns.mean() / returns.std() * np.sqrt(252))
+            (excess_returns.mean() / returns.std() * np.sqrt(252))  # annualised Sharpe
             if returns.std() > 0
             else 0.0
         )
 
         sortino_ratio = (
-            (excess_returns.mean() / downside_deviation * np.sqrt(252))
+            (
+                excess_returns.mean() / downside_deviation * np.sqrt(252)
+            )  # only penalises downside vol
             if downside_deviation > 0
             else 0.0
         )
@@ -164,7 +176,8 @@ class PerformanceCalculator:
         dd_metrics = self._calculate_drawdown_metrics(equity)
 
         calmar_ratio = (
-            cagr / abs(dd_metrics["max_drawdown"])
+            cagr
+            / abs(dd_metrics["max_drawdown"])  # CAGR divided by max drawdown magnitude
             if dd_metrics["max_drawdown"] < 0
             else 0.0
         )

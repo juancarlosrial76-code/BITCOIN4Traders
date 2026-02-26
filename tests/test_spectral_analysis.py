@@ -26,7 +26,7 @@ class TestSpectralAnalyzer:
         """Test FFT computation."""
         np.random.seed(42)
 
-        # Create signal with known frequency
+        # Create signal with known frequency (0.1 cycles per sample)
         t = np.linspace(0, 4 * np.pi, 1000)
         signal = np.sin(2 * np.pi * 0.1 * t) + np.random.randn(1000) * 0.1
 
@@ -34,14 +34,14 @@ class TestSpectralAnalyzer:
         freqs, power = analyzer.compute_fft(signal)
 
         assert len(freqs) == len(power), "Frequencies and power should match"
-        assert len(freqs) == 500, "Should have half length (positive frequencies)"
-        assert np.all(power >= 0), "Power should be non-negative"
+        assert len(freqs) == 500, "Should have half length (positive frequencies only)"
+        assert np.all(power >= 0), "Power spectral density must be non-negative"
 
     def test_find_dominant_cycles(self):
         """Test dominant cycle detection."""
         np.random.seed(42)
 
-        # Create signal with 20-period cycle
+        # Create signal with 20-period cycle (well above noise floor)
         t = np.arange(500)
         prices = 100 + 10 * np.sin(2 * np.pi * t / 20) + np.random.randn(500) * 0.5
 
@@ -50,7 +50,7 @@ class TestSpectralAnalyzer:
 
         assert len(cycles) > 0, "Should find at least one cycle"
 
-        # Check if 20-period cycle is found (with tolerance)
+        # Check if 20-period cycle is found (with ±5 tolerance)
         periods = [c["period"] for c in cycles]
         found_20 = any(15 <= p <= 25 for p in periods)
         assert found_20, f"Should find ~20 period cycle, got {periods}"
@@ -59,7 +59,7 @@ class TestSpectralAnalyzer:
         """Test lowpass filtering."""
         np.random.seed(42)
 
-        # Create noisy trend
+        # Create noisy trend (high-frequency noise on top of slow drift)
         trend = np.cumsum(np.ones(200) * 0.1)
         noise = np.random.randn(200) * 5
         signal = trend + noise
@@ -67,14 +67,14 @@ class TestSpectralAnalyzer:
         analyzer = SpectralAnalyzer()
         filtered = analyzer.spectral_filter(signal, filter_type="lowpass", cutoff=0.1)
 
-        # Filtered should be smoother (less variance)
+        # Filtered should be smoother (less variance) — noise was attenuated
         assert np.std(filtered) < np.std(signal), "Filtered should have less variance"
 
     def test_extract_trend(self):
         """Test trend extraction."""
         np.random.seed(42)
 
-        # Create trending series
+        # Create trending series with noise
         trend = np.linspace(100, 200, 500)
         noise = np.random.randn(500) * 5
         prices = trend + noise
@@ -82,7 +82,7 @@ class TestSpectralAnalyzer:
         analyzer = SpectralAnalyzer()
         extracted_trend = analyzer.extract_trend(prices, smoothness=0.95)
 
-        # Extracted trend should correlate with true trend
+        # Extracted trend should correlate strongly with the true linear trend
         correlation = np.corrcoef(extracted_trend, trend)[0, 1]
         assert correlation > 0.9, f"Trend correlation should be high, got {correlation}"
 
@@ -96,7 +96,7 @@ class TestSpectralAnalyzer:
         analyzer = SpectralAnalyzer()
         composite = analyzer.cycle_composite(prices, cycles=[10, 20], lookahead=10)
 
-        assert len(composite) == len(prices) + 10, "Should include lookahead"
+        assert len(composite) == len(prices) + 10, "Should include lookahead bars"
         assert isinstance(composite, np.ndarray), "Should return numpy array"
 
 
@@ -107,7 +107,7 @@ class TestHilbertTransform:
         """Test Hilbert transform computation."""
         np.random.seed(42)
 
-        # Create signal
+        # Create signal with known periodicity
         t = np.arange(100)
         signal = np.sin(2 * np.pi * t / 20) + np.random.randn(100) * 0.1
 
@@ -123,14 +123,14 @@ class TestHilbertTransform:
         """Test instantaneous period detection."""
         np.random.seed(42)
 
-        # Create 20-period cycle
+        # Create pure 20-period cycle (no noise for easy detection)
         t = np.arange(200)
         signal = np.sin(2 * np.pi * t / 20)
 
         hilbert = HilbertTransformAnalyzer()
         result = hilbert.compute(signal)
 
-        # Period should be around 20
+        # Median period should be around 20
         median_period = np.median(result["period"])
         assert 15 <= median_period <= 25, f"Period should be ~20, got {median_period}"
 
@@ -143,7 +143,7 @@ class TestHilbertTransform:
         hilbert = HilbertTransformAnalyzer()
         hilbert.compute(signal)
 
-        state = hilbert.get_cycle_state(recent_window=20)
+        state = hilbert.get_cycle_state(recent_window=20)  # Use last 20 bars
 
         assert "dominant_period" in state, "Should have dominant period"
         assert "cycle_strength" in state, "Should have cycle strength"
@@ -159,7 +159,7 @@ class TestAdaptiveCycleIndicator:
 
         assert aci.lookback == 100
         assert aci.adapt_period == 20
-        assert len(aci.cycle_history) == 0
+        assert len(aci.cycle_history) == 0  # No history yet
 
     def test_update_not_enough_data(self):
         """Test update with insufficient data."""
@@ -169,7 +169,7 @@ class TestAdaptiveCycleIndicator:
         for price in range(10):
             result = aci.update(price)
 
-        # Should return neutral signal
+        # Should return neutral signal (not enough data to compute cycle)
         assert result["signal"] == 0
         assert result["confidence"] == 0
 
@@ -179,7 +179,7 @@ class TestAdaptiveCycleIndicator:
 
         aci = AdaptiveCycleIndicator(lookback=100, adapt_period=25)
 
-        # Generate 20-period cycle
+        # Generate 20-period cycle with small noise
         t = np.arange(150)
         prices = 100 + 10 * np.sin(2 * np.pi * t / 20) + np.random.randn(150) * 0.5
 
@@ -201,9 +201,9 @@ class TestSeasonalityAnalyzer:
         np.random.seed(42)
 
         # Create synthetic data with Monday effect
-        dates = pd.date_range("2020-01-01", periods=500, freq="B")
+        dates = pd.date_range("2020-01-01", periods=500, freq="B")  # Business days
         returns = np.random.randn(500) * 0.01
-        returns[dates.dayofweek == 0] += 0.005  # Monday effect
+        returns[dates.dayofweek == 0] += 0.005  # Monday gets higher returns
 
         series = pd.Series(returns, index=dates)
 
@@ -223,7 +223,7 @@ class TestSeasonalityAnalyzer:
         dates = pd.date_range("2015-01-01", periods=2000, freq="B")
         returns = np.random.randn(2000) * 0.01
 
-        # January effect
+        # January effect (higher returns in January)
         january_mask = dates.month == 1
         returns[january_mask] += 0.01
 
@@ -243,7 +243,7 @@ class TestUtilityFunctions:
         """Test dominant cycle computation."""
         np.random.seed(42)
 
-        # Create 30-period cycle
+        # Create 30-period cycle (pure sinusoid for easy detection)
         t = np.arange(300)
         prices = 100 + 10 * np.sin(2 * np.pi * t / 30)
 

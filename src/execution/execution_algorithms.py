@@ -54,7 +54,7 @@ class ExecutionConfig:
     max_participation_rate: float = 0.1  # Max 10% of volume
     min_slice_size: float = 0.001  # Min order size
     max_slice_size: float = 0.1  # Max 10% of parent order
-    price_limit: Optional[float] = None  # Limit price
+    price_limit: Optional[float] = None  # Limit price (None = no limit)
     urgency: float = 0.5  # 0-1 urgency level
     allow_dark_pools: bool = True
     smart_routing: bool = True
@@ -69,16 +69,18 @@ class MarketImpactModel:
     """
 
     def __init__(self):
-        self.eta = 0.142  # Impact coefficient (empirical)
-        self.gamma = 0.5  # Decay rate
-        self.sigma = None  # Volatility
-        self.V = None  # Average daily volume
+        self.eta = 0.142  # Impact coefficient (empirical from historical data)
+        self.gamma = 0.5  # Permanent impact decay rate
+        self.sigma = None  # Annualized price volatility (calibrated from data)
+        self.V = None  # Average daily volume (calibrated from data)
         logger.info("MarketImpactModel initialized")
 
     def calibrate(self, trades: pd.DataFrame):
         """Calibrate model from historical trade data."""
-        self.sigma = trades["price"].pct_change().std() * np.sqrt(252)
-        self.V = trades["volume"].mean()
+        self.sigma = trades["price"].pct_change().std() * np.sqrt(
+            252
+        )  # Annualize daily vol
+        self.V = trades["volume"].mean()  # Average daily volume for normalization
         logger.info(f"Model calibrated: sigma={self.sigma:.4f}, V={self.V:,.0f}")
 
     def calculate_impact(
@@ -91,21 +93,21 @@ class MarketImpactModel:
             (temporary_impact, permanent_impact)
         """
         if self.sigma is None or self.V is None:
-            return 0.0, 0.0
+            return 0.0, 0.0  # Cannot compute without calibrated parameters
 
         # Almgren-Chriss model
         X = order_size  # Order size
         T = order_size / (participation_rate * self.V)  # Execution time in days
 
-        # Temporary impact (linear in rate, sublinear in size)
+        # Temporary impact (linear in rate, sublinear in size via ^0.6 power law)
         temp_impact = (
             self.eta * self.sigma * (X / self.V) ** 0.6 * (participation_rate) ** 0.5
         )
 
-        # Permanent impact (linear in size)
+        # Permanent impact (linear in size – proportional to market footprint)
         perm_impact = self.gamma * self.sigma * (X / self.V)
 
-        # Adjust for urgency
+        # Adjust for urgency – higher urgency amplifies temporary impact
         temp_impact *= 1 + urgency
 
         return temp_impact, perm_impact
@@ -121,15 +123,17 @@ class MarketImpactModel:
         n_slices = min(duration_hours, 24)  # Max 1 slice per hour
 
         if n_slices == 0:
-            return [total_size]
+            return [total_size]  # Execute in a single slice
 
-        # Initialize with equal slices
+        # Initialize with equal slices as baseline
         base_slice = total_size / n_slices
         schedule = [base_slice] * n_slices
 
-        # Adjust based on volume profile
+        # Adjust based on volume profile – trade more when market volume is higher
         if len(volume_profile) > 0:
-            vol_weights = volume_profile / volume_profile.sum()
+            vol_weights = (
+                volume_profile / volume_profile.sum()
+            )  # Normalize to fractions
             for i in range(min(n_slices, len(vol_weights))):
                 schedule[i] = total_size * vol_weights.iloc[i]
 
@@ -156,7 +160,7 @@ class TWAPExecutor:
     ) -> List[OrderSlice]:
         """Generate TWAP execution schedule."""
         n_slices = max(4, self.config.duration_minutes // 15)  # Min 15-min intervals
-        slice_size = total_size / n_slices
+        slice_size = total_size / n_slices  # Equal size per slice
 
         now = datetime.now()
         interval = timedelta(minutes=self.config.duration_minutes / n_slices)
@@ -164,7 +168,7 @@ class TWAPExecutor:
         schedule = []
         for i in range(n_slices):
             slice_order = OrderSlice(
-                timestamp=now + i * interval,
+                timestamp=now + i * interval,  # Spread evenly over duration
                 size=slice_size,
                 side=side,
                 expected_price=current_price,
@@ -184,7 +188,7 @@ class TWAPExecutor:
                 slice_order.timestamp <= current_time
                 and slice_order not in self.completed_slices
             ):
-                return slice_order
+                return slice_order  # First pending slice whose time has arrived
         return None
 
     def mark_completed(self, slice_order: OrderSlice, actual_price: float):
@@ -193,6 +197,7 @@ class TWAPExecutor:
             {
                 "slice": slice_order,
                 "actual_price": actual_price,
+                # Track slippage as fraction of expected price
                 "slippage": (actual_price - slice_order.expected_price)
                 / slice_order.expected_price,
             }
@@ -217,7 +222,7 @@ class VWAPExecutor:
     def _default_volume_profile(self) -> pd.Series:
         """Default intraday volume profile (U-shape)."""
         hours = range(24)
-        # U-shaped volume pattern (higher at open and close)
+        # U-shaped volume pattern (higher at open and close, lower midday)
         profile = [
             0.08,
             0.06,
@@ -257,24 +262,24 @@ class VWAPExecutor:
         if start_time is None:
             start_time = datetime.now()
 
-        # Get volume profile for execution window
+        # Get volume profile for execution window (wrapping around midnight via modulo)
         start_hour = start_time.hour
         hours_needed = max(1, self.config.duration_minutes // 60)
 
         profile_window = []
         for i in range(hours_needed):
-            hour = (start_hour + i) % 24
+            hour = (start_hour + i) % 24  # Wrap around day boundary
             profile_window.append(self.volume_profile.get(hour, 0.04))
 
         profile_window = np.array(profile_window)
-        profile_window = profile_window / profile_window.sum()  # Normalize
+        profile_window = profile_window / profile_window.sum()  # Normalize to sum=1
 
-        # Generate slices
+        # Generate slices proportional to volume weights
         schedule = []
         for i, weight in enumerate(profile_window):
             slice_size = total_size * weight
 
-            # Apply participation rate limit
+            # Apply participation rate limit (can't exceed a fraction of market volume)
             max_slice = total_size * self.config.max_participation_rate
             slice_size = min(slice_size, max_slice)
 
@@ -283,8 +288,8 @@ class VWAPExecutor:
                 size=slice_size,
                 side=side,
                 expected_price=current_price,
-                urgency=self.config.urgency
-                * (1 + weight),  # Higher urgency in high-volume periods
+                # Higher urgency in high-volume periods to ensure execution
+                urgency=self.config.urgency * (1 + weight),
             )
             schedule.append(slice_order)
 
@@ -302,11 +307,12 @@ class VWAPExecutor:
         if len(execution_prices) == 0:
             return 0.0
 
-        our_vwap = np.average(execution_prices)
+        our_vwap = np.average(execution_prices)  # Simple average of our fills
 
-        # Simulate market VWAP (would use actual market data)
+        # Simulate market VWAP (would use actual market data in production)
         market_vwap = our_vwap * (1 + np.random.randn() * 0.0001)
 
+        # Tracking error as fraction of market VWAP
         tracking_error = (our_vwap - market_vwap) / market_vwap
 
         return tracking_error
@@ -344,7 +350,7 @@ class SmartOrderRouter:
             "latency_ms": latency_ms,
             "liquidity_score": liquidity_score,
             "supports_dark_pool": supports_dark_pool,
-            "success_rate": 0.95,  # Initial estimate
+            "success_rate": 0.95,  # Initial fill rate estimate (updated from history)
         }
         logger.info(
             f"Added venue: {venue_id} (fees: {fees_bps}bps, latency: {latency_ms}ms)"
@@ -360,30 +366,31 @@ class SmartOrderRouter:
         priority: 'cost', 'speed', 'liquidity'
         """
         if not self.venues:
-            return "default"
+            return "default"  # Fallback when no venues have been registered
 
         scores = {}
 
         for venue_id, venue in self.venues.items():
-            # Calculate venue score based on priority
+            # Calculate venue score based on chosen optimization priority
             if priority == "cost":
-                # Minimize total cost (fees + market impact)
+                # Minimize total cost (fees + market impact + fill rate)
                 score = (
                     (100 - venue["fees_bps"]) * 0.4
                     + venue["liquidity_score"] * 0.3
                     + venue["success_rate"] * 0.3
                 )
             elif priority == "speed":
-                # Minimize latency
+                # Minimize latency for time-sensitive orders
                 score = (1000 - venue["latency_ms"]) / 10 * 0.5 + venue[
                     "success_rate"
                 ] * 0.5
             else:  # liquidity
+                # Maximize fill probability for large orders
                 score = venue["liquidity_score"] * 0.6 + venue["success_rate"] * 0.4
 
             scores[venue_id] = score
 
-        # Select best venue
+        # Select best venue by highest composite score
         best_venue = max(scores, key=scores.get)
 
         self.route_history.append(
@@ -407,20 +414,21 @@ class SmartOrderRouter:
         Reduces market impact and increases fill probability.
         """
         if len(self.venues) < n_venues:
-            n_venues = len(self.venues)
+            n_venues = len(self.venues)  # Can't split across more venues than exist
 
-        # Rank venues by liquidity
+        # Rank venues by liquidity (most liquid venues absorb the most size)
         ranked_venues = sorted(
             self.venues.items(), key=lambda x: x[1]["liquidity_score"], reverse=True
         )[:n_venues]
 
-        # Allocate based on liquidity
+        # Allocate proportional to liquidity scores
         total_liquidity = sum(v["liquidity_score"] for _, v in ranked_venues)
 
         allocation = {}
         for venue_id, venue in ranked_venues:
             allocation[venue_id] = order_size * (
-                venue["liquidity_score"] / total_liquidity
+                venue["liquidity_score"]
+                / total_liquidity  # Liquidity-weighted fraction
             )
 
         return allocation
@@ -437,7 +445,7 @@ class ExecutionEngine:
         self.impact_model = MarketImpactModel()
         self.router = SmartOrderRouter()
         self.active_orders = {}
-        self.execution_history = deque(maxlen=1000)
+        self.execution_history = deque(maxlen=1000)  # Rolling buffer of past executions
         logger.info("ExecutionEngine initialized")
 
     def submit_order(
@@ -455,19 +463,20 @@ class ExecutionEngine:
 
         Returns execution plan.
         """
-        # Calibrate impact model
+        # Calibrate impact model with latest market data if provided
         if market_data is not None:
             self.impact_model.calibrate(market_data)
 
-        # Calculate expected impact
+        # Calculate expected price impact before slicing
         temp_impact, perm_impact = self.impact_model.calculate_impact(
             total_size, config.max_participation_rate, config.urgency
         )
 
-        # Select execution algorithm
+        # Select execution algorithm based on configuration
         if config.algo_type == AlgoType.TWAP:
             executor = TWAPExecutor(config)
         elif config.algo_type == AlgoType.VWAP:
+            # Use actual volume profile from market data if available
             volume_profile = (
                 market_data["volume"].resample("H").mean()
                 if market_data is not None
@@ -475,17 +484,17 @@ class ExecutionEngine:
             )
             executor = VWAPExecutor(config, volume_profile)
         else:
-            # Default to VWAP
+            # Default to VWAP for unknown algo types
             executor = VWAPExecutor(config)
 
-        # Generate schedule
+        # Generate execution schedule, adjusting entry price for expected impact
         schedule = executor.generate_schedule(
             total_size,
             side,
-            current_price * (1 + temp_impact),  # Adjust for expected impact
+            current_price * (1 + temp_impact),  # Adjust for expected market impact
         )
 
-        # Route first slice
+        # Route first slice to best venue; urgency drives priority (speed vs cost)
         first_venue = self.router.route_order(
             schedule[0].size,
             side,
@@ -493,7 +502,7 @@ class ExecutionEngine:
             priority="liquidity" if config.urgency > 0.7 else "cost",
         )
 
-        # Store order
+        # Store order state for metrics tracking
         self.active_orders[order_id] = {
             "symbol": symbol,
             "side": side,
@@ -501,10 +510,10 @@ class ExecutionEngine:
             "config": config,
             "executor": executor,
             "schedule": schedule,
-            "filled": 0.0,
-            "avg_price": 0.0,
+            "filled": 0.0,  # Quantity filled so far
+            "avg_price": 0.0,  # Volume-weighted average fill price
             "venue": first_venue,
-            "expected_impact": temp_impact + perm_impact,
+            "expected_impact": temp_impact + perm_impact,  # Total expected cost in bps
         }
 
         logger.info(f"Order {order_id} submitted: {side} {total_size} {symbol}")
@@ -525,9 +534,9 @@ class ExecutionEngine:
         order = self.active_orders[order_id]
 
         # Calculate metrics
-        filled_pct = order["filled"] / order["total_size"]
+        filled_pct = order["filled"] / order["total_size"]  # Completion ratio
 
-        # Implementation shortfall
+        # Implementation shortfall: difference between arrival price and avg fill price
         arrival_price = order["schedule"][0].expected_price if order["schedule"] else 0
         shortfall = (
             (order["avg_price"] - arrival_price) / arrival_price
@@ -538,9 +547,10 @@ class ExecutionEngine:
         return {
             "filled_percentage": filled_pct,
             "average_price": order["avg_price"],
-            "implementation_shortfall_bps": shortfall * 10000,
+            "implementation_shortfall_bps": shortfall * 10000,  # Convert to bps
             "expected_impact_bps": order["expected_impact"] * 10000,
-            "slippage_bps": (shortfall - order["expected_impact"]) * 10000,
+            "slippage_bps": (shortfall - order["expected_impact"])
+            * 10000,  # Unexpected cost
         }
 
 

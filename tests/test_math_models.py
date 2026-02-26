@@ -59,7 +59,7 @@ class TestKalmanFilter:
         from src.math_tools.kalman_filter import KalmanFilterConfig
 
         config = KalmanFilterConfig(
-            Q=0.01,  # Process noise
+            Q=0.01,  # Process noise (model uncertainty)
             R=0.25,  # Measurement noise (0.5^2)
             x0=true_prices[0],
             P0=1.0,
@@ -81,14 +81,14 @@ class TestKalmanFilter:
         np.random.seed(42)
         n = 200
 
-        # Generate cointegrated pair
+        # Generate cointegrated pair with known beta=2.0
         beta_true = 2.0
         asset2 = np.cumsum(np.random.randn(n) * 0.01) + 100
         asset1 = 50 + beta_true * asset2 + np.random.randn(n) * 0.5
 
         kf = KalmanFilterPairs()
         for i in range(n):
-            alpha, beta, spread = kf.update(asset1[i], asset2[i])
+            alpha, beta, spread = kf.update(asset1[i], asset2[i])  # Online update
 
         # Beta should be reasonably close to true value (within 30%)
         relative_error = abs(beta - beta_true) / beta_true
@@ -100,7 +100,7 @@ class TestKalmanFilter:
         """Test Kalman trend detector."""
         np.random.seed(42)
 
-        # Generate trending series
+        # Generate trending series (consistent drift upward)
         prices = np.cumsum(np.ones(100) * 0.1) + np.random.randn(100) * 0.1
 
         kf = KalmanTrendDetector()
@@ -120,7 +120,7 @@ class TestCointegration:
         np.random.seed(42)
         n = 500
 
-        # Generate cointegrated series
+        # Generate cointegrated series: y = 2*x + noise (stable spread)
         x = np.cumsum(np.random.randn(n) * 0.01)
         y = 2.0 * x + np.random.randn(n) * 0.1
 
@@ -136,7 +136,7 @@ class TestCointegration:
         np.random.seed(42)
         n = 500
 
-        # Independent random walks
+        # Independent random walks (no stable long-run relationship)
         x = np.cumsum(np.random.randn(n))
         y = np.cumsum(np.random.randn(n))
 
@@ -158,7 +158,7 @@ class TestCointegration:
         asset1 = 50 + 2.0 * asset2 + np.random.randn(n) * 0.5
 
         strategy = PairsTradingStrategy(entry_zscore=2.0, exit_zscore=0.5)
-        strategy.fit(asset1, asset2)
+        strategy.fit(asset1, asset2)  # Learn spread distribution
 
         # Test signal generation
         signal = strategy.generate_signal(asset1[-1], asset2[-1])
@@ -170,7 +170,7 @@ class TestCointegration:
         n = 100
 
         x = np.random.randn(n) + 100
-        y = 2.5 * x + np.random.randn(n) * 0.1
+        y = 2.5 * x + np.random.randn(n) * 0.1  # Beta = 2.5
 
         beta = calculate_hedge_ratio(pd.Series(y), pd.Series(x))
         assert abs(beta - 2.5) < 0.2, f"Hedge ratio should be ~2.5, got {beta}"
@@ -186,7 +186,7 @@ class TestGARCH:
 
         # Generate returns with volatility clustering
         returns = np.random.randn(n) * 0.02
-        # Add volatility clustering manually
+        # Add volatility clustering manually (spikes)
         returns[100:150] *= 3  # High vol period
         returns[300:350] *= 3  # Another high vol period
 
@@ -194,10 +194,10 @@ class TestGARCH:
         result = model.fit(returns)
 
         assert result["success"], "GARCH fitting should succeed"
-        assert result["persistence"] < 1.0, "Persistence should be < 1"
+        assert result["persistence"] < 1.0, "Persistence should be < 1 (stationary)"
         assert result["persistence"] > 0, "Persistence should be positive"
-        assert 0 < result["alpha"] < 0.5, "Alpha should be in reasonable range"
-        assert 0 < result["beta"] < 1, "Beta should be in reasonable range"
+        assert 0 < result["alpha"] < 0.5, "ARCH coefficient in reasonable range"
+        assert 0 < result["beta"] < 1, "GARCH coefficient in reasonable range"
 
     def test_garch_forecast(self):
         """Test GARCH volatility forecasting."""
@@ -223,7 +223,7 @@ class TestGARCH:
         var = model.calculate_var(confidence=0.95)
         assert var > 0, "VaR should be positive"
 
-        # Check that VaR is in reasonable range
+        # Check that VaR is in reasonable range compared to empirical
         empirical_var = np.percentile(returns, 5)
         assert abs(var - abs(empirical_var)) < 0.05, "VaR should match empirical"
 
@@ -245,7 +245,7 @@ class TestHurstExponent:
     def test_hurst_random_walk(self):
         """Test Hurst for random walk (should be ~0.5)."""
         np.random.seed(42)
-        returns = np.random.randn(1000)
+        returns = np.random.randn(1000)  # IID noise → H ≈ 0.5
 
         hurst_calc = HurstExponent()
         h = hurst_calc.calculate(returns, method="dfa")
@@ -255,7 +255,7 @@ class TestHurstExponent:
     def test_hurst_trending(self):
         """Test Hurst for trending series (should be > 0.5)."""
         np.random.seed(42)
-        # Trending series
+        # Trending series (persistent positive momentum)
         returns = np.ones(500) * 0.001 + np.random.randn(500) * 0.001
 
         hurst_calc = HurstExponent()
@@ -314,7 +314,7 @@ class TestOrnsteinUhlenbeck:
 
         assert len(prices) == 1001, "Should generate 1001 prices (1000 steps + initial)"
         assert np.mean(prices) > 90 and np.mean(prices) < 110, (
-            f"Mean should be around 100, got {np.mean(prices):.2f}"
+            f"Mean should be around 100 (long-run mean), got {np.mean(prices):.2f}"
         )
 
     def test_ou_mean_reversion(self):
@@ -324,11 +324,11 @@ class TestOrnsteinUhlenbeck:
         ou = OrnsteinUhlenbeckProcess()
         params = OUParameters(theta=0.8, mu=100, sigma=1.0)
 
-        # Simulate starting far from mean
+        # Simulate starting far from mean (x0=120 vs mu=100)
         paths = ou.simulate_paths(x0=120, params=params, n_steps=100, n_paths=1)
         prices = paths[0]
 
-        # Should revert toward mean
+        # Should revert toward mean within 100 steps
         final_price = prices[-1]
         assert abs(final_price - 100) < 20, (
             f"Should revert toward mean (100), got {final_price:.2f}"
@@ -372,9 +372,9 @@ class TestKellyCriterion:
         # Create parameters for position sizing
         params = KellyParameters(
             win_probability=0.6,
-            win_loss_ratio=1.67,  # 0.05 / 0.03
-            kelly_fraction=0.5,  # Half Kelly
-            max_position=0.25,  # Max 25%
+            win_loss_ratio=1.67,  # 0.05 / 0.03 risk-reward ratio
+            kelly_fraction=0.5,  # Half Kelly (conservative)
+            max_position=0.25,  # Max 25% of capital
         )
 
         # Calculate position size for $10,000 capital
@@ -402,9 +402,9 @@ class TestHMMRegime:
         np.random.seed(42)
         n = 500
 
-        # Generate data with regime switch
-        regime1 = np.random.randn(250) * 0.01  # Low vol
-        regime2 = np.random.randn(250) * 0.03  # High vol
+        # Generate data with regime switch (low vol → high vol)
+        regime1 = np.random.randn(250) * 0.01  # Low vol (regime 0)
+        regime2 = np.random.randn(250) * 0.03  # High vol (regime 1)
         returns = np.concatenate([regime1, regime2])
 
         # Create DataFrame with features

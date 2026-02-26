@@ -39,62 +39,72 @@ logger = logging.getLogger("phase7.oms")
 #  Order Lifecycle FSM
 # ─────────────────────────────────────────────
 
+
 class OrderStatus(Enum):
-    PENDING_NEW      = auto()   # Created locally, not yet sent
-    NEW              = auto()   # ACK received from exchange
+    PENDING_NEW = auto()  # Created locally, not yet sent
+    NEW = auto()  # ACK received from exchange
     PARTIALLY_FILLED = auto()
-    FILLED           = auto()
-    PENDING_CANCEL   = auto()
-    CANCELED         = auto()
-    REJECTED         = auto()
-    EXPIRED          = auto()
+    FILLED = auto()
+    PENDING_CANCEL = auto()
+    CANCELED = auto()
+    REJECTED = auto()
+    EXPIRED = auto()
+
 
 # Valid transitions
 _TRANSITIONS: Dict[OrderStatus, List[OrderStatus]] = {
-    OrderStatus.PENDING_NEW:      [OrderStatus.NEW, OrderStatus.REJECTED],
-    OrderStatus.NEW:              [OrderStatus.PARTIALLY_FILLED, OrderStatus.FILLED,
-                                   OrderStatus.PENDING_CANCEL, OrderStatus.CANCELED,
-                                   OrderStatus.EXPIRED],
-    OrderStatus.PARTIALLY_FILLED: [OrderStatus.FILLED, OrderStatus.PENDING_CANCEL,
-                                   OrderStatus.CANCELED],
-    OrderStatus.PENDING_CANCEL:   [OrderStatus.CANCELED, OrderStatus.FILLED],
+    OrderStatus.PENDING_NEW: [OrderStatus.NEW, OrderStatus.REJECTED],
+    OrderStatus.NEW: [
+        OrderStatus.PARTIALLY_FILLED,
+        OrderStatus.FILLED,
+        OrderStatus.PENDING_CANCEL,
+        OrderStatus.CANCELED,
+        OrderStatus.EXPIRED,
+    ],
+    OrderStatus.PARTIALLY_FILLED: [
+        OrderStatus.FILLED,
+        OrderStatus.PENDING_CANCEL,
+        OrderStatus.CANCELED,
+    ],
+    OrderStatus.PENDING_CANCEL: [OrderStatus.CANCELED, OrderStatus.FILLED],
     # Terminal states – no transitions
-    OrderStatus.FILLED:           [],
-    OrderStatus.CANCELED:         [],
-    OrderStatus.REJECTED:         [],
-    OrderStatus.EXPIRED:          [],
+    OrderStatus.FILLED: [],
+    OrderStatus.CANCELED: [],
+    OrderStatus.REJECTED: [],
+    OrderStatus.EXPIRED: [],
 }
 
 
 class OrderSide(Enum):
-    BUY  = "BUY"
+    BUY = "BUY"
     SELL = "SELL"
 
 
 class OrderType(Enum):
-    MARKET           = "MARKET"
-    LIMIT            = "LIMIT"
-    LIMIT_MAKER      = "LIMIT_MAKER"
-    STOP_LOSS_LIMIT  = "STOP_LOSS_LIMIT"
+    MARKET = "MARKET"
+    LIMIT = "LIMIT"
+    LIMIT_MAKER = "LIMIT_MAKER"
+    STOP_LOSS_LIMIT = "STOP_LOSS_LIMIT"
 
 
 class TimeInForce(Enum):
-    GTC = "GTC"   # Good Till Cancel
-    IOC = "IOC"   # Immediate Or Cancel
-    FOK = "FOK"   # Fill Or Kill
+    GTC = "GTC"  # Good Till Cancel
+    IOC = "IOC"  # Immediate Or Cancel
+    FOK = "FOK"  # Fill Or Kill
 
 
 # ─────────────────────────────────────────────
 #  Order & Fill Data Classes
 # ─────────────────────────────────────────────
 
+
 @dataclass
 class Fill:
-    price:        Decimal
-    qty:          Decimal
-    commission:   Decimal
+    price: Decimal
+    qty: Decimal
+    commission: Decimal
     commission_asset: str
-    trade_id:     int
+    trade_id: int
     timestamp_ms: int
 
 
@@ -105,19 +115,19 @@ class Order:
     exchange_order_id: Optional[int] = None
 
     # Instrument
-    symbol:   str = ""
-    side:     OrderSide  = OrderSide.BUY
-    type:     OrderType  = OrderType.LIMIT
-    tif:      TimeInForce = TimeInForce.GTC
+    symbol: str = ""
+    side: OrderSide = OrderSide.BUY
+    type: OrderType = OrderType.LIMIT
+    tif: TimeInForce = TimeInForce.GTC
 
     # Sizing
-    quantity:      Decimal = Decimal(0)
-    limit_price:   Optional[Decimal] = None
-    stop_price:    Optional[Decimal] = None
+    quantity: Decimal = Decimal(0)
+    limit_price: Optional[Decimal] = None
+    stop_price: Optional[Decimal] = None
 
     # State
-    status:        OrderStatus = OrderStatus.PENDING_NEW
-    filled_qty:    Decimal = Decimal(0)
+    status: OrderStatus = OrderStatus.PENDING_NEW
+    filled_qty: Decimal = Decimal(0)
     avg_fill_price: Decimal = Decimal(0)
     cumulative_quote: Decimal = Decimal(0)
 
@@ -127,7 +137,7 @@ class Order:
     # Metadata
     created_at_ms: int = field(default_factory=lambda: int(time.time() * 1000))
     updated_at_ms: int = field(default_factory=lambda: int(time.time() * 1000))
-    error_msg:     Optional[str] = None
+    error_msg: Optional[str] = None
 
     # Audit log
     audit: List[Tuple[int, str]] = field(default_factory=list)
@@ -141,8 +151,10 @@ class Order:
     @property
     def is_terminal(self) -> bool:
         return self.status in (
-            OrderStatus.FILLED, OrderStatus.CANCELED,
-            OrderStatus.REJECTED, OrderStatus.EXPIRED
+            OrderStatus.FILLED,
+            OrderStatus.CANCELED,
+            OrderStatus.REJECTED,
+            OrderStatus.EXPIRED,
         )
 
     @property
@@ -150,10 +162,13 @@ class Order:
         """Slippage vs. limit price in basis points (limit orders only)."""
         if not self.limit_price or self.avg_fill_price == 0:
             return None
+        # Raw price deviation: positive = filled above limit (bad for buys)
         diff = (self.avg_fill_price - self.limit_price) / self.limit_price
         if self.side == OrderSide.SELL:
-            diff = -diff
-        return diff * Decimal(10_000)
+            diff = (
+                -diff
+            )  # For sells: above limit is good; flip sign for consistent convention
+        return diff * Decimal(10_000)  # Convert to basis points (1 bps = 0.01%)
 
     # ── FSM ─────────────────────────────────
 
@@ -170,14 +185,20 @@ class Order:
 
     def add_fill(self, fill: Fill) -> None:
         self.fills.append(fill)
-        self.filled_qty += fill.qty
-        self.cumulative_quote += fill.price * fill.qty
+        self.filled_qty += fill.qty  # Accumulate total filled quantity
+        self.cumulative_quote += (
+            fill.price * fill.qty
+        )  # Accumulate total cost (price * qty)
         if self.filled_qty > 0:
-            self.avg_fill_price = self.cumulative_quote / self.filled_qty
-        self.audit.append((
-            fill.timestamp_ms,
-            f"FILL {fill.qty}@{fill.price} (cumQty={self.filled_qty})"
-        ))
+            self.avg_fill_price = (
+                self.cumulative_quote / self.filled_qty
+            )  # VWAP of all fills
+        self.audit.append(
+            (
+                fill.timestamp_ms,
+                f"FILL {fill.qty}@{fill.price} (cumQty={self.filled_qty})",
+            )
+        )
         self.updated_at_ms = fill.timestamp_ms
 
     def __repr__(self) -> str:
@@ -192,6 +213,7 @@ class Order:
 #  Order Manager
 # ─────────────────────────────────────────────
 
+
 class OrderManager:
     """
     Central OMS: submit, track, cancel orders.
@@ -201,7 +223,7 @@ class OrderManager:
     _REST_BASE = "https://api.binance.com"
 
     def __init__(self, api_key: str, api_secret: str):
-        self._api_key    = api_key
+        self._api_key = api_key
         self._api_secret = api_secret
         self._session: Optional[aiohttp.ClientSession] = None
 
@@ -250,7 +272,10 @@ class OrderManager:
         try:
             resp = await self._signed_post("/api/v3/order", params)
         except RateLimitError:
-            logger.warning("Rate limit hit submitting %s – will retry in 5 s.", order.client_order_id)
+            logger.warning(
+                "Rate limit hit submitting %s – will retry in 5 s.",
+                order.client_order_id,
+            )
             await asyncio.sleep(5)
             resp = await self._signed_post("/api/v3/order", params)
         except AuthenticationError as exc:
@@ -288,7 +313,7 @@ class OrderManager:
             order.transition(OrderStatus.PENDING_CANCEL, note="Cancel requested")
 
         params = {
-            "symbol":            order.symbol,
+            "symbol": order.symbol,
             "origClientOrderId": order.client_order_id,
         }
         try:
@@ -320,7 +345,8 @@ class OrderManager:
     async def get_open_orders(self, symbol: Optional[str] = None) -> List[Order]:
         async with self._lock:
             return [
-                o for o in self._orders.values()
+                o
+                for o in self._orders.values()
                 if not o.is_terminal and (symbol is None or o.symbol == symbol)
             ]
 
@@ -336,15 +362,19 @@ class OrderManager:
         """
         Called by BinanceWSConnector for 'executionReport' user-data events.
         """
-        ex_order_id   = data["i"]          # exchange order id
-        c_order_id    = data.get("c") or self._exchange_id_map.get(ex_order_id)
-        exec_type     = data["x"]          # NEW, CANCELED, TRADE, EXPIRED, REJECTED
-        order_status  = data["X"]          # order status string
+        ex_order_id = data["i"]  # exchange order id
+        c_order_id = data.get("c") or self._exchange_id_map.get(ex_order_id)
+        exec_type = data["x"]  # NEW, CANCELED, TRADE, EXPIRED, REJECTED
+        order_status = data["X"]  # order status string
 
         async with self._lock:
             order = self._orders.get(c_order_id)
             if order is None:
-                logger.warning("Execution report for unknown order: cid=%s, eid=%s", c_order_id, ex_order_id)
+                logger.warning(
+                    "Execution report for unknown order: cid=%s, eid=%s",
+                    c_order_id,
+                    ex_order_id,
+                )
                 return
 
             # Register exchange id mapping if missing
@@ -355,12 +385,12 @@ class OrderManager:
 
             if exec_type == "TRADE":
                 fill = Fill(
-                    price            = Decimal(str(data["L"])),
-                    qty              = Decimal(str(data["l"])),
-                    commission       = Decimal(str(data["n"])),
-                    commission_asset = data["N"] or "",
-                    trade_id         = data["t"],
-                    timestamp_ms     = data["T"],
+                    price=Decimal(str(data["L"])),
+                    qty=Decimal(str(data["l"])),
+                    commission=Decimal(str(data["n"])),
+                    commission_asset=data["N"] or "",
+                    trade_id=data["t"],
+                    timestamp_ms=data["T"],
                 )
                 order.add_fill(fill)
                 for cb in self._on_fill_cbs:
@@ -370,7 +400,9 @@ class OrderManager:
                         logger.error("on_fill callback error: %s", exc)
 
             new_status = self._map_exchange_status(order_status)
-            if new_status != prev_status and new_status in _TRANSITIONS.get(prev_status, []):
+            if new_status != prev_status and new_status in _TRANSITIONS.get(
+                prev_status, []
+            ):
                 order.transition(new_status, note=f"WS exec_type={exec_type}")
                 for cb in self._on_status_cbs:
                     try:
@@ -378,16 +410,18 @@ class OrderManager:
                     except Exception as exc:
                         logger.error("on_status callback error: %s", exc)
 
-        logger.debug("Execution report processed: %s → %s", c_order_id, order.status.name)
+        logger.debug(
+            "Execution report processed: %s → %s", c_order_id, order.status.name
+        )
 
     # ── REST helpers ────────────────────────
 
     def _build_order_params(self, order: Order) -> dict:
         params: dict = {
-            "symbol":           order.symbol,
-            "side":             order.side.value,
-            "type":             order.type.value,
-            "quantity":         str(order.quantity),
+            "symbol": order.symbol,
+            "side": order.side.value,
+            "type": order.type.value,
+            "quantity": str(order.quantity),
             "newClientOrderId": order.client_order_id,
             "newOrderRespType": "FULL",
         }
@@ -401,32 +435,33 @@ class OrderManager:
 
     def _apply_fill_from_rest(self, order: Order, fill_data: dict) -> None:
         fill = Fill(
-            price            = Decimal(str(fill_data["price"])),
-            qty              = Decimal(str(fill_data["qty"])),
-            commission       = Decimal(str(fill_data["commission"])),
-            commission_asset = fill_data["commissionAsset"],
-            trade_id         = fill_data["tradeId"],
-            timestamp_ms     = int(time.time() * 1000),
+            price=Decimal(str(fill_data["price"])),
+            qty=Decimal(str(fill_data["qty"])),
+            commission=Decimal(str(fill_data["commission"])),
+            commission_asset=fill_data["commissionAsset"],
+            trade_id=fill_data["tradeId"],
+            timestamp_ms=int(time.time() * 1000),
         )
         order.add_fill(fill)
 
     @staticmethod
     def _map_exchange_status(status: str) -> OrderStatus:
         return {
-            "NEW":              OrderStatus.NEW,
+            "NEW": OrderStatus.NEW,
             "PARTIALLY_FILLED": OrderStatus.PARTIALLY_FILLED,
-            "FILLED":           OrderStatus.FILLED,
-            "CANCELED":         OrderStatus.CANCELED,
-            "PENDING_CANCEL":   OrderStatus.PENDING_CANCEL,
-            "REJECTED":         OrderStatus.REJECTED,
-            "EXPIRED":          OrderStatus.EXPIRED,
+            "FILLED": OrderStatus.FILLED,
+            "CANCELED": OrderStatus.CANCELED,
+            "PENDING_CANCEL": OrderStatus.PENDING_CANCEL,
+            "REJECTED": OrderStatus.REJECTED,
+            "EXPIRED": OrderStatus.EXPIRED,
         }.get(status, OrderStatus.NEW)
 
     def _sign(self, params: dict) -> str:
-        query = urllib.parse.urlencode(params)
+        """HMAC-SHA256 sign the query string with the API secret (Binance auth requirement)."""
+        query = urllib.parse.urlencode(params)  # Encode params as URL query string
         return hmac.new(
             self._api_secret.encode(), query.encode(), hashlib.sha256
-        ).hexdigest()
+        ).hexdigest()  # Return hex-encoded signature
 
     async def _signed_post(self, path: str, params: dict) -> dict:
         params["timestamp"] = int(time.time() * 1000)

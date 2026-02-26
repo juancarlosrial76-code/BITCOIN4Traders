@@ -1653,17 +1653,17 @@ class StrategyTournament:
     applies fee-adjusted elimination, and selects the live-trading champion.
 
     Lüddemann Validation Checklist (enforced automatically):
-        [x] Mindest-Daten: >= min_bars Kerzen (Warnung wenn weniger)
-        [x] Echter Profit-Faktor: sum(winning_trades) / sum(losing_trades)
-        [x] Fee-adjusted PF: Gebühren werden von Gewinnen abgezogen
-        [x] Eliminierung: PF_net < pf_threshold -> disqualifiziert
-        [x] Max-Drawdown-Gate: DD > max_dd_threshold -> disqualifiziert
-        [x] Marktregime-Fit: Trending-Strategien werden in Sideways bestraft
-        [x] RAM-Cleanup: Verlierer werden nach Selektion gelöscht
+        [x] Minimum data: >= min_bars candles (warning if fewer)
+        [x] True Profit Factor: sum(winning_trades) / sum(losing_trades)
+        [x] Fee-adjusted PF: fees are deducted from wins
+        [x] Elimination: PF_net < pf_threshold -> disqualified
+        [x] Max-Drawdown gate: DD > max_dd_threshold -> disqualified
+        [x] Market regime fit: Trending strategies penalized in sideways market
+        [x] RAM cleanup: losers deleted after selection
 
     Parameters
     ----------
-    data              : OHLCV DataFrame (>= min_bars empfohlen)
+    data              : OHLCV DataFrame (>= min_bars recommended)
     min_bars          : Minimum bars for statistical validity (default: 500)
     pf_threshold      : Min fee-adjusted Profit Factor to qualify (default: 1.2)
     max_dd_threshold  : Max allowed drawdown (default: 0.25 = 25%)
@@ -1939,7 +1939,7 @@ class StrategyTournament:
                     self._champion = bot
                     break
             logger.info(
-                f"\n>>>> PROFESSIONELLE WAHL: {best_result.name} "
+                f"\n>>>> PROFESSIONAL SELECTION: {best_result.name} "
                 f"(PF_net={best_result.profit_factor_net:.2f}, "
                 f"Regime={regime})"
             )
@@ -3156,6 +3156,194 @@ class ChampionPersistence:
 
 
 # ============================================================================
+# 13b. CHAMPION DRIVE-SYNC & GITHUB DOWNLOAD
+# ============================================================================
+
+
+def save_champion_to_drive(
+    pkl_path: str = "data/cache/multiverse_champion.pkl",
+    meta_path: str = "data/cache/multiverse_champion_meta.json",
+    drive_dir: str = "/content/drive/MyDrive/BITCOIN4Traders",
+) -> bool:
+    """
+    Copies the locally saved champion (.pkl + .json) to Google Drive.
+
+    This allows the champion to survive Colab session restarts and is
+    accessible for GitHub Actions via the Drive mount.
+
+    Parameters
+    ----------
+    pkl_path   : Local source file (.pkl)
+    meta_path  : Local metadata file (.json)
+    drive_dir  : Target folder on Google Drive (must be mounted)
+
+    Returns
+    -------
+    True  if both files were copied successfully
+    False on error (Drive not mounted, file not found, ...)
+    """
+    import shutil
+
+    src_pkl = Path(pkl_path)
+    src_meta = Path(meta_path)
+
+    if not src_pkl.exists():
+        logger.warning(f"save_champion_to_drive: Source file not found: {pkl_path}")
+        return False
+
+    try:
+        dst_dir = Path(drive_dir)
+        dst_dir.mkdir(parents=True, exist_ok=True)
+
+        # .pkl kopieren
+        dst_pkl = dst_dir / src_pkl.name
+        shutil.copy2(src_pkl, dst_pkl)
+        logger.info(f"Champion .pkl -> Drive: {dst_pkl}")
+
+        # .json copy (if available)
+        if src_meta.exists():
+            dst_meta = dst_dir / src_meta.name
+            shutil.copy2(src_meta, dst_meta)
+            logger.info(f"Champion .json -> Drive: {dst_meta}")
+
+        return True
+
+    except Exception as exc:
+        logger.warning(f"save_champion_to_drive failed: {exc}")
+        return False
+
+
+def load_champion_from_drive(
+    drive_dir: str = "/content/drive/MyDrive/BITCOIN4Traders",
+    local_cache_dir: str = "data/cache",
+) -> Optional["DarwinBot"]:
+    """
+    Loads the champion from Google Drive into the local cache and returns it.
+
+    Useful when Colab has been restarted and the local cache is empty,
+    but the champion is still available on Drive.
+
+    Parameters
+    ----------
+    drive_dir       : Folder on Google Drive (must be mounted)
+    local_cache_dir : Local target folder (created if it does not exist)
+
+    Returns
+    -------
+    DarwinBot  if successfully loaded
+    None       on error
+    """
+    import shutil
+
+    src_dir = Path(drive_dir)
+    pkl_name = "multiverse_champion.pkl"
+    meta_name = "multiverse_champion_meta.json"
+
+    src_pkl = src_dir / pkl_name
+    src_meta = src_dir / meta_name
+
+    if not src_pkl.exists():
+        logger.warning(f"load_champion_from_drive: No file on Drive: {src_pkl}")
+        return None
+
+    try:
+        dst_dir = Path(local_cache_dir)
+        dst_dir.mkdir(parents=True, exist_ok=True)
+
+        dst_pkl = dst_dir / pkl_name
+        dst_meta = dst_dir / meta_name
+
+        shutil.copy2(src_pkl, dst_pkl)
+        logger.info(f"Champion .pkl Drive -> local: {dst_pkl}")
+
+        if src_meta.exists():
+            shutil.copy2(src_meta, dst_meta)
+            logger.info(f"Champion .json Drive -> local: {dst_meta}")
+
+        return ChampionPersistence.load(
+            str(dst_pkl), str(dst_meta) if src_meta.exists() else None
+        )
+
+    except Exception as exc:
+        logger.warning(f"load_champion_from_drive failed: {exc}")
+        return None
+
+
+def load_champion_from_github_raw(
+    github_user: str = "",
+    github_repo: str = "BITCOIN4Traders",
+    branch: str = "main",
+    pkl_rel_path: str = "data/cache/multiverse_champion.pkl",
+    meta_rel_path: str = "data/cache/multiverse_champion_meta.json",
+    local_cache_dir: str = "data/cache",
+    github_token: str = "",
+) -> Optional["DarwinBot"]:
+    """
+    Loads the champion directly from a GitHub repository (Raw URL).
+
+    Enables GitHub Actions to download a champion created by Colab
+    when it has been checked in to the repository via git push.
+
+    Parameters
+    ----------
+    github_user    : GitHub username (or from GITHUB_USER env var)
+    github_repo    : Repository name
+    branch         : Branch name (default: "main")
+    pkl_rel_path   : Relative path to the .pkl file in the repository
+    meta_rel_path  : Relative path to the .json file in the repository
+    local_cache_dir: Local target folder
+    github_token   : Optional - for private repos (or from GITHUB_TOKEN env var)
+
+    Returns
+    -------
+    DarwinBot  if successfully downloaded and loaded
+    None       on error
+    """
+    import urllib.request
+    import pickle
+
+    user = github_user or os.getenv("GITHUB_USER", "")
+    token = github_token or os.getenv("GITHUB_TOKEN", "")
+
+    if not user:
+        logger.warning("load_champion_from_github_raw: GITHUB_USER not set.")
+        return None
+
+    base_url = f"https://raw.githubusercontent.com/{user}/{github_repo}/{branch}"
+
+    dst_dir = Path(local_cache_dir)
+    dst_dir.mkdir(parents=True, exist_ok=True)
+
+    def _download(rel_path: str, dst_path: Path) -> bool:
+        url = f"{base_url}/{rel_path}"
+        try:
+            req = urllib.request.Request(url)
+            if token:
+                req.add_header("Authorization", f"token {token}")
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                dst_path.write_bytes(resp.read())
+            logger.info(f"Champion downloaded: {url} -> {dst_path}")
+            return True
+        except Exception as exc:
+            logger.warning(
+                f"load_champion_from_github_raw: Download failed ({url}): {exc}"
+            )
+            return False
+
+    dst_pkl = dst_dir / Path(pkl_rel_path).name
+    dst_meta = dst_dir / Path(meta_rel_path).name
+
+    if not _download(pkl_rel_path, dst_pkl):
+        return None
+
+    _download(meta_rel_path, dst_meta)  # .json is optional
+
+    return ChampionPersistence.load(
+        str(dst_pkl), str(dst_meta) if dst_meta.exists() else None
+    )
+
+
+# ============================================================================
 # 14. MULTIVERSE COLAB ENTRY POINT
 # ============================================================================
 
@@ -3327,7 +3515,7 @@ class TelegramNotifier:
     Usage
     -----
         notifier = TelegramNotifier.from_env()
-        notifier.send("Champion gewechselt: RSI_p14")
+        notifier.send("Champion changed: RSI_p14")
         notifier.send_signal("RSI_p14", signal=1, price=45000.0)
     """
 
@@ -3390,7 +3578,7 @@ class TelegramNotifier:
             f"<b>BITCOIN4Traders Signal{env_tag}</b>\n"
             f"Champion : {champion_name}\n"
             f"Signal   : {direction}\n"
-            f"Preis    : ${price:,.2f}\n"
+            f"Price    : ${price:,.2f}\n"
             f"Zeit     : {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M UTC')}"
         )
         return self.send(msg)
@@ -3404,18 +3592,18 @@ class TelegramNotifier:
     ) -> bool:
         """Notify when a new better champion is found during evolution."""
         msg = (
-            f"<b>Neuer Multiverse Champion</b>\n"
+            f"<b>New Multiverse Champion</b>\n"
             f"Name          : {champion_name}\n"
             f"MV-Score      : {mv_score:.4f}\n"
             f"Survival-Rate : {survival_rate:.1%}\n"
             f"Worst DD      : {worst_dd:.2%}\n"
-            f"Gespeichert   : {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M UTC')}"
+            f"Saved         : {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M UTC')}"
         )
         return self.send(msg)
 
     def send_alert(self, title: str, message: str) -> bool:
         """Send a warning/alert message."""
-        msg = f"<b>WARNUNG: {title}</b>\n{message}"
+        msg = f"<b>WARNING: {title}</b>\n{message}"
         return self.send(msg)
 
 
@@ -3514,12 +3702,12 @@ class HeartbeatSystem:
 
         if age >= self.max_age_minutes:
             msg = (
-                f"REDUNDANZ-WARNUNG: Letzter Heartbeat vor {age:.0f} Min. "
-                f"(Limit: {self.max_age_minutes} Min.). "
-                f"GitHub Actions moeglicherweise ausgefallen. Colab uebernimmt!"
+                f"REDUNDANCY WARNING: Last heartbeat {age:.0f} min ago. "
+                f"(Limit: {self.max_age_minutes} min). "
+                f"GitHub Actions may have failed. Colab taking over!"
             )
             logger.warning(msg)
-            self.notifier.send_alert("Heartbeat ausgefallen", msg)
+            self.notifier.send_alert("Heartbeat failed", msg)
             return "WARN"
 
         logger.debug(f"HeartbeatSystem: OK (age={age:.1f} min)")
@@ -3609,6 +3797,7 @@ def hybrid_main(
     save_dir: str = "data/cache",
     heartbeat_path: str = "data/cache/heartbeat.txt",
     drive_keep_alive_path: str = "/content/drive/MyDrive/keep_alive.txt",
+    drive_champion_dir: str = "/content/drive/MyDrive/BITCOIN4Traders",
     # Telegram
     telegram_token: str = "",
     telegram_chat_id: str = "",
@@ -3619,20 +3808,20 @@ def hybrid_main(
 
     Detects the runtime environment and assigns the appropriate task:
 
-    GITHUB Actions  -> stündlicher Wächter
-        1. Lade gespeicherten Champion (.pkl)
-        2. Lade neue Marktdaten
-        3. Generiere Signal
-        4. Sende Signal via Telegram
-        5. Schreibe Heartbeat
-        6. Prüfe Redundanz-Health
+    GITHUB Actions  -> hourly watchdog
+        1. Load saved champion (.pkl)
+        2. Load new market data
+        3. Generate signal
+        4. Send signal via Telegram
+        5. Write heartbeat
+        6. Check redundancy health
 
-    COLAB / LOCAL   -> Hochleistungs-Labor
-        1. Lade echte Daten (Binance) oder synthetisch
-        2. Führe vollständige Multiversum-Evolution durch
-        3. Speichere Champion auf Drive / Disk
-        4. Sende Telegram-Update
-        5. Schreibe Heartbeat
+    COLAB / LOCAL   -> high-performance lab
+        1. Load real data (Binance) or synthetic
+        2. Run full multiverse evolution
+        3. Save champion to Drive / disk
+        4. Send Telegram update
+        5. Write heartbeat
 
     Parameters
     ----------
@@ -3640,10 +3829,10 @@ def hybrid_main(
     telegram_token / telegram_chat_id override env vars if provided.
     """
     env = detect_environment()
-    logger.info(f"Standort-Analyse: System laeuft auf {env}")
+    logger.info(f"Environment detection: System running on {env}")
     print(f"\n{'=' * 64}")
     print(f"  BITCOIN4Traders - Hybrid Main")
-    print(f"  Umgebung: {env}")
+    print(f"  Environment: {env}")
     print(f"{'=' * 64}\n")
 
     # --- Telegram setup ---
@@ -3660,25 +3849,38 @@ def hybrid_main(
     )
 
     # ------------------------------------------------------------------
-    # GITHUB ACTIONS: stündlicher Wächter
+    # GITHUB ACTIONS: hourly watchdog
     # ------------------------------------------------------------------
     if env == "GITHUB":
-        logger.info("GitHub Actions: Fuehre stündlichen Signal-Check aus...")
+        logger.info("GitHub Actions: Running hourly signal check...")
 
-        # 1. Redundanz-Health prüfen (hat Colab zuletzt gearbeitet?)
+        # 1. Check redundancy health (has Colab worked recently?)
         health = hb.check()
         if health == "WARN":
-            logger.warning("GitHub: Heartbeat veraltet! Fahre trotzdem fort.")
+            logger.warning("GitHub: Heartbeat stale! Proceeding anyway.")
 
-        # 2. Champion laden
+        # 2. Load champion (local -> Drive fallback -> GitHub fallback)
         champ_path = str(Path(save_dir) / "multiverse_champion.pkl")
         meta_path = str(Path(save_dir) / "multiverse_champion_meta.json")
         champion = ChampionPersistence.load(champ_path, meta_path)
 
         if champion is None:
-            msg = "Kein gespeicherter Champion gefunden. Bitte zuerst COLAB Evolution ausfuehren."
+            logger.info("No local champion. Trying Drive fallback...")
+            champion = load_champion_from_drive(
+                drive_dir=drive_champion_dir,
+                local_cache_dir=save_dir,
+            )
+
+        if champion is None:
+            logger.info("No Drive champion. Trying GitHub Raw fallback...")
+            champion = load_champion_from_github_raw(
+                local_cache_dir=save_dir,
+            )
+
+        if champion is None:
+            msg = "No champion found (local, Drive, GitHub). Please run COLAB Evolution first."
             logger.warning(msg)
-            notifier.send_alert("Kein Champion", msg)
+            notifier.send_alert("No Champion", msg)
             hb.write(env)
             return None
 
@@ -3696,21 +3898,21 @@ def hybrid_main(
             if cache_file.exists():
                 df = pd.read_parquet(cache_file)
             else:
-                notifier.send_alert("Datenfehler", f"Keine Daten verfügbar: {exc}")
+                notifier.send_alert("Data error", f"No data available: {exc}")
                 hb.write(env)
                 return champion
 
-        # 4. Signal berechnen
+        # 4. Compute signal
         closes = df["close"].values.astype(np.float64)
         signals = champion.compute_signals(closes)
         last_signal = int(signals[-1]) if len(signals) > 0 else 0
         last_price = float(closes[-1])
 
         logger.info(
-            f"Signal: {last_signal} | Preis: ${last_price:,.2f} | Champion: {champion.name}"
+            f"Signal: {last_signal} | Price: ${last_price:,.2f} | Champion: {champion.name}"
         )
 
-        # 5. Telegram-Benachrichtigung
+        # 5. Telegram notification
         notifier.send_signal(
             champion_name=champion.name,
             signal=last_signal,
@@ -3718,29 +3920,29 @@ def hybrid_main(
             environment=env,
         )
 
-        # 6. Heartbeat schreiben
+        # 6. Write heartbeat
         hb.write(env)
-        logger.info("GitHub Actions: Signal-Check abgeschlossen.")
+        logger.info("GitHub Actions: Signal check completed.")
         return champion
 
     # ------------------------------------------------------------------
-    # COLAB / LOCAL: Hochleistungs-Labor
+    # COLAB / LOCAL: high-performance lab
     # ------------------------------------------------------------------
     else:
-        logger.info(f"{env}: Starte Multiversum-Evolution und Stress-Tests...")
+        logger.info(f"{env}: Starting multiverse evolution and stress tests...")
 
-        # Redundanz-Check: läuft GitHub noch?
+        # Redundancy check: is GitHub still running?
         health = check_redundancy_health(
             heartbeat_path=heartbeat_path,
             max_age_minutes=120,
             notifier=notifier,
         )
 
-        # Keep-alive Thread für Colab
+        # Keep-alive thread for Colab
         if env == "COLAB":
             keep_colab_alive(drive_keep_alive_path)
 
-        # Multiversum-Evolution
+        # Multiverse evolution
         champion = run_multiverse(
             symbol=symbol,
             timeframe=timeframe,
@@ -3749,19 +3951,19 @@ def hybrid_main(
             pop_size=pop_size,
             n_mc_scenarios=n_mc_scenarios,
             max_dd_threshold=max_dd_threshold,
-            auto_load_champion=False,  # Im Labor immer frisch neu trainieren
+            auto_load_champion=False,  # In the lab always retrain from scratch
             save_dir=save_dir,
             exchange_id="binance",
             seed=seed,
         )
 
         if champion is not None:
-            # Telegram-Benachrichtigung
+            # Telegram notification
             mv_score = 0.0
             survival = 0.0
             worst_dd = 0.0
 
-            # Versuche Metadaten aus gespeicherter JSON zu lesen
+            # Try to read metadata from saved JSON
             try:
                 import json as _json
 
@@ -3784,10 +3986,24 @@ def hybrid_main(
 
             if env == "COLAB":
                 keep_colab_alive(drive_keep_alive_path)
+                # Sync champion to Google Drive (make it immortal)
+                synced = save_champion_to_drive(
+                    pkl_path=str(Path(save_dir) / "multiverse_champion.pkl"),
+                    meta_path=str(Path(save_dir) / "multiverse_champion_meta.json"),
+                    drive_dir=drive_champion_dir,
+                )
+                if synced:
+                    logger.info("Champion successfully backed up to Google Drive.")
+                    notifier.send(
+                        "<b>Drive Sync OK</b>\n"
+                        f"Champion saved to Drive: {drive_champion_dir}"
+                    )
+                else:
+                    logger.warning("Drive sync failed (Drive not mounted?).")
 
-        # Heartbeat schreiben
+        # Write heartbeat
         hb.write(env)
-        logger.info(f"{env}: Evolution abgeschlossen. Heartbeat geschrieben.")
+        logger.info(f"{env}: Evolution complete. Heartbeat written.")
         return champion
 
 

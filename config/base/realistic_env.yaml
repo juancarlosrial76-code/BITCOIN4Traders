@@ -1,0 +1,92 @@
+# Realistic Trading Environment Configuration
+# For use with ConfigIntegratedTradingEnv
+
+type: realistic
+
+# Capital & Position Sizing
+initial_capital: 100000
+max_position_size: 0.30  # Maximum 30% of capital per position
+
+# Episode Parameters
+max_steps: 1000
+lookback_window: 60
+
+# Transaction Costs (in basis points)
+transaction_costs:
+  maker_fee_bps: 2      # Limit orders: 0.02%
+  taker_fee_bps: 5      # Market orders: 0.05%
+  min_trade_value: 10   # Minimum trade size in USD
+
+# Slippage Model
+slippage:
+  enabled: false
+  base_bps: 5                # Base slippage: 0.05%
+  impact_coefficient: 0.1    # Price impact based on volume
+  max_slippage_bps: 50       # Maximum slippage: 0.5%
+
+# Order Book Simulation
+orderbook:
+  enabled: false
+  depth: 10                  # Number of price levels
+  spread_bps: 2              # Bid-ask spread: 0.02%
+  depth_multiplier: 2.0      # Volume per level
+
+# Market Regimes
+regime:
+  low_volatility:
+    volatility: 0.01
+    volume: 500
+    trend: 0.0005
+  
+  high_volatility_bull:
+    volatility: 0.03
+    volume: 1500
+    trend: 0.002
+  
+  high_volatility_bear:
+    volatility: 0.04
+    volume: 2000
+    trend: -0.001
+
+# Reward Function Configuration
+reward:
+  components:
+    - name: return
+      weight: 2.0
+      description: "Portfolio return (higher weight for profits)"
+    
+    - name: sharpe
+      weight: 0.5
+      description: "Risk-adjusted return"
+    
+    - name: drawdown
+      weight: -0.5
+      description: "Drawdown penalty (reduced)"
+    
+    - name: transaction_cost
+      weight: -0.3
+      description: "Trading cost penalty (reduced)"
+  
+  normalization:
+    enabled: true
+    clip_range: [-10, 10]
+
+# Risk Management
+max_drawdown: 0.70              # 70% maximum drawdown (more learning room)
+max_consecutive_losses: 20       # More tolerance for losses
+
+# Data Requirements
+required_features:
+  - log_ret
+  - volatility_20
+  - rsi_14
+  - macd
+  - macd_signal
+  - ou_score
+
+# Logging
+logging:
+  level: INFO
+  log_trades: true
+  log_rewards: true
+  log_risk_metrics: true

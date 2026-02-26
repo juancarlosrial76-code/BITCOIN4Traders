@@ -56,34 +56,46 @@ def compute_metrics(
 ) -> PerformanceMetrics:
     """Compute the full set of performance metrics from a return series."""
     r = np.asarray(returns, dtype=np.float64)
-    r = r[~np.isnan(r)]
+    r = r[~np.isnan(r)]  # drop NaN values before any metric calculation
     if len(r) == 0:
-        return PerformanceMetrics(*([0.0] * 11 + [0]))
+        return PerformanceMetrics(
+            *([0.0] * 11 + [0])
+        )  # zero-metric sentinel for empty input
 
-    sharpe = float(r.mean() / (r.std() + 1e-8))
+    sharpe = float(r.mean() / (r.std() + 1e-8))  # daily Sharpe (not annualised here)
 
-    downside = r[r < 0]
-    sortino = float(r.mean() / (downside.std() + 1e-8)) if len(downside) > 0 else sharpe
+    downside = r[r < 0]  # retain only loss periods for Sortino denominator
+    sortino = (
+        float(r.mean() / (downside.std() + 1e-8)) if len(downside) > 0 else sharpe
+    )  # Sortino = mean / downside deviation
 
-    equity = np.cumprod(1 + r)
-    peak = np.maximum.accumulate(equity)
-    dd = (equity - peak) / (peak + 1e-8)
-    max_dd = float(-dd.min())
+    equity = np.cumprod(1 + r)  # compounded equity curve from 1.0
+    peak = np.maximum.accumulate(equity)  # running maximum (high-water mark)
+    dd = (equity - peak) / (peak + 1e-8)  # drawdown series: negative values
+    max_dd = float(-dd.min())  # largest drawdown magnitude (positive scalar)
 
-    calmar = float(r.mean() / (max_dd + 1e-8))
+    calmar = float(
+        r.mean() / (max_dd + 1e-8)
+    )  # Calmar ratio = mean return / max drawdown
 
     wins = r[r > 0]
     losses = r[r < 0]
-    win_rate = float(len(wins) / (len(r) + 1e-8))
-    pf = float(wins.sum() / (-losses.sum() + 1e-8)) if len(losses) > 0 else 99.0
+    win_rate = float(
+        len(wins) / (len(r) + 1e-8)
+    )  # fraction of bars with positive return
+    pf = (
+        float(wins.sum() / (-losses.sum() + 1e-8)) if len(losses) > 0 else 99.0
+    )  # Profit Factor = gross profit / gross loss
 
     trade_r = (
-        r[r != 0]
+        r[r != 0]  # non-zero returns as proxy for trades (no position series)
         if positions is None
-        else r[np.diff(np.concatenate([[0], positions])) != 0]
+        else r[
+            np.diff(np.concatenate([[0], positions])) != 0
+        ]  # returns where position changed = actual trade bars
     )
     if len(trade_r) == 0:
-        trade_r = r
+        trade_r = r  # fallback: use all bars if no trades detected
 
     return PerformanceMetrics(
         sharpe=sharpe,
@@ -216,7 +228,7 @@ class PermutationResult:
 
 
 class PermutationTest:
-    """Monte Carlo Permutationstest."""
+    """Monte Carlo Permutation Test."""
 
     def __init__(self, n_permutations: int = 1000):
         self.n_permutations = n_permutations
@@ -307,25 +319,29 @@ class DeflatedSharpeRatio:
         if n < 10:
             return DSRResult(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, n_trials)
 
-        sr_hat = float(r.mean() / (r.std() + 1e-8))
-        skew = float(scipy_stats.skew(r))
-        kurt = float(scipy_stats.kurtosis(r))
+        sr_hat = float(r.mean() / (r.std() + 1e-8))  # sample Sharpe ratio
+        skew = float(scipy_stats.skew(r))  # skewness of the return distribution
+        kurt = float(scipy_stats.kurtosis(r))  # excess kurtosis (0 = Gaussian)
 
+        # Variance of SR estimator accounting for non-Gaussianity (Bailey & Lopez de Prado eq. 7)
         sr_variance = (1 + 0.5 * sr_hat**2 - skew * sr_hat + (kurt / 4) * sr_hat**2) / (
             n - 1
         )
-        sr_std = np.sqrt(max(sr_variance, 1e-8))
+        sr_std = np.sqrt(max(sr_variance, 1e-8))  # std dev of SR estimate
 
         if n_trials > 1:
+            # Expected maximum SR across n_trials independent tests (Gumbel EVT approximation)
             z = (1 - np.euler_gamma) * scipy_stats.norm.ppf(
                 1 - 1 / n_trials
             ) + np.euler_gamma * scipy_stats.norm.ppf(1 - 1 / (n_trials * np.e))
-            sr_benchmark = benchmark_sr + sr_std * z
+            sr_benchmark = (
+                benchmark_sr + sr_std * z
+            )  # adjusted benchmark for multiple testing
         else:
-            sr_benchmark = benchmark_sr
+            sr_benchmark = benchmark_sr  # single-trial: benchmark unchanged
 
-        z_dsr = (sr_hat - sr_benchmark) / (sr_std + 1e-8)
-        dsr = float(scipy_stats.norm.cdf(z_dsr))
+        z_dsr = (sr_hat - sr_benchmark) / (sr_std + 1e-8)  # standardised DSR z-score
+        dsr = float(scipy_stats.norm.cdf(z_dsr))  # DSR = Prob(true SR > benchmark)
 
         return DSRResult(
             observed_sr=sr_hat,
@@ -374,15 +390,22 @@ class MinTrackRecordLength:
         skewness: float = 0.0,
         kurtosis: float = 0.0,
     ) -> MTRLResult:
-        z_alpha = scipy_stats.norm.ppf(confidence)
+        z_alpha = scipy_stats.norm.ppf(
+            confidence
+        )  # one-sided z critical value (e.g. 1.645 for 95%)
 
         if abs(sharpe - target_sr) < 1e-8:
-            return MTRLResult(np.inf, sharpe, confidence, skewness, kurtosis)
+            return MTRLResult(
+                np.inf, sharpe, confidence, skewness, kurtosis
+            )  # infinite bars needed when SR == target
 
+        # Non-centrality term accounts for fat tails and skewness of the SR distribution
         noncentrality = (
             1 + 0.5 * sharpe**2 - skewness * sharpe + (kurtosis / 4) * sharpe**2
         )
-        n_min = (z_alpha / (sharpe - target_sr)) ** 2 * noncentrality
+        n_min = (
+            z_alpha / (sharpe - target_sr)
+        ) ** 2 * noncentrality  # MTRL formula: Bailey & Lopez de Prado
 
         return MTRLResult(
             n_min=float(n_min),

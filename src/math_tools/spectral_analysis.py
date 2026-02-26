@@ -1,28 +1,57 @@
 """
 Spectral Analysis & Fourier Transform for Financial Time Series
-================================================================
+===============================================================
 
 Frequency domain analysis for detecting dominant cycles, seasonality,
 and filtering noise from financial data.
 
-Mathematical Methods:
-- Fast Fourier Transform (FFT)
-- Power Spectral Density (PSD)
-- Hilbert Transform
-- Adaptive Cycle Detection
-- Spectral Filtering
+Mathematical Foundation:
+------------------------
+Spectral analysis transforms time-domain signals into frequency-domain
+representations to identify periodic components.
+
+Fast Fourier Transform (FFT):
+    X_k = Σ_{n=0}^{N-1} x_n * e^{-i2πkn/N}
+
+    where:
+        N: Number of samples
+        k: Frequency index (0 to N-1)
+        x_n: Time-domain signal at sample n
+        X_k: Frequency-domain representation at frequency k
+
+Power Spectral Density (PSD):
+    P(k) = |X_k|² = X_k * conj(X_k)
+
+    Measures the power (energy) at each frequency component.
+
+Hilbert Transform:
+    x̂(t) = (1/π) * P.V. ∫[x(τ)/(t-τ)]dτ
+
+    Creates analytic signal: z(t) = x(t) + i*x̂(t)
+    Enables computation of instantaneous amplitude and phase.
+
+Key Mathematical Relationships:
+    Period: T = 1/f  (frequency to period conversion)
+    Nyquist Frequency: f_N = Fs/2 (maximum detectable frequency)
+    Frequency Resolution: Δf = Fs/N (frequency bins)
 
 Professional Use Cases:
-- Dominant cycle detection (e.g., 20-week, 4-year crypto cycles)
+- Dominant cycle detection (e.g., 20-day, 4-year crypto cycles)
 - Seasonality analysis (day-of-week, month-of-year effects)
 - Noise reduction via frequency filtering
-- Cycle composite indicators
+- Cycle composite indicators for trading signals
 - Market regime identification via spectral features
 
 Academic References:
 - Ehlers, J.F. "Rocket Science for Traders" (John Wiley & Sons, 2001)
 - Oppenheim & Schafer "Digital Signal Processing"
 - Granger & Hatanaka "Spectral Analysis of Economic Time Series"
+
+Dependencies:
+- numpy: Numerical computations and FFT
+- scipy.signal: Signal processing (hilbert, butter, filtfilt, welch)
+- scipy.interpolate: Interpolation for cycle analysis
+- pandas: Time series handling
 """
 
 import numpy as np
@@ -42,6 +71,93 @@ class SpectralAnalyzer:
 
     Detects dominant cycles, seasonality patterns, and performs
     frequency domain filtering for trend extraction.
+
+    Mathematical Background:
+    -----------------------
+    The SpectralAnalyzer uses FFT to decompose a time series into its
+    frequency components. Key operations:
+
+    1. FFT Computation:
+       X[k] = Σ_{n=0}^{N-1} x[n] * e^{-j2πkn/N}
+
+       - Converts time domain to frequency domain
+       - Returns complex values (magnitude + phase)
+
+    2. Power Spectrum:
+       P[k] = |X[k]|²
+
+       - Shows power (energy) at each frequency
+       - Peak frequencies indicate dominant cycles
+
+    3. Windowing:
+       w[n] = window function (Hanning, Hamming, Blackman)
+
+       - Reduces spectral leakage at signal boundaries
+       - Improves accuracy of frequency estimates
+
+    4. Filtering in Frequency Domain:
+       y_filtered = IFFT( X * H(f) )
+
+       where H(f) is the frequency response function:
+       - Low-pass:  H(f) = 1 for |f| < f_c, else 0
+       - High-pass: H(f) = 0 for |f| < f_c, else 1
+       - Band-pass: H(f) = 1 for f_l < |f| < f_h, else 0
+
+    Parameters:
+    -----------
+    sampling_rate : float
+        Sampling frequency (default: 1.0 for daily data).
+        Common values:
+        - 1.0: Daily data (1 sample per day)
+        - 24.0: Hourly data (24 samples per day)
+        - 1440: Minute data (1440 samples per day)
+
+    Attributes:
+    ----------
+    frequencies : np.ndarray
+        Array of frequency values (positive frequencies only)
+
+    power_spectrum : np.ndarray
+        Power at each frequency (proportional to amplitude²)
+
+    dominated_cycles : List[Dict]
+        List of detected dominant cycles with properties
+
+    Methods:
+    --------
+    compute_fft(signal, detrend, window)
+        Compute FFT and power spectrum
+
+    find_dominant_cycles(signal, n_cycles, min_period, max_period)
+        Find strongest cyclical components
+
+    cycle_composite(signal, cycles, lookahead)
+        Reconstruct signal from selected cycles
+
+    spectral_filter(signal, filter_type, cutoff)
+        Apply frequency-domain filter
+
+    extract_trend(signal, smoothness)
+        Extract low-frequency trend component
+
+    extract_cycles(signal, min_period, max_period)
+        Extract cyclical component
+
+    Example:
+    -------
+    >>> import numpy as np
+    >>>
+    >>> # Generate signal with known cycles
+    >>> t = np.linspace(0, 200, 200)
+    >>> signal = np.sin(2*np.pi*t/20) + 0.5*np.sin(2*np.pi*t/50)
+    >>>
+    >>> analyzer = SpectralAnalyzer(sampling_rate=1.0)
+    >>> freqs, power = analyzer.compute_fft(signal)
+    >>>
+    >>> # Find dominant cycles
+    >>> cycles = analyzer.find_dominant_cycles(signal, n_cycles=3)
+    >>> for c in cycles:
+    ...     print(f"Period: {c['period']:.1f}, Power: {c['power']:.3f}")
     """
 
     def __init__(self, sampling_rate: float = 1.0):
@@ -62,23 +178,71 @@ class SpectralAnalyzer:
         """
         Compute Fast Fourier Transform and power spectrum.
 
+        The FFT decomposes a time-domain signal into frequency components.
+
+        Mathematical Background:
+        ------------------------
+        Discrete Fourier Transform:
+            X[k] = Σ_{n=0}^{N-1} x[n] × e^{-j2πkn/N}
+
+            where:
+                N: Number of samples
+                k: Frequency index (0 to N-1)
+                x[n]: Time-domain sample n
+                X[k]: Complex frequency coefficient at frequency k
+
+        The FFT is an O(N log N) algorithm to compute this efficiently.
+
+        Power Spectrum:
+            P[k] = |X[k]|² = X[k] × conj(X[k])
+
+            Represents the power (energy) at each frequency.
+            Peak frequencies indicate dominant cycles.
+
+        Frequency Resolution:
+            Δf = Fs / N
+
+            where:
+                Fs: Sampling frequency
+                N: Number of samples
+
+            Longer signals = finer frequency resolution.
+
+        Windowing:
+            Applies a window function to reduce spectral leakage.
+            Without windowing, discontinuities at signal edges create
+            artificial frequency components.
+
+            Window functions:
+            - Hanning (default): Good general purpose, moderate leakage
+            - Hamming: Slightly less leakage than Hanning
+            - Blackman: Best leakage reduction, but broader peaks
+
         Args:
             signal: Input time series (prices or returns)
-            detrend: Remove linear trend before FFT
-            window: Window function ('hanning', 'hamming', 'blackman')
+            detrend: Remove linear trend before FFT (reduces low-freq artifact)
+            window: Window function ('hanning', 'hamming', 'blackman', or 'none')
 
         Returns:
-            (frequencies, power_spectrum)
+            Tuple of (frequencies, power_spectrum)
+                - frequencies: Array of frequency values (positive only)
+                - power_spectrum: Power at each frequency
         """
         n = len(signal)
 
-        # Detrend
+        # Step 1: Detrend
+        # Remove linear trend to prevent low-frequency artifact in spectrum
+        # The trend would appear as large low-frequency component
         if detrend:
             x = np.arange(n)
+            # Linear regression: signal = slope * time + intercept
             slope, intercept = np.polyfit(x, signal, 1)
+            # Remove the trend component
             signal = signal - (slope * x + intercept)
 
+        # Step 2: Window
         # Apply window function to reduce spectral leakage
+        # Without windowing, discontinuities at edges create artifacts
         if window == "hanning":
             w = np.hanning(n)
         elif window == "hamming":
@@ -88,21 +252,36 @@ class SpectralAnalyzer:
         else:
             w = np.ones(n)
 
+        # Apply window: multiply signal by window to taper edges
+        # This reduces discontinuities at the boundaries
         windowed_signal = signal * w
 
-        # Compute FFT
+        # Step 3: Compute FFT
+        # FFT computes the frequency-domain representation
+        # Returns complex values: real + imaginary
+        # |FFT| = amplitude, angle(FFT) = phase
         fft_values = fft.fft(windowed_signal)
 
-        # Compute power spectrum (magnitude squared)
+        # Step 4: Compute Power Spectrum
+        # Power = |X(f)|² = magnitude squared
+        # This shows how much "power" is at each frequency
         power = np.abs(fft_values) ** 2
 
-        # Frequencies
+        # Step 5: Compute Frequency Axis
+        # FFT frequencies: f[k] = k / (N * dt)
+        # where dt = 1/sampling_rate
+        # For sampling_rate=1 (daily data): f[k] = k/N cycles per day
         freqs = fft.fftfreq(n, d=1.0 / self.sampling_rate)
 
-        # Keep only positive frequencies (real signal)
+        # Step 6: Keep only positive frequencies
+        # For real-valued signals, the spectrum is symmetric:
+        # X(-f) = conj(X(f))
+        # Positive frequencies contain all the information
+        # Nyquist frequency (Fs/2) is the maximum detectable frequency
         positive_freqs = freqs[: n // 2]
         positive_power = power[: n // 2]
 
+        # Store for later use
         self.frequencies = positive_freqs
         self.power_spectrum = positive_power
 
@@ -323,30 +502,97 @@ class HilbertTransformAnalyzer:
         """
         Compute Hilbert transform and derived metrics.
 
+        The Hilbert transform creates an analytic signal that allows
+        us to compute instantaneous amplitude and phase - properties
+        that change continuously over time (unlike FFT which gives
+        global frequency content).
+
+        Mathematical Background:
+        ------------------------
+        Hilbert Transform:
+            x̂(t) = (1/π) × P.V. ∫[x(τ)/(t-τ)] dτ
+
+            where P.V. denotes Cauchy principal value integral.
+
+        This is equivalent to shifting each frequency component by 90°.
+
+        Analytic Signal:
+            z(t) = x(t) + j × x̂(t)
+
+        This is a complex-valued signal where:
+            |z(t)| = instantaneous amplitude (envelope)
+            arg(z(t)) = instantaneous phase
+
+        Instantaneous Amplitude:
+            A(t) = |z(t)| = √[x²(t) + x̂²(t)]
+
+            This is the "envelope" of the signal - the smooth curve
+            that surrounds the oscillations.
+
+        Instantaneous Phase:
+            φ(t) = arg(z(t)) = arctan[x̂(t)/x(t)]
+
+        Instantaneous Frequency:
+            ω(t) = dφ/dt
+
+            The rate of change of phase gives instantaneous frequency.
+
+            f(t) = ω(t) / (2π)
+
+        Advantages over FFT:
+        - Provides time-localized information (no look-ahead bias)
+        - Can track changing frequencies within a signal
+        - Useful for real-time trading applications
+
         Args:
-            signal: Input series
-            window: Window size for computation
+            signal: Input time series (typically price returns)
+            window: Window size for smoothing (not used in basic implementation)
 
         Returns:
-            Dictionary with instantaneous metrics
+            Dictionary with keys:
+                - amplitude: Instantaneous amplitude (envelope)
+                - phase: Instantaneous phase (unwrapped)
+                - frequency: Instantaneous frequency
+                - period: Instantaneous period = 1/frequency
+                - current_period: Most recent period value
+                - current_amplitude: Most recent amplitude value
+                - signal: Real part of analytic signal
         """
-        # Apply Hilbert transform
+        # Apply Hilbert transform using scipy.signal.hilbert
+        # This returns the analytic signal: x + j*H[x]
+        # The imaginary part is the Hilbert transform of x
         analytic_signal = hilbert(signal)
 
-        # Instantaneous amplitude (envelope)
+        # Instantaneous amplitude: |z(t)| = √(x² + x̂²)
+        # This is the envelope - how far the signal deviates from zero
+        # High amplitude = strong cycle, low amplitude = weak cycle
         amplitude = np.abs(analytic_signal)
 
-        # Instantaneous phase
+        # Instantaneous phase: arg(z(t))
+        # Use np.unwrap to remove 2π discontinuities
+        # This gives a continuously increasing/decreasing phase
         phase = np.unwrap(np.angle(analytic_signal))
 
-        # Instantaneous frequency (derivative of phase)
+        # Instantaneous frequency: dφ/dt / 2π
+        # The derivative of phase gives angular frequency
+        # Convert to cycles per sample by dividing by 2π
+        # This tells us the dominant frequency at each point in time
         freq = np.diff(phase) / (2.0 * np.pi)
-        freq = np.append(freq, freq[-1])  # Pad to maintain length
 
-        # Convert frequency to period
+        # Pad last value to maintain original signal length
+        freq = np.append(freq, freq[-1])
+
+        # Convert frequency to period: T = 1/f
+        # This is more intuitive for trading (e.g., "20-day cycle")
+        # Add small epsilon to avoid division by zero
         period = 1.0 / (np.abs(freq) + 1e-10)
-        period = np.clip(period, 2, len(signal))  # Reasonable bounds
 
+        # Clip to valid range:
+        # - Minimum: 2 samples (can't have period shorter than 2 points)
+        # - Maximum: entire signal length
+        period = np.clip(period, 2, len(signal))
+
+        # Store for later access
         self.analytic_signal = analytic_signal
         self.instantaneous_amplitude = amplitude
         self.instantaneous_phase = phase

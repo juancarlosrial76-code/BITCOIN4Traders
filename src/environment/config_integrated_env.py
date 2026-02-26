@@ -1,14 +1,98 @@
 """
 Realistic Trading Environment - FULLY CONFIG-INTEGRATED
-========================================================
-Complete integration with YAML configuration.
+=========================================================
 
-Key Improvements:
-1. 7 Discrete Position Actions (with Kelly-optimal sizing)
-2. Maker/Taker fee differentiation
-3. Dynamic reward calculation from config
-4. Market regime simulation
-5. Full Hydra/YAML integration
+Purpose:
+--------
+This module implements the main trading environment for the BITCOIN4Traders
+project, fully integrated with YAML configuration. It provides a Gymnasium-
+compatible RL environment with realistic trading mechanics, risk management,
+and comprehensive cost modeling.
+
+Key Improvements over Basic Version:
+---------------------------------
+1. 7 Discrete Position Actions: Richer action space with Kelly-inspired sizing
+2. Maker/Taker Fee Differentiation: Realistic exchange fee modeling
+3. Dynamic Reward Calculation: Configurable reward components from YAML
+4. Market Regime Simulation: Volatility and volume regime variations
+5. Full Hydra/YAML Integration: All parameters from config files
+6. Two-Layer Risk Management: Pre-trade and post-trade risk checks
+7. Order Book Integration: Realistic slippage from L2 data
+
+Architecture:
+------------
+The environment integrates multiple components:
+- Order Book Simulator: L2 market simulation for slippage
+- Slippage Model: Multiple slippage calculation strategies
+- Transaction Cost Model: Complete cost breakdown
+- Risk Manager: Position sizing and circuit breakers
+- Kelly Criterion: Optimal position sizing
+
+State Space:
+------------
+The observation vector combines:
+- Feature Data: Technical indicators and custom features
+- Portfolio State: Position, equity, cash ratios
+- Risk Metrics: Drawdown, consecutive losses
+- Market Regime: Volatility and volume factors
+- Progress: Episode progress indicator
+
+Action Space:
+-------------
+7 discrete actions for position sizing:
+    0: Short 100% (full short)
+    1: Short 50% (half short)
+    2: Neutral (flat)
+    3: Long 33% (quarter Kelly-inspired)
+    4: Long 50% (half position)
+    5: Long 75% (three-quarter)
+    6: Long 100% (full long)
+
+Risk Management (Two-Layer):
+----------------------------
+LAYER 1 - Pre-Trade Check:
+    - Executed BEFORE trade is processed
+    - Checks if circuit breaker is already triggered
+    - Returns -50 penalty if halted
+    - Prevents continued trading in risk-limited state
+
+LAYER 2 - Post-Trade Check:
+    - Executed AFTER trade AND RiskManager update
+    - Checks for NEW limit breaches from current trade
+    - Applies -50 penalty if limits exceeded
+    - Catches new drawdown/loss limit violations
+
+Usage:
+------
+    from src.environment.config_integrated_env import ConfigIntegratedTradingEnv
+    from src.environment.config_system import load_environment_config_from_yaml
+
+    # Load configuration
+    config = load_environment_config_from_yaml('config/environment/realistic_env.yaml')
+
+    # Create environment
+    env = ConfigIntegratedTradingEnv(price_data, features, config)
+
+    # Run episode
+    obs, info = env.reset()
+    for _ in range(1000):
+        action = policy(obs)  # Or env.action_space.sample()
+        obs, reward, terminated, truncated, info = env.step(action)
+        if terminated or truncated:
+            break
+
+Dependencies:
+-------------
+- gymnasium: RL environment interface
+- numpy: Numerical operations
+- pandas: Data handling
+- loguru: Logging
+- config_system: YAML configuration loader
+- order_book: L2 market simulation
+- slippage_model: Slippage calculations
+- position_actions: Action mapping
+- risk_manager: Risk management (Phase 4)
+- risk_metrics_logger: Risk metrics tracking
 """
 
 import gymnasium as gym
@@ -36,11 +120,50 @@ class ConfigIntegratedTradingEnv(gym.Env):
     """
     Fully config-integrated trading environment.
 
-    NEW Features vs previous version:
-    - Maker/Taker fee differentiation
-    - Dynamic reward from YAML components
+    This is the main environment class for the BITCOIN4Traders project.
+    It provides a realistic RL trading environment with comprehensive
+    configuration through YAML files.
+
+    Features:
+    ---------
+    - Configurable action space (7 discrete positions)
+    - Maker/taker fee differentiation
+    - Dynamic reward from configurable components
     - Market regime simulation
-    - All parameters from config
+    - Order book slippage modeling
+    - Two-layer risk management
+    - Kelly Criterion position sizing
+
+    Attributes:
+        config: EnvironmentConfig from YAML
+        price_data: OHLCV price data
+        features: Computed technical features
+        orderbook_sim: OrderBookSimulator (if enabled)
+        slippage_model: SlippageModel instance
+        cost_model: EnhancedTransactionCostModel
+        risk_manager: RiskManager for position sizing
+        risk_metrics: RiskMetricsLogger for tracking
+        position_mapper: PositionActionMapper for action conversion
+
+    State Vector:
+    -------------
+    Total features = n_features + 9 additional
+
+    Additional features:
+    - position: Current position (-1 to 1)
+    - portfolio_return: Return since episode start
+    - cash_ratio: Cash / equity ratio
+    - drawdown: Current drawdown
+    - n_trades: Trade count
+    - consecutive_losses: Loss streak
+    - regime_vol_factor: Volatility regime factor
+    - regime_volume_factor: Volume regime factor
+    - progress: Episode progress (0 to 1)
+
+    Example:
+        >>> config = load_environment_config_from_yaml('config.yaml')
+        >>> env = ConfigIntegratedTradingEnv(prices, features, config)
+        >>> obs, info = env.reset()
     """
 
     metadata = {"render.modes": ["human"]}
@@ -52,16 +175,15 @@ class ConfigIntegratedTradingEnv(gym.Env):
         config: EnvironmentConfig,
     ):
         """
-        Initialize with EnvironmentConfig (from YAML).
+        Initialize with EnvironmentConfig from YAML.
 
-        Parameters:
-        -----------
-        price_data : pd.DataFrame
-            OHLCV data
-        features : pd.DataFrame
-            Computed features
-        config : EnvironmentConfig
-            Complete configuration from YAML
+        Args:
+            price_data: OHLCV data with columns [open, high, low, close, volume]
+            features: Computed technical indicators and features
+            config: Complete EnvironmentConfig from YAML
+
+        Raises:
+            ValueError: If required columns missing from data
         """
         super().__init__()
 
@@ -69,7 +191,7 @@ class ConfigIntegratedTradingEnv(gym.Env):
         self.price_data = price_data
         self.features = features
 
-        # Align data
+        # Align data - ensure price and features match
         common_index = price_data.index.intersection(features.index)
         self.price_data = price_data.loc[common_index]
         self.features = features.loc[common_index]
@@ -82,7 +204,7 @@ class ConfigIntegratedTradingEnv(gym.Env):
         logger.info(f"  Taker Fee: {config.transaction_costs.taker_fee_bps} bps")
         logger.info(f"  Reward components: {len(config.reward.components)}")
 
-        # Initialize simulators
+        # Initialize simulators (order book, slippage, costs)
         self._init_simulators()
 
         # Initialize Risk Management (Phase 4)
@@ -95,23 +217,39 @@ class ConfigIntegratedTradingEnv(gym.Env):
         self.reset()
 
     def _init_simulators(self):
-        """Initialize order book and cost models from config."""
-        # Order book
+        """
+        Initialize order book and cost models from config.
+
+        Creates instances of:
+        - OrderBookSimulator: For L2 slippage (if enabled)
+        - SlippageModel: For slippage calculation
+        - EnhancedTransactionCostModel: For complete cost modeling
+        """
+        # Order book simulator
         if self.config.orderbook.enabled:
             self.orderbook_sim = OrderBookSimulator(self.config.orderbook)
         else:
             self.orderbook_sim = None
 
-        # Slippage
+        # Slippage model
         self.slippage_model = SlippageModel(self.config.slippage)
 
-        # Transaction costs (NEW: with maker/taker)
+        # Transaction costs (with maker/taker differentiation)
         self.cost_model = EnhancedTransactionCostModel(
             self.config.transaction_costs, self.slippage_model
         )
 
     def _init_risk_management(self):
-        """Initialize Risk Management system (Phase 4)."""
+        """
+        Initialize Risk Management system (Phase 4).
+
+        Creates RiskManager and RiskMetricsLogger for:
+        - Position sizing validation
+        - Kelly Criterion estimation
+        - Circuit breaker logic
+        - Drawdown tracking
+        - Consecutive loss counting
+        """
         # Create RiskConfig from EnvironmentConfig
         risk_config = RiskConfig(
             max_drawdown_per_session=self.config.max_drawdown,
@@ -136,9 +274,17 @@ class ConfigIntegratedTradingEnv(gym.Env):
         logger.info(f"  Max position: {risk_config.max_position_size * 100:.0f}%")
 
     def _init_spaces(self):
-        """Initialize observation and action spaces."""
+        """
+        Initialize observation and action spaces.
+
+        Sets up:
+        - observation_space: Box with feature + additional dimensions
+        - action_space: Discrete(7) for position sizing
+        - position_mapper: For action-to-position conversion
+        """
+        # Calculate state dimension
         n_features = len(self.features.columns)
-        n_additional = 9  # Extended features (was 12)
+        n_additional = 9  # Extended features
         state_dim = n_features + n_additional
 
         self.observation_space = spaces.Box(
@@ -152,11 +298,11 @@ class ConfigIntegratedTradingEnv(gym.Env):
 
         # Initialize position action mapper
         action_config = ActionConfig(
-            use_kelly_override=False,  # Disabled completely
+            use_kelly_override=False,  # Disabled - use discrete values
             kelly_fraction=0.5,
-            min_position_size=0.0,  # Allow any size
+            min_position_size=0.0,
             max_position_size=self.config.max_position_size,
-            strategy="discrete",  # Use exact discrete values
+            strategy="discrete",
         )
         self.position_mapper = PositionActionMapper(action_config)
 
@@ -168,16 +314,32 @@ class ConfigIntegratedTradingEnv(gym.Env):
     def reset(
         self, seed: Optional[int] = None, options: Optional[Dict] = None
     ) -> Tuple[np.ndarray, Dict]:
-        """Reset environment."""
+        """
+        Reset environment to start new episode.
+
+        Resets all state variables and initializes random starting point
+        within the data. Episode starts at random index to prevent
+        overfitting to specific time periods.
+
+        Args:
+            seed: Random seed (optional)
+            options: Additional options (optional)
+
+        Returns:
+            observation: Initial state vector
+            info: Initial information dict
+        """
         super().reset(seed=seed)
 
-        # Random start
+        # Random start – episode ends after max_steps steps
+        # Ensure enough data for lookback window
         max_start = (
             len(self.price_data) - self.config.max_steps - self.config.lookback_window
         )
         self.current_step = np.random.randint(
             self.config.lookback_window, max(self.config.lookback_window + 1, max_start)
         )
+        self._episode_start_step = self.current_step
 
         # Reset state
         self.position = 0.0
@@ -185,14 +347,12 @@ class ConfigIntegratedTradingEnv(gym.Env):
         self.shares = 0.0
         self.equity_history = [self.config.initial_capital]
         self.trade_history = []
-        self.trade_history = []
-        # self.consecutive_losses is now tracked by self.risk_manager
 
-        # Reset Risk Management (Phase 4)
+        # Reset Risk Management
         self.risk_manager.reset()
         self.risk_metrics.reset()
 
-        # Market regime (NEW!)
+        # Market regime (sampled for episode)
         self.current_regime = self._sample_market_regime()
 
         obs = self._get_observation()
@@ -202,12 +362,15 @@ class ConfigIntegratedTradingEnv(gym.Env):
 
     def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         """
-        Execute step with config-driven behavior and risk management.
+        Execute one step with config-driven behavior and risk management.
+
+        This is the main interaction method. It implements a two-layer
+        risk management system:
 
         Risk Management Flow (Two-Layer Protection):
         ===========================================
 
-        LAYER 1 - Pre-Trade Check (lines ~207-221):
+        LAYER 1 - Pre-Trade Check (lines ~257-272):
         ---------------------------------------------
         Purpose:    "Can we even trade?"
         When:       BEFORE executing the trade
@@ -216,7 +379,7 @@ class ConfigIntegratedTradingEnv(gym.Env):
         Reason:     Circuit breaker was already triggered from previous steps
                     Prevents continued trading when already in risk-limited state
 
-        LAYER 2 - Post-Trade Check (lines ~253-262):
+        LAYER 2 - Post-Trade Check (lines ~309-319):
         ----------------------------------------------
         Purpose:    "Did this trade breach any limits?"
         When:       AFTER executing trade AND updating RiskManager state
@@ -239,16 +402,21 @@ class ConfigIntegratedTradingEnv(gym.Env):
         Returns:
         --------
         observation : np.ndarray
-            Current market state
+            Current market state (feature vector)
         reward : float
             Trading reward (includes risk penalties)
         terminated : bool
-            Episode ended (risk limits or end of data)
+            Episode ended (risk limits reached or end of data)
         truncated : bool
-            Episode truncated (max steps)
+            Episode truncated (max steps reached)
         info : dict
             Additional information (position, equity, risk_metrics, etc.)
+
+        Example:
+            >>> obs, reward, terminated, truncated, info = env.step(4)
+            >>> print(f"Reward: {reward:.2f}, Position: {info['position']}")
         """
+        # Store old equity for reward calculation
         old_equity = self._calculate_equity()
 
         # ============================================================
@@ -258,7 +426,7 @@ class ConfigIntegratedTradingEnv(gym.Env):
         if self.risk_manager.should_halt_trading():
             terminated = True
             truncated = False
-            reward = -50.0  # Consistent penalty (unified with Layer 2)
+            reward = -50.0  # Consistent penalty
 
             obs = self._get_observation()
             info = self._get_info()
@@ -269,16 +437,20 @@ class ConfigIntegratedTradingEnv(gym.Env):
 
             return obs, reward, terminated, truncated, info
 
-        # Execute trade (with risk management validation)
+        # Execute trade with risk management validation
         trade_info = self._execute_trade_enhanced(action)
 
         # Move to next step
         self.current_step += 1
 
-        # Check episode end
+        # Check episode end: end of data OR max_steps reached
+        steps_in_episode = self.current_step - self._episode_start_step
         if self.current_step >= len(self.price_data) - 1:
             terminated = True
             truncated = False
+        elif steps_in_episode >= self.config.max_steps:
+            terminated = False
+            truncated = True  # Time-limited episode
         else:
             terminated = False
             truncated = False
@@ -309,7 +481,6 @@ class ConfigIntegratedTradingEnv(gym.Env):
             logger.warning(f"Risk limits reached: {halt_reason}")
 
             # Consistent penalty (unified with Layer 1)
-            # This prevents learning agents from ignoring risk rules
             reward -= 50.0
 
         obs = self._get_observation()
@@ -325,15 +496,24 @@ class ConfigIntegratedTradingEnv(gym.Env):
         """
         Execute trade with position sizing and maker/taker differentiation.
 
-        NEW: Maps 7 discrete actions to continuous position sizes with Kelly override.
+        Maps discrete action to position size, calculates costs with
+        realistic fee modeling, and executes the trade.
+
         Actions:
             0: Short 100%, 1: Short 50%, 2: Neutral, 3: Long 33%
             4: Long 50%, 5: Long 75%, 6: Long 100%
 
+        Features:
+        - Kelly parameter estimation for optimal sizing
+        - Risk Manager validation
+        - Order type determination (maker vs taker)
+        - Order book slippage (if enabled)
+        - Complete cost calculation
+
         Returns:
         --------
         trade_info : dict
-            Contains trade details, costs, order type
+            Contains trade details, costs, order type, execution price
         """
         # Get Kelly parameters for optimal position sizing
         kelly_params = self.risk_manager.kelly.estimate_parameters(
@@ -342,18 +522,19 @@ class ConfigIntegratedTradingEnv(gym.Env):
             else []
         )
 
-        # Map action to position size (simple - just use discrete values)
+        # Map action to position size using predefined values
         target_position = POSITION_SIZES[action]
 
-        if abs(target_position - self.position) < 0.01:  # Already at target
+        # Skip if already at target position
+        if abs(target_position - self.position) < 0.01:
             return {"trade_executed": False, "cost": 0.0, "order_type": "none"}
 
-        # Current market data
+        # Get current market data
         current_price = self.price_data.iloc[self.current_step]["close"]
         current_volume = self.price_data.iloc[self.current_step]["volume"]
         volatility = self.features.iloc[self.current_step].get("volatility_20", 0.02)
 
-        # Apply market regime
+        # Apply market regime: scale volatility and volume
         regime = self.current_regime
         volatility *= regime.volatility / 0.02
         current_volume *= regime.volume / 500.0
@@ -414,16 +595,16 @@ class ConfigIntegratedTradingEnv(gym.Env):
             side = "sell"
             shares_to_trade = abs(shares_to_trade)
 
-        # Determine order type (NEW: maker vs taker)
-        # Simple heuristic: Small orders = limit (maker), large = market (taker)
+        # Determine order type (maker vs taker)
+        # Small orders use limit (maker), large orders use market (taker)
         participation_rate = (
             shares_to_trade * current_price / (current_volume * current_price + 1e-8)
         )
 
-        if participation_rate < 0.01:  # Small order
+        if participation_rate < 0.01:  # < 1% of volume = maker
             order_type = "maker"
             fee_bps = self.config.transaction_costs.maker_fee_bps
-        else:  # Large order
+        else:  # Large order = taker
             order_type = "taker"
             fee_bps = self.config.transaction_costs.taker_fee_bps
 
@@ -460,7 +641,7 @@ class ConfigIntegratedTradingEnv(gym.Env):
         execution_price = costs["execution_price"]
         total_cost = costs["total_cost_dollars"]
 
-        # Execute
+        # Execute trade
         old_position_value = 0
         if self.position != 0:
             old_position_value = self.shares * current_price
@@ -474,12 +655,11 @@ class ConfigIntegratedTradingEnv(gym.Env):
 
         self.position = target_position
 
-        # Calculate Trade PnL (immediate impact of trade)
+        # Calculate Trade PnL
         # PnL = Change in position value - Transaction costs
-        # This captures both the unrealized P&L and the trading costs
         new_position_value = self.shares * current_price if target_position != 0 else 0
-        position_change = new_position_value - old_position_value
-        pnl = position_change - total_cost
+        position_change_value = new_position_value - old_position_value
+        pnl = position_change_value - total_cost
 
         # Record trade
         trade_info = {
@@ -494,7 +674,7 @@ class ConfigIntegratedTradingEnv(gym.Env):
             "fee_bps": fee_bps,
             "slippage_bps": costs.get("slippage_bps", 0),
             "pnl": pnl,
-            "kelly_fraction": kelly_fraction,  # Phase 4: Track Kelly sizing
+            "kelly_fraction": kelly_fraction,
         }
 
         self.trade_history.append(trade_info)
@@ -505,7 +685,21 @@ class ConfigIntegratedTradingEnv(gym.Env):
         """
         Calculate reward dynamically from config components.
 
-        NEW: Uses reward.components from YAML instead of hardcoded values.
+        Uses reward.components from YAML to build the reward signal.
+        This allows customization of reward shaping without code changes.
+
+        Available Components:
+        - 'return': Portfolio return (PnL / equity)
+        - 'sharpe': Sharpe ratio bonus
+        - 'drawdown': Drawdown penalty
+        - 'transaction_cost': Cost penalty
+
+        Args:
+            old_equity: Equity before step
+            trade_info: Trade execution details
+
+        Returns:
+            reward: Combined reward from all components
         """
         current_equity = self._calculate_equity()
         components_values = {}
@@ -526,7 +720,9 @@ class ConfigIntegratedTradingEnv(gym.Env):
                     )
                     sharpe = np.mean(returns) / (np.std(returns) + 1e-8) * np.sqrt(252)
                     components_values["sharpe"] = np.clip(
-                        sharpe * comp.weight, -0.5, 0.5
+                        sharpe * comp.weight,
+                        -0.5,
+                        0.5,
                     )
                 else:
                     components_values["sharpe"] = 0.0
@@ -546,7 +742,7 @@ class ConfigIntegratedTradingEnv(gym.Env):
         # Sum all components
         reward = sum(components_values.values())
 
-        # Scale and clip (from config)
+        # Scale and clip reward
         reward = np.clip(
             reward * self.config.reward.scale,
             self.config.reward.clip_min,
@@ -559,7 +755,12 @@ class ConfigIntegratedTradingEnv(gym.Env):
         """
         Sample market regime for episode.
 
-        NEW: Uses market regimes from config.
+        Market regimes define different volatility and volume conditions
+        to simulate various market environments. This adds realism and
+        helps train more robust strategies.
+
+        Returns:
+            regime: MarketRegime with volatility, volume, spread
         """
         regime_names = list(self.config.market.vol_regimes.keys())
 
@@ -572,13 +773,27 @@ class ConfigIntegratedTradingEnv(gym.Env):
         return self.config.market.get_regime(regime_name)
 
     def _calculate_equity(self) -> float:
-        """Calculate current portfolio value."""
+        """
+        Calculate current portfolio value.
+
+        Equity = Cash + Position Value
+
+        Returns:
+            equity: Total portfolio value
+        """
         current_price = self.price_data.iloc[self.current_step]["close"]
         position_value = self.shares * current_price
         return self.cash + position_value
 
     def _calculate_drawdown(self) -> float:
-        """Calculate current drawdown."""
+        """
+        Calculate current drawdown from peak equity.
+
+        Drawdown = (Current Equity - Peak Equity) / Peak Equity
+
+        Returns:
+            drawdown: Current drawdown (negative = below peak)
+        """
         if len(self.equity_history) < 2:
             return 0.0
 
@@ -589,7 +804,15 @@ class ConfigIntegratedTradingEnv(gym.Env):
         return drawdown
 
     def _get_observation(self) -> np.ndarray:
-        """Construct observation with regime features."""
+        """
+        Construct observation vector.
+
+        Combines feature data with portfolio state, risk metrics,
+        and regime information.
+
+        Returns:
+            obs: State vector (float32)
+        """
         # Features from Phase 1
         feature_values = self.features.iloc[self.current_step].values
 
@@ -601,7 +824,7 @@ class ConfigIntegratedTradingEnv(gym.Env):
         cash_ratio = self.cash / current_equity if current_equity > 0 else 1.0
         drawdown = self._calculate_drawdown()
 
-        # Market regime (NEW!)
+        # Market regime factors
         regime_vol_factor = self.current_regime.volatility / 0.02
         regime_volume_factor = self.current_regime.volume / 500.0
 
@@ -626,7 +849,12 @@ class ConfigIntegratedTradingEnv(gym.Env):
         return obs.astype(np.float32)
 
     def _get_info(self) -> Dict:
-        """Get info dict."""
+        """
+        Get info dict with current state.
+
+        Returns:
+            info: Dict with step, price, position, equity, etc.
+        """
         current_equity = self._calculate_equity()
 
         info = {
@@ -645,7 +873,12 @@ class ConfigIntegratedTradingEnv(gym.Env):
         return info
 
     def render(self, mode="human"):
-        """Render state."""
+        """
+        Render environment state.
+
+        Args:
+            mode: Rendering mode ('human' supported)
+        """
         if mode == "human":
             info = self._get_info()
             print(f"\nStep {info['step']}:")
@@ -660,7 +893,24 @@ class EnhancedTransactionCostModel:
     """
     Enhanced transaction cost model with maker/taker differentiation.
 
-    NEW: Separate fees for limit (maker) vs market (taker) orders.
+    This model provides complete cost breakdown including:
+    - Maker fees (for limit orders)
+    - Taker fees (for market orders)
+    - Slippage (various models)
+
+    The key improvement is distinguishing between maker and taker
+    orders, which have significantly different fees on most exchanges.
+
+    Attributes:
+        config: TransactionCostConfig with fee parameters
+        slippage_model: SlippageModel instance
+
+    Example:
+        >>> cost_model = EnhancedTransactionCostModel(config, slippage_model)
+        >>> costs = cost_model.calculate_total_cost_enhanced(
+        ...     side='buy', quantity=1.0, price=50000.0,
+        ...     order_type='taker', volume=100.0
+        ... )
     """
 
     def __init__(self, config, slippage_model):
@@ -675,16 +925,29 @@ class EnhancedTransactionCostModel:
         order_type: str,  # 'maker' or 'taker'
         **kwargs,
     ) -> Dict:
-        """Calculate costs with maker/taker differentiation."""
-        # Select appropriate fee
+        """
+        Calculate costs with maker/taker differentiation.
+
+        Args:
+            side: 'buy' or 'sell'
+            quantity: Order size
+            price: Reference price
+            order_type: 'maker' (limit) or 'taker' (market)
+            **kwargs: Additional parameters for slippage
+
+        Returns:
+            costs: Dict with execution_price, fee_bps, slippage_bps, etc.
+        """
+        # Select appropriate fee based on order type
         if order_type == "maker":
             fee_bps = self.config.maker_fee_bps
         else:  # taker
             fee_bps = self.config.taker_fee_bps
 
+        # Calculate fee in dollars
         fee_dollars = price * quantity * (fee_bps / 10000)
 
-        # Slippage (if enabled)
+        # Calculate slippage (if enabled)
         if self.config.include_slippage:
             execution_price, slippage_bps = self.slippage_model.calculate_slippage(
                 side, quantity, price, **kwargs
@@ -693,9 +956,10 @@ class EnhancedTransactionCostModel:
             execution_price = price
             slippage_bps = 0.0
 
-        # Total cost
+        # Total cost in bps
         total_cost_bps = fee_bps + slippage_bps
 
+        # Dollar cost
         if side == "buy":
             total_cost_dollars = (execution_price - price) * quantity + fee_dollars
         else:

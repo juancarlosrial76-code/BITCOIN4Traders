@@ -31,13 +31,15 @@ def sample_price_data():
     n_points = 200
     dates = pd.date_range("2023-01-01", periods=n_points, freq="1H")
 
-    close = 50000 + np.cumsum(np.random.randn(n_points) * 100)
+    close = 50000 + np.cumsum(np.random.randn(n_points) * 100)  # Random walk price
 
     return pd.DataFrame(
         {
             "open": close + np.random.randn(n_points) * 50,
-            "high": close + abs(np.random.randn(n_points) * 100),
-            "low": close - abs(np.random.randn(n_points) * 100),
+            "high": close
+            + abs(np.random.randn(n_points) * 100),  # High is always >= close
+            "low": close
+            - abs(np.random.randn(n_points) * 100),  # Low is always <= close
             "close": close,
             "volume": np.random.uniform(100, 1000, n_points),
         },
@@ -54,9 +56,9 @@ def sample_features():
 
     return pd.DataFrame(
         {
-            "log_ret": np.random.randn(n_points) * 0.01,
-            "volatility_20": np.abs(np.random.randn(n_points)) * 0.02,
-            "ou_score": np.random.randn(n_points),
+            "log_ret": np.random.randn(n_points) * 0.01,  # Log returns
+            "volatility_20": np.abs(np.random.randn(n_points)) * 0.02,  # Realized vol
+            "ou_score": np.random.randn(n_points),  # Mean-reversion score
         },
         index=dates,
     )
@@ -70,7 +72,7 @@ def env_config():
         max_position_size=0.25,
         max_drawdown=0.20,
         max_steps=100,
-        lookback_window=20,
+        lookback_window=20,  # Look back 20 bars for observation
     )
 
 
@@ -81,19 +83,19 @@ class TestEnvironmentConfig:
         """Test default configuration."""
         config = EnvironmentConfig()
         assert config.initial_capital == 100000
-        assert config.max_position_size == 1.0
+        assert config.max_position_size == 1.0  # Allow full position by default
         assert config.max_drawdown == 0.20
 
     def test_transaction_costs(self):
         """Test transaction cost configuration."""
         config = EnvironmentConfig()
-        assert config.transaction_costs.maker_fee_bps == 2
-        assert config.transaction_costs.taker_fee_bps == 5
+        assert config.transaction_costs.maker_fee_bps == 2  # Limit order: 0.02%
+        assert config.transaction_costs.taker_fee_bps == 5  # Market order: 0.05%
 
     def test_slippage_config(self):
         """Test slippage configuration."""
         config = EnvironmentConfig()
-        assert config.slippage.model_type == "volume_based"
+        assert config.slippage.model_type == "volume_based"  # Default: volume-weighted
         assert config.slippage.fixed_slippage_bps == 5.0
 
 
@@ -126,7 +128,7 @@ class TestConfigIntegratedTradingEnv:
         assert isinstance(obs, np.ndarray)
         assert obs.shape[0] > 0
         assert isinstance(info, dict)
-        assert info["position"] == 0
+        assert info["position"] == 0  # Starts flat
         assert info["equity"] == env_config.initial_capital
 
     def test_step_buy(self, sample_price_data, sample_features, env_config):
@@ -144,7 +146,7 @@ class TestConfigIntegratedTradingEnv:
         assert isinstance(obs, np.ndarray)
         assert isinstance(reward, (float, np.floating))
         assert isinstance(terminated, bool)
-        assert info["position"] in [-1, 0, 1]
+        assert info["position"] in [-1, 0, 1]  # Valid position states
 
     def test_step_sell(self, sample_price_data, sample_features, env_config):
         """Test sell action."""
@@ -186,7 +188,7 @@ class TestConfigIntegratedTradingEnv:
         env.reset()
 
         initial_equity = env._calculate_equity()
-        assert initial_equity == env_config.initial_capital
+        assert initial_equity == env_config.initial_capital  # Starts at initial capital
 
     def test_episode_termination(self, sample_price_data, sample_features, env_config):
         """Test episode termination."""
@@ -197,7 +199,7 @@ class TestConfigIntegratedTradingEnv:
         env = ConfigIntegratedTradingEnv(price_data, features, env_config)
         env.reset()
 
-        # Run until episode ends
+        # Run until episode ends (max_steps or terminal condition)
         terminated = False
         steps = 0
         max_steps = 1000
@@ -236,8 +238,8 @@ class TestOrderBookSimulator:
 
         assert len(bid_prices) == config.n_levels
         assert len(ask_prices) == config.n_levels
-        assert all(bid_prices < mid_price)
-        assert all(ask_prices > mid_price)
+        assert all(bid_prices < mid_price)  # Bids are below mid
+        assert all(ask_prices > mid_price)  # Asks are above mid
 
 
 class TestSlippageModel:
@@ -257,7 +259,7 @@ class TestSlippageModel:
             "buy", 1.0, 50000, volume=1000, volatility=0.02
         )
 
-        assert price > 50000  # Buy price should be higher
+        assert price > 50000  # Buy at a price above mid (slippage is adverse)
         assert slippage > 0
 
     def test_volume_based_slippage(self):
@@ -276,7 +278,7 @@ class TestSlippageModel:
             "buy", 1.0, 50000, volume=1000, volatility=0.02
         )
 
-        assert price > 50000
+        assert price > 50000  # Larger order → more price impact
         assert slippage > 0
 
     def test_volatility_adjusted_slippage(self):
@@ -289,18 +291,26 @@ class TestSlippageModel:
         config = SlipCfg(
             model_type="volatility",
             fixed_slippage_bps=5,
-            volatility_multiplier=10,
+            volatility_multiplier=10,  # Amplifies slippage in volatile markets
         )
         model = SlipModel(config)
 
         # High volatility
         price1, slippage1 = model.calculate_slippage(
-            "buy", 1.0, 50000, volume=1000, volatility=0.05
+            "buy",
+            1.0,
+            50000,
+            volume=1000,
+            volatility=0.05,  # High vol
         )
 
         # Low volatility
         price2, slippage2 = model.calculate_slippage(
-            "buy", 1.0, 50000, volume=1000, volatility=0.01
+            "buy",
+            1.0,
+            50000,
+            volume=1000,
+            volatility=0.01,  # Low vol
         )
 
         assert slippage1 > slippage2  # Higher vol = higher slippage
@@ -318,7 +328,7 @@ class TestTransactionCostModel:
             TransactionCostModel as TCModel,
         )
 
-        config = TCConfig(fixed_bps=2, include_slippage=False)
+        config = TCConfig(fixed_bps=2, include_slippage=False)  # Maker: 0.02%
         slippage_config = SlipCfg(model_type="fixed", fixed_slippage_bps=0)
         slippage_model = SlipModel(slippage_config)
 
@@ -340,7 +350,7 @@ class TestTransactionCostModel:
             TransactionCostModel as TCModel,
         )
 
-        config = TCConfig(fixed_bps=5, include_slippage=False)
+        config = TCConfig(fixed_bps=5, include_slippage=False)  # Taker: 0.05%
         slippage_config = SlipCfg(model_type="fixed", fixed_slippage_bps=0)
         slippage_model = SlipModel(slippage_config)
 
@@ -362,8 +372,10 @@ class TestTransactionCostModel:
             TransactionCostModel as TCModel,
         )
 
-        maker_config = TCConfig(fixed_bps=2, include_slippage=False)
-        taker_config = TCConfig(fixed_bps=5, include_slippage=False)
+        maker_config = TCConfig(fixed_bps=2, include_slippage=False)  # Maker: cheaper
+        taker_config = TCConfig(
+            fixed_bps=5, include_slippage=False
+        )  # Taker: more expensive
         slippage_config = SlipCfg(model_type="fixed", fixed_slippage_bps=0)
 
         maker_model = TCModel(maker_config, SlipModel(slippage_config))

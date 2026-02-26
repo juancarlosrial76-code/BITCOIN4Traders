@@ -33,11 +33,11 @@ from loguru import logger
 class MetaLearningConfig:
     """Configuration for meta-learning."""
 
-    inner_lr: float = 0.01  # Learning rate for task adaptation
-    meta_lr: float = 0.001  # Learning rate for meta-parameters
-    inner_steps: int = 5  # Gradient steps per task
+    inner_lr: float = 0.01  # Learning rate for task-level adaptation (inner loop)
+    meta_lr: float = 0.001  # Learning rate for meta-parameter update (outer loop)
+    inner_steps: int = 5  # Gradient steps per task during adaptation
     meta_batch_size: int = 4  # Number of tasks per meta-update
-    first_order: bool = False  # Use first-order MAML (faster)
+    first_order: bool = False  # Use first-order MAML (faster, less memory)
 
 
 class MAMLTrader:
@@ -54,7 +54,9 @@ class MAMLTrader:
     def __init__(self, base_model: nn.Module, config: MetaLearningConfig = None):
         self.config = config or MetaLearningConfig()
         self.base_model = base_model
+        # Store meta-parameters as clones (updated by meta-optimizer)
         self.meta_parameters = {n: p.clone() for n, p in base_model.named_parameters()}
+        # Adam optimizer drives the outer (meta) loop updates
         self.meta_optimizer = torch.optim.Adam(
             self.base_model.parameters(), lr=self.config.meta_lr
         )
@@ -70,31 +72,33 @@ class MAMLTrader:
         This is the "learning" phase - takes just 5-10 gradient steps.
         """
         if create_copy:
-            model = copy.deepcopy(self.base_model)
+            model = copy.deepcopy(self.base_model)  # Deep copy to avoid mutating base
         else:
             model = self.base_model
 
-        # Initialize from meta-parameters
+        # Initialize from meta-parameters (warm start from learned initialization)
         for name, param in model.named_parameters():
             if name in self.meta_parameters:
                 param.data = self.meta_parameters[name].clone()
 
-        # Inner loop: adapt to task
+        # Inner loop: adapt to task with SGD (fast, few steps)
         inner_optimizer = torch.optim.SGD(model.parameters(), lr=self.config.inner_lr)
 
         for step in range(self.config.inner_steps):
             inner_optimizer.zero_grad()
 
-            # Forward pass
+            # Forward pass on support examples
             predictions = model(support_x)
             loss = F.mse_loss(predictions, support_y)
 
-            # Backward pass
+            # Backward pass: compute gradients wrt task-adapted parameters
             loss.backward()
             inner_optimizer.step()
 
             if step == 0:
-                initial_loss = loss.item()
+                initial_loss = (
+                    loss.item()
+                )  # Record starting loss for improvement logging
 
         final_loss = loss.item()
         improvement = (initial_loss - final_loss) / (initial_loss + 1e-8)
@@ -118,24 +122,24 @@ class MAMLTrader:
         meta_loss = 0.0
 
         for support_x, support_y, query_x, query_y in tasks:
-            # Adapt to task
+            # Inner loop: adapt to this task
             adapted_model = self.adapt_to_task(support_x, support_y, create_copy=True)
 
-            # Evaluate on query set (unseen data from same task)
+            # Evaluate on query set (held-out data from same task)
             query_predictions = adapted_model(query_x)
             task_loss = F.mse_loss(query_predictions, query_y)
 
-            meta_loss += task_loss
+            meta_loss += task_loss  # Accumulate across tasks
 
-        # Average across tasks
+        # Average meta-loss across the batch of tasks
         meta_loss = meta_loss / len(tasks)
 
-        # Meta-update
+        # Outer loop update: improve the initialization
         self.meta_optimizer.zero_grad()
         meta_loss.backward()
         self.meta_optimizer.step()
 
-        # Update stored meta-parameters
+        # Snapshot updated meta-parameters for next adaptation
         self.meta_parameters = {
             n: p.clone().detach() for n, p in self.base_model.named_parameters()
         }
@@ -153,15 +157,15 @@ class MAMLTrader:
         losses = []
 
         for iteration in range(n_iterations):
-            # Sample batch of tasks
+            # Sample a batch of diverse market tasks
             tasks = [task_generator() for _ in range(self.config.meta_batch_size)]
 
-            # Meta-update
+            # Meta-update using this batch
             loss = self.meta_update(tasks)
             losses.append(loss)
 
             if iteration % 100 == 0:
-                avg_loss = np.mean(losses[-100:])
+                avg_loss = np.mean(losses[-100:])  # Rolling 100-iteration average
                 logger.info(f"Iteration {iteration}: avg loss = {avg_loss:.4f}")
 
         return losses
@@ -179,16 +183,16 @@ class FewShotLearner:
         self.hidden_dim = hidden_dim
 
         # Prototypical networks: learn embeddings where
-        # similar examples cluster together
+        # similar examples cluster together in embedding space
         self.encoder = nn.Sequential(
             nn.Linear(feature_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, 64),  # Embedding space
+            nn.Linear(hidden_dim, 64),  # Compress to 64-dim embedding space
         )
 
-        self.prototypes = {}
+        self.prototypes = {}  # Class centroids in embedding space
         logger.info("FewShotLearner initialized")
 
     def compute_prototypes(
@@ -199,13 +203,13 @@ class FewShotLearner:
 
         Each class is represented by the mean of its support examples.
         """
-        embeddings = self.encoder(support_x)
+        embeddings = self.encoder(support_x)  # Map support examples to embedding space
 
         prototypes = {}
         for c in range(n_classes):
-            mask = (support_y == c).squeeze()
+            mask = (support_y == c).squeeze()  # Boolean mask for class c
             if mask.sum() > 0:
-                prototypes[c] = embeddings[mask].mean(dim=0)
+                prototypes[c] = embeddings[mask].mean(dim=0)  # Centroid of class c
 
         self.prototypes = prototypes
         return prototypes
@@ -219,17 +223,17 @@ class FewShotLearner:
         if len(self.prototypes) == 0:
             raise ValueError("No prototypes computed. Call compute_prototypes first.")
 
-        query_embeddings = self.encoder(query_x)
+        query_embeddings = self.encoder(query_x)  # Embed query examples
 
-        # Compute distances to all prototypes
+        # Compute Euclidean distance from each query to each prototype
         distances = {}
         for c, prototype in self.prototypes.items():
             dist = torch.norm(query_embeddings - prototype, dim=1)
             distances[c] = dist
 
-        # Convert to probabilities (inverse distance)
+        # Negative distances as logits (closer = higher score)
         logits = torch.stack([-distances[c] for c in sorted(distances.keys())], dim=1)
-        probs = F.softmax(logits, dim=1)
+        probs = F.softmax(logits, dim=1)  # Convert to probabilities
 
         return probs
 
@@ -239,7 +243,7 @@ class FewShotLearner:
         """
         Learn a new market from just n examples.
         """
-        # Sample n-shot support set
+        # Sample n-shot support set without replacement
         support_indices = np.random.choice(
             len(examples), size=min(n_shots, len(examples)), replace=False
         )
@@ -247,7 +251,7 @@ class FewShotLearner:
         support_x = torch.FloatTensor(examples.iloc[support_indices].values)
         support_y = torch.LongTensor(labels.iloc[support_indices].values)
 
-        # Compute prototypes
+        # Compute class prototypes from this tiny support set
         self.compute_prototypes(support_x, support_y)
 
         logger.success(f"Learned new market from {n_shots} examples")
@@ -265,9 +269,11 @@ class ContinualLearner:
 
     def __init__(self, model: nn.Module, lambda_ewc: float = 1000.0):
         self.model = model
-        self.lambda_ewc = lambda_ewc
-        self.fisher_dict = {}
-        self.optimal_params = {}
+        self.lambda_ewc = (
+            lambda_ewc  # Regularization strength (higher = less forgetting)
+        )
+        self.fisher_dict = {}  # Fisher information matrices per task
+        self.optimal_params = {}  # Optimal parameters after each task
         self.task_count = 0
         logger.info("ContinualLearner initialized")
 
@@ -286,15 +292,18 @@ class ContinualLearner:
             loss = F.mse_loss(output, batch_y)
             loss.backward()
 
-            # Accumulate squared gradients
+            # Accumulate squared gradients (diagonal Fisher approximation)
             for n, p in self.model.named_parameters():
                 if p.grad is not None:
-                    fisher[n] += p.grad.pow(2) / len(data_loader)
+                    fisher[n] += p.grad.pow(2) / len(
+                        data_loader
+                    )  # Normalize by dataset size
 
         return fisher
 
     def update_ewc_params(self, data_loader: torch.utils.data.DataLoader):
         """Update EWC parameters after learning a task."""
+        # Store Fisher information and optimal params for current task
         self.fisher_dict[self.task_count] = self.compute_fisher_information(data_loader)
         self.optimal_params[self.task_count] = {
             n: p.clone().detach() for n, p in self.model.named_parameters()
@@ -308,17 +317,18 @@ class ContinualLearner:
         Penalizes changes to important parameters from previous tasks.
         """
         if self.task_count == 0:
-            return torch.tensor(0.0)
+            return torch.tensor(0.0)  # No penalty before any task has been learned
 
         loss = torch.tensor(0.0)
         for task_id in range(self.task_count):
             for n, p in self.model.named_parameters():
                 if n in self.fisher_dict[task_id]:
-                    fisher = self.fisher_dict[task_id][n]
-                    optimal = self.optimal_params[task_id][n]
+                    fisher = self.fisher_dict[task_id][n]  # Importance weight
+                    optimal = self.optimal_params[task_id][n]  # Target value
+                    # Weighted squared deviation from optimal parameters
                     loss += (fisher * (p - optimal).pow(2)).sum()
 
-        return self.lambda_ewc * loss
+        return self.lambda_ewc * loss  # Scale by regularization strength
 
     def train_on_task(self, data_loader: torch.utils.data.DataLoader, epochs: int = 10):
         """Train on new task while protecting old knowledge."""
@@ -328,14 +338,14 @@ class ContinualLearner:
             for batch_x, batch_y in data_loader:
                 optimizer.zero_grad()
 
-                # Task loss
+                # Task loss: fit the current data
                 output = self.model(batch_x)
                 task_loss = F.mse_loss(output, batch_y)
 
-                # EWC penalty
+                # EWC penalty: don't deviate from what worked for previous tasks
                 ewc_penalty = self.ewc_loss()
 
-                # Total loss
+                # Total loss balances new learning and memory retention
                 total_loss = task_loss + ewc_penalty
 
                 total_loss.backward()
@@ -347,7 +357,7 @@ class ContinualLearner:
                     f"ewc={ewc_penalty.item():.4f}"
                 )
 
-        # Update EWC parameters
+        # Update EWC parameters with this task's importance information
         self.update_ewc_params(data_loader)
 
         logger.success(f"Trained on task {self.task_count} without forgetting")
@@ -365,12 +375,12 @@ class AdaptiveLearningRate:
         self.model = model
         self.base_lr = base_lr
 
-        # Learning rate multipliers for each parameter
+        # Per-parameter learning rate multipliers (initialized to 1 = base_lr)
         self.lr_multipliers = {
             n: torch.ones_like(p) for n, p in model.named_parameters()
         }
 
-        # Momentum for LR adaptation
+        # Momentum for LR adaptation (exponential moving average of gradients)
         self.lr_momentum = {n: torch.zeros_like(p) for n, p in model.named_parameters()}
 
         logger.info("AdaptiveLearningRate initialized")
@@ -382,7 +392,7 @@ class AdaptiveLearningRate:
         Increases LR for consistently useful parameters.
         Decreases LR for noisy/irrelevant parameters.
         """
-        # Compute gradients
+        # Compute gradients for all parameters
         self.model.zero_grad()
         loss.backward()
 
@@ -393,16 +403,16 @@ class AdaptiveLearningRate:
 
             grad = p.grad
 
-            # Update momentum
+            # Exponential moving average of gradients (tracks consistent direction)
             self.lr_momentum[n] = 0.9 * self.lr_momentum[n] + 0.1 * grad
 
-            # Adapt learning rate
-            # Increase if gradient direction is consistent
+            # Adapt learning rate: consistent gradient direction → increase LR
             consistency = torch.sign(self.lr_momentum[n] * grad)
             self.lr_multipliers[n] += 0.01 * consistency
+            # Clamp multipliers to [0.1, 10] to prevent extreme values
             self.lr_multipliers[n] = torch.clamp(self.lr_multipliers[n], 0.1, 10.0)
 
-            # Update parameter
+            # Update parameter using element-wise adaptive learning rate
             effective_lr = self.base_lr * self.lr_multipliers[n]
             p.data -= effective_lr * grad
 
@@ -420,7 +430,7 @@ class MetaTradingAgent:
     """
 
     def __init__(self, input_dim: int = 64):
-        # Base model
+        # Base model: 3-layer MLP producing Buy/Hold/Sell logits
         self.base_model = nn.Sequential(
             nn.Linear(input_dim, 128),
             nn.ReLU(),
@@ -429,16 +439,16 @@ class MetaTradingAgent:
             nn.Linear(64, 3),  # Buy, Hold, Sell
         )
 
-        # Meta-learner
+        # Meta-learner for fast adaptation via MAML
         self.maml = MAMLTrader(self.base_model)
 
-        # Few-shot learner
+        # Few-shot learner for new markets with minimal data
         self.few_shot = FewShotLearner(input_dim)
 
-        # Continual learner
+        # Continual learner to retain historical strategies
         self.continual = ContinualLearner(self.base_model)
 
-        # Adaptive LR
+        # Adaptive LR to self-tune parameter update sizes
         self.adaptive_lr = AdaptiveLearningRate(self.base_model)
 
         logger.info("MetaTradingAgent initialized")
@@ -449,11 +459,11 @@ class MetaTradingAgent:
 
         Uses MAML to adapt in just 5 gradient steps.
         """
-        # Prepare data
+        # Prepare data: separate features from target column
         X = torch.FloatTensor(market_data.drop("target", axis=1).values[:n_examples])
         y = torch.LongTensor(market_data["target"].values[:n_examples])
 
-        # Adapt
+        # Run inner-loop adaptation
         adapted_model = self.maml.adapt_to_task(X, y)
 
         logger.success(f"Adapted to new market in {self.maml.config.inner_steps} steps")
@@ -467,9 +477,9 @@ class MetaTradingAgent:
         if use_adapted:
             with torch.no_grad():
                 logits = self.base_model(x)
-                probs = F.softmax(logits, dim=-1)
+                probs = F.softmax(logits, dim=-1)  # Softmax over Buy/Hold/Sell
         else:
-            # Use few-shot prototypes
+            # Use few-shot prototypes instead of base model
             probs = self.few_shot.predict(x)
 
         return probs.numpy()

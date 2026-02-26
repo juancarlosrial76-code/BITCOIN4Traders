@@ -52,7 +52,9 @@ class TelegramNotifier:
     def __init__(self, bot_token: str, chat_id: str):
         self._token = bot_token
         self._chat_id = chat_id
-        self._queue: asyncio.Queue = asyncio.Queue(maxsize=200)
+        self._queue: asyncio.Queue = asyncio.Queue(
+            maxsize=200
+        )  # Bounded queue to prevent memory bloat
         self._session: Optional[aiohttp.ClientSession] = None
         self._task: Optional[asyncio.Task] = None
 
@@ -71,14 +73,16 @@ class TelegramNotifier:
         """Non-blocking enqueue."""
         text = f"{level} *PHASE7*\n{message}"
         try:
-            self._queue.put_nowait(text)
+            self._queue.put_nowait(
+                text
+            )  # Non-blocking; raises QueueFull if at capacity
         except asyncio.QueueFull:
             logger.warning("Telegram queue full – dropping alert.")
 
     async def _send_loop(self) -> None:
         while True:
             try:
-                text = await self._queue.get()
+                text = await self._queue.get()  # Block until a message is available
                 await self._send_one(text)
                 await asyncio.sleep(0.3)  # Telegram rate limit ~30 msg/s
             except asyncio.CancelledError:
@@ -124,6 +128,7 @@ class EngineMetrics:
     last_updated: float = field(default_factory=time.time)
 
     def to_prometheus(self) -> str:
+        """Serialize metrics in Prometheus text exposition format."""
         lines = []
         for k, v in self.__dict__.items():
             if isinstance(v, (int, float)):
@@ -152,12 +157,16 @@ class EngineMonitor:
         telegram: Optional[TelegramNotifier] = None,
         metrics_port: int = 9090,
         dashboard_interval_s: int = 30,
+        paper_trading: bool = False,
     ):
         self._telegram = telegram
         self._metrics = EngineMetrics()
         self._dashboard_interval = dashboard_interval_s
         self._dashboard_task: Optional[asyncio.Task] = None
         self._metrics_task: Optional[asyncio.Task] = None
+        self._paper = paper_trading
+        # Set by the engine after startup
+        self._engine_ref = None
 
     # ── Lifecycle ───────────────────────────
 
@@ -186,7 +195,7 @@ class EngineMonitor:
 
     def on_fill(self, qty: Decimal, price: Decimal, pnl: Decimal) -> None:
         self._metrics.total_fills += 1
-        self._metrics.realized_pnl_usd += float(pnl)
+        self._metrics.realized_pnl_usd += float(pnl)  # Accumulate realized P&L in USD
         self.alert(
             AlertLevel.FILL,
             f"Fill: qty={qty} @{price} | realized PnL=${float(pnl):+.2f}",
@@ -241,11 +250,14 @@ class EngineMonitor:
 
     def _print_dashboard(self) -> None:
         m = self._metrics
-        total_pnl = m.realized_pnl_usd + m.unrealized_pnl_usd
+        total_pnl = m.realized_pnl_usd + m.unrealized_pnl_usd  # Combined P&L
         pnl_sign = "+" if total_pnl >= 0 else ""
+
+        mode_label = "[PAPER] " if self._paper else ""
+
         logger.info(
             "\n┌─────────────────────────────────────────┐\n"
-            "│         PHASE 7  │  LIVE DASHBOARD       │\n"
+            "│    PHASE 7  │  %sLIVE DASHBOARD       │\n"
             "├─────────────────────────────────────────┤\n"
             "│ Ticks:    %-8d  Orders:  %-10d │\n"
             "│ Fills:    %-8d  Cancels: %-10d │\n"
@@ -253,6 +265,7 @@ class EngineMonitor:
             "│ Total PnL: %s$%-9.2f  CB Trips: %-6d│\n"
             "│ WS Reconnects: %-6d                    │\n"
             "└─────────────────────────────────────────┘",
+            mode_label,
             m.ticks_processed,
             m.orders_submitted,
             m.total_fills,
@@ -264,6 +277,48 @@ class EngineMonitor:
             m.circuit_breaker_trips,
             m.ws_reconnects,
         )
+
+        # Print positions from engine (paper trading)
+        if self._paper and self._engine_ref is not None:
+            self._print_paper_positions()
+
+    def attach_engine(self, engine) -> None:
+        """Reference to the engine for position reporting."""
+        self._engine_ref = engine
+
+    def _print_paper_positions(self) -> None:
+        try:
+            from src.orders.paper_order_manager import PaperOrderManager
+
+            engine = self._engine_ref
+            oms = engine._oms
+            if not isinstance(oms, PaperOrderManager):
+                return
+            cash = float(oms.cash)
+            lines = ["\n[PAPER] ══ POSITIONS ══════════════════════"]
+            lines.append(f"  Cash:    ${cash:>12.2f}")
+            total_pos_value = 0.0
+            for symbol, pos in engine._positions.items():
+                if pos.qty != 0:
+                    px = float(engine._last_prices.get(symbol, 0))
+                    unreal = float(
+                        pos.unrealized_pnl(engine._last_prices.get(symbol, Decimal(0)))
+                    )
+                    real = float(pos.realized_pnl)
+                    val = float(pos.qty) * px  # Mark-to-market value of position
+                    total_pos_value += val
+                    lines.append(
+                        f"  {symbol:<10} qty={float(pos.qty):>+10.5f}  "
+                        f"@avg={float(pos.avg_cost):>10.2f}  "
+                        f"unreal={unreal:>+8.2f}  real={real:>+8.2f}"
+                    )
+            lines.append(
+                f"  Total Equity: ${cash + total_pos_value:>10.2f}"
+            )  # Cash + position value
+            lines.append("[PAPER] ════════════════════════════════════")
+            logger.info("\n".join(lines))
+        except Exception as exc:
+            logger.debug("Paper position print error: %s", exc)
 
     @property
     def metrics(self) -> EngineMetrics:

@@ -89,13 +89,17 @@ class MultiTimeframeAnalyzer:
         directions = [s.direction for s in signals]
         strengths = [s.strength for s in signals]
 
-        # Alignment: how many timeframes agree
-        bull_count = sum(1 for d in directions if d > 0)
-        bear_count = sum(1 for d in directions if d < 0)
-        neutral_count = sum(1 for d in directions if d == 0)
+        # Alignment: fraction of timeframes agreeing with the dominant direction
+        bull_count = sum(1 for d in directions if d > 0)  # number of bullish TF signals
+        bear_count = sum(1 for d in directions if d < 0)  # number of bearish TF signals
+        neutral_count = sum(
+            1 for d in directions if d == 0
+        )  # number of neutral TF signals
 
         total = len(directions)
-        alignment = max(bull_count, bear_count) / total if total > 0 else 0
+        alignment = (
+            max(bull_count, bear_count) / total if total > 0 else 0
+        )  # 1.0 = unanimous, 0.5 = split
 
         # Consensus direction
         if bull_count > bear_count and bull_count > neutral_count:
@@ -105,9 +109,13 @@ class MultiTimeframeAnalyzer:
         else:
             consensus_direction = 0
 
-        # Weighted confidence
-        avg_strength = np.mean(strengths) if strengths else 0
-        confidence = alignment * avg_strength
+        # Weighted confidence: product of directional agreement × average signal strength
+        avg_strength = (
+            np.mean(strengths) if strengths else 0
+        )  # mean per-TF strength (0–1)
+        confidence = (
+            alignment * avg_strength
+        )  # high only when TFs agree AND individually strong
 
         return {
             "alignment": alignment,
@@ -122,40 +130,64 @@ class MultiTimeframeAnalyzer:
         self, df: pd.DataFrame, tf: Timeframe
     ) -> SignalStrength:
         """Analyze a single timeframe for trend direction and strength."""
-        # Calculate EMAs
-        ema_fast = df["close"].ewm(span=12).mean().iloc[-1]
-        ema_slow = df["close"].ewm(span=26).mean().iloc[-1]
+        # Calculate EMAs: fast (12-period) and slow (26-period) exponential moving averages
+        ema_fast = (
+            df["close"].ewm(span=12).mean().iloc[-1]
+        )  # span=12 → α = 2/(12+1) ≈ 0.154
+        ema_slow = (
+            df["close"].ewm(span=26).mean().iloc[-1]
+        )  # span=26 → α = 2/(26+1) ≈ 0.074
 
-        # Calculate RSI
-        delta = df["close"].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / loss
-        rsi = (100 - (100 / (1 + rs))).iloc[-1]
+        # Calculate RSI (Wilder's method, 14-period)
+        delta = df["close"].diff()  # bar-to-bar price changes
+        gain = (
+            (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        )  # average gain over 14 bars
+        loss = (
+            (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        )  # average loss (positive value)
+        rs = gain / loss  # relative strength: ratio of avg gain to avg loss
+        rsi = (100 - (100 / (1 + rs))).iloc[
+            -1
+        ]  # RSI = 100 - 100/(1+RS); oscillates 0–100
 
-        # MACD
+        # MACD: momentum indicator using difference between fast and slow EMA
         ema_12 = df["close"].ewm(span=12).mean()
         ema_26 = df["close"].ewm(span=26).mean()
-        macd_line = ema_12 - ema_26
-        signal_line = macd_line.ewm(span=9).mean()
-        macd_hist = macd_line - signal_line
+        macd_line = ema_12 - ema_26  # MACD line: measures trend momentum
+        signal_line = macd_line.ewm(
+            span=9
+        ).mean()  # 9-period EMA of MACD; acts as trigger line
+        macd_hist = (
+            macd_line - signal_line
+        )  # histogram: positive → bullish momentum, negative → bearish
 
-        # Determine direction
+        # Determine direction: require both EMA crossover AND MACD histogram confirmation
         direction = 0
         if ema_fast > ema_slow and macd_hist.iloc[-1] > 0:
-            direction = 1
+            direction = 1  # bullish: price trending up and momentum accelerating
         elif ema_fast < ema_slow and macd_hist.iloc[-1] < 0:
-            direction = -1
+            direction = -1  # bearish: price trending down and momentum decelerating
 
-        # Calculate strength (0 to 1)
-        ema_distance = abs(ema_fast - ema_slow) / df["close"].iloc[-1]
-        macd_strength = abs(macd_hist.iloc[-1]) / df["close"].std()
-        rsi_strength = abs(rsi - 50) / 50
+        # Calculate signal strength (0 to 1): composite of EMA spread, MACD magnitude, RSI extremity
+        ema_distance = (
+            abs(ema_fast - ema_slow) / df["close"].iloc[-1]
+        )  # normalized EMA gap (% of price)
+        macd_strength = (
+            abs(macd_hist.iloc[-1]) / df["close"].std()
+        )  # MACD histogram normalized by price volatility
+        rsi_strength = (
+            abs(rsi - 50) / 50
+        )  # distance from RSI midpoint (50); 0 = neutral, 1 = extreme overbought/sold
 
-        strength = min(1.0, (ema_distance * 10 + macd_strength + rsi_strength) / 3)
+        strength = min(
+            1.0, (ema_distance * 10 + macd_strength + rsi_strength) / 3
+        )  # equal-weight average, capped at 1.0
 
-        # Confidence based on data quality
-        confidence = 1.0 - (df["close"].isna().sum() / len(df))
+        # Confidence based on data quality: fraction of non-NaN bars
+        confidence = 1.0 - (
+            df["close"].isna().sum() / len(df)
+        )  # 1.0 = no missing data, 0.0 = all missing
 
         return SignalStrength(
             timeframe=tf, direction=direction, strength=strength, confidence=confidence
@@ -169,13 +201,13 @@ class MultiTimeframeAnalyzer:
             (direction, confidence): direction (-1, 0, 1), confidence (0-1)
         """
         if alignment["confidence"] > 0.7 and alignment["alignment"] > 0.66:
-            # Strong consensus across timeframes
+            # Strong consensus: >2/3 of TFs agree AND composite confidence >0.7
             return alignment["direction"], alignment["confidence"]
         elif alignment["confidence"] > 0.5 and alignment["alignment"] > 0.5:
-            # Moderate consensus
+            # Moderate consensus: majority agree but weaker — discount confidence by 30%
             return alignment["direction"], alignment["confidence"] * 0.7
         else:
-            # No clear signal
+            # No clear signal: mixed or weak — stand aside
             return 0, 0.0
 
     def calculate_confluence_zones(
@@ -231,18 +263,24 @@ class MultiTimeframeAnalyzer:
 
         # Cluster levels that are close together (confluence)
         confluence_zones = []
-        tolerance = 0.005  # 0.5%
+        tolerance = (
+            0.005  # 0.5% price band: levels within this range are merged into one zone
+        )
 
         for level in all_levels:
             price = level["price"]
 
-            # Find existing zone
+            # Find existing zone within tolerance band
             found = False
             for zone in confluence_zones:
-                if abs(zone["price"] - price) / price < tolerance:
-                    zone["strength"] += level["strength"]
-                    zone["hits"] += 1
-                    zone["timeframes"].add(level["timeframe"])
+                if (
+                    abs(zone["price"] - price) / price < tolerance
+                ):  # relative distance < 0.5%
+                    zone["strength"] += level["strength"]  # accumulate strength score
+                    zone["hits"] += 1  # count how many raw levels merged here
+                    zone["timeframes"].add(
+                        level["timeframe"]
+                    )  # track which TFs contributed
                     found = True
                     break
 
@@ -393,18 +431,21 @@ class MarketStructureAnalyzer:
         recent_high = df["high"].iloc[-20:].max()
         recent_low = df["low"].iloc[-20:].min()
 
-        diff = recent_high - recent_low
+        diff = recent_high - recent_low  # full swing range
 
+        # Fibonacci retracement levels: derived from the Golden Ratio (φ ≈ 1.618)
         levels = {
             "high": recent_high,
             "low": recent_low,
-            "0.0": recent_high,
-            "0.236": recent_high - 0.236 * diff,
-            "0.382": recent_high - 0.382 * diff,
-            "0.5": recent_high - 0.5 * diff,
-            "0.618": recent_high - 0.618 * diff,
-            "0.786": recent_high - 0.786 * diff,
-            "1.0": recent_low,
+            "0.0": recent_high,  # 0% retracement = top of swing
+            "0.236": recent_high - 0.236 * diff,  # 23.6% = φ^-3 ≈ shallow pullback
+            "0.382": recent_high - 0.382 * diff,  # 38.2% = 1 - φ^-1 ≈ common entry zone
+            "0.5": recent_high
+            - 0.5 * diff,  # 50% = midpoint (not a true Fib, but widely used)
+            "0.618": recent_high
+            - 0.618 * diff,  # 61.8% = φ^-1 ≈ "golden ratio" — strongest Fib level
+            "0.786": recent_high - 0.786 * diff,  # 78.6% = √0.618 ≈ deep retracement
+            "1.0": recent_low,  # 100% retracement = bottom of swing
         }
 
         return levels
@@ -437,13 +478,20 @@ def create_multi_timeframe_features(
             .dropna()
         )
 
-        # Calculate features on resampled data
-        features[f"return_{tf}"] = df["close"].pct_change()
-        features[f"volatility_{tf}"] = df["close"].rolling(window=20).std()
+        # Calculate features on resampled data (applied to raw df, aligned to original index)
+        features[f"return_{tf}"] = df[
+            "close"
+        ].pct_change()  # bar-to-bar return at base TF
+        features[f"volatility_{tf}"] = (
+            df["close"].rolling(window=20).std()
+        )  # 20-bar realized vol proxy
         features[f"trend_{tf}"] = np.where(
-            df["close"] > df["close"].shift(5),
+            df["close"]
+            > df["close"].shift(5),  # price higher than 5 bars ago → uptrend
             1,
-            np.where(df["close"] < df["close"].shift(5), -1, 0),
+            np.where(
+                df["close"] < df["close"].shift(5), -1, 0
+            ),  # lower → downtrend, equal → neutral
         )
 
     return features

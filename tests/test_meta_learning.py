@@ -30,11 +30,11 @@ class TestMetaLearningConfig:
         """Test default config values."""
         config = MetaLearningConfig()
 
-        assert config.inner_lr == 0.01
-        assert config.meta_lr == 0.001
-        assert config.inner_steps == 5
+        assert config.inner_lr == 0.01  # Learning rate for inner (task) loop
+        assert config.meta_lr == 0.001  # Learning rate for outer (meta) loop
+        assert config.inner_steps == 5  # Gradient steps per task adaptation
         assert config.meta_batch_size == 4
-        assert config.first_order == False
+        assert config.first_order == False  # Use full second-order MAML by default
 
     def test_custom_initialization(self):
         """Test custom config values."""
@@ -43,7 +43,7 @@ class TestMetaLearningConfig:
             meta_lr=0.01,
             inner_steps=10,
             meta_batch_size=8,
-            first_order=True,
+            first_order=True,  # First-order approximation (FOMAML) for speed
         )
 
         assert config.inner_lr == 0.05
@@ -70,11 +70,11 @@ class TestMAMLTrader:
         """Generate sample task data."""
         np.random.seed(42)
 
-        # Support set (adaptation)
+        # Support set (adaptation): used to update the model for this task
         support_x = torch.FloatTensor(np.random.randn(20, 10))
         support_y = torch.FloatTensor(np.random.randn(20, 1))
 
-        # Query set (evaluation)
+        # Query set (evaluation): used to compute meta-loss
         query_x = torch.FloatTensor(np.random.randn(10, 10))
         query_y = torch.FloatTensor(np.random.randn(10, 1))
 
@@ -87,8 +87,8 @@ class TestMAMLTrader:
 
         assert maml.config == config
         assert maml.base_model == simple_model
-        assert len(maml.meta_parameters) > 0
-        assert len(maml.task_history) == 0
+        assert len(maml.meta_parameters) > 0  # Parameters registered for meta-update
+        assert len(maml.task_history) == 0  # No tasks seen yet
 
     def test_adapt_to_task(self, simple_model, sample_task_data):
         """Test task adaptation."""
@@ -112,7 +112,7 @@ class TestMAMLTrader:
         maml = MAMLTrader(simple_model, MetaLearningConfig(inner_steps=3))
         adapted_model = maml.adapt_to_task(support_x, support_y, create_copy=False)
 
-        # Should return the same model instance
+        # Should return the same model instance (in-place adaptation)
         assert adapted_model == simple_model
 
     def test_meta_update(self, simple_model, sample_task_data):
@@ -121,13 +121,13 @@ class TestMAMLTrader:
 
         maml = MAMLTrader(simple_model, MetaLearningConfig(meta_batch_size=2))
 
-        # Create multiple tasks
+        # Create multiple tasks (same data here, but structure is correct)
         tasks = [
             (support_x, support_y, query_x, query_y),
             (support_x, support_y, query_x, query_y),
         ]
 
-        loss = maml.meta_update(tasks)
+        loss = maml.meta_update(tasks)  # Performs inner loop + outer meta-gradient step
 
         # Should return a scalar loss
         assert isinstance(loss, float)
@@ -163,11 +163,11 @@ class TestFewShotLearner:
         """Generate classification data."""
         np.random.seed(42)
 
-        # Class 0: centered at -1
+        # Class 0: centered at -1 (separable cluster)
         class_0_x = torch.FloatTensor(np.random.randn(50, 10) - 1)
         class_0_y = torch.zeros(50, dtype=torch.long)
 
-        # Class 1: centered at +1
+        # Class 1: centered at +1 (separable cluster)
         class_1_x = torch.FloatTensor(np.random.randn(50, 10) + 1)
         class_1_y = torch.ones(50, dtype=torch.long)
 
@@ -184,7 +184,9 @@ class TestFewShotLearner:
         assert learner.feature_dim == 10
         assert learner.hidden_dim == 128
         assert isinstance(learner.encoder, nn.Sequential)
-        assert len(learner.prototypes) == 0
+        assert (
+            len(learner.prototypes) == 0
+        )  # No prototypes until compute_prototypes is called
 
     def test_compute_prototypes(self, classification_data):
         """Test prototype computation."""
@@ -193,7 +195,7 @@ class TestFewShotLearner:
         learner = FewShotLearner(feature_dim=10, hidden_dim=128)
         prototypes = learner.compute_prototypes(X, y, n_classes=2)
 
-        # Should have 2 prototypes
+        # Should have 2 prototypes (one per class)
         assert len(prototypes) == 2
         assert 0 in prototypes
         assert 1 in prototypes
@@ -226,7 +228,7 @@ class TestFewShotLearner:
         learner = FewShotLearner(feature_dim=10, hidden_dim=128)
 
         with pytest.raises(ValueError, match="No prototypes computed"):
-            learner.predict(X)
+            learner.predict(X)  # Should fail gracefully when prototypes missing
 
     def test_learn_new_market(self):
         """Test learning new market from few examples."""
@@ -239,7 +241,9 @@ class TestFewShotLearner:
         labels = pd.Series(np.random.randint(0, 2, 100))
 
         learner = FewShotLearner(feature_dim=10, hidden_dim=128)
-        learner.learn_new_market(examples, labels, n_shots=10)
+        learner.learn_new_market(
+            examples, labels, n_shots=10
+        )  # Learn from 10 examples per class
 
         # Should have computed prototypes
         assert len(learner.prototypes) > 0
@@ -269,7 +273,7 @@ class TestContinualLearner:
                 for _ in range(self.n_batches):
                     X = torch.FloatTensor(np.random.randn(16, 10))
                     y = torch.FloatTensor(np.random.randn(16, 1))
-                    yield X, y
+                    yield X, y  # Yield (features, targets) batches
 
             def __len__(self):
                 return self.n_batches
@@ -281,10 +285,10 @@ class TestContinualLearner:
         learner = ContinualLearner(simple_model, lambda_ewc=500.0)
 
         assert learner.model == simple_model
-        assert learner.lambda_ewc == 500.0
-        assert len(learner.fisher_dict) == 0
-        assert len(learner.optimal_params) == 0
-        assert learner.task_count == 0
+        assert learner.lambda_ewc == 500.0  # EWC regularization strength
+        assert len(learner.fisher_dict) == 0  # No Fisher info yet
+        assert len(learner.optimal_params) == 0  # No optimal params yet
+        assert learner.task_count == 0  # No tasks learned yet
 
     def test_compute_fisher_information(self, simple_model, data_loader):
         """Test Fisher Information computation."""
@@ -295,7 +299,7 @@ class TestContinualLearner:
         param_names = [n for n, _ in simple_model.named_parameters()]
         assert len(fisher) == len(param_names)
 
-        # All values should be non-negative
+        # All values should be non-negative (Fisher is always >= 0)
         for name, matrix in fisher.items():
             assert torch.all(matrix >= 0)
 
@@ -310,8 +314,8 @@ class TestContinualLearner:
         learner.update_ewc_params(data_loader)
 
         assert learner.task_count == 1
-        assert 0 in learner.fisher_dict
-        assert 0 in learner.optimal_params
+        assert 0 in learner.fisher_dict  # Task 0 Fisher info stored
+        assert 0 in learner.optimal_params  # Task 0 optimal weights stored
 
         # Update after learning second task
         learner.update_ewc_params(data_loader)
@@ -324,7 +328,7 @@ class TestContinualLearner:
         """Test EWC loss computation."""
         learner = ContinualLearner(simple_model, lambda_ewc=100.0)
 
-        # Before any task, EWC loss should be 0
+        # Before any task, EWC loss should be 0 (nothing to protect)
         loss = learner.ewc_loss()
         assert loss.item() == 0.0
 
@@ -332,7 +336,7 @@ class TestContinualLearner:
         learner.update_ewc_params(data_loader)
         loss = learner.ewc_loss()
 
-        # EWC loss should be non-negative
+        # EWC loss penalizes deviation from previously optimal weights
         assert loss.item() >= 0
 
     def test_train_on_task(self, simple_model, data_loader):
@@ -342,9 +346,9 @@ class TestContinualLearner:
         # Train on first task
         learner.train_on_task(data_loader, epochs=2)
 
-        assert learner.task_count == 1
+        assert learner.task_count == 1  # Task count incremented after training
 
-        # Train on second task
+        # Train on second task (EWC prevents forgetting task 1)
         learner.train_on_task(data_loader, epochs=2)
 
         assert learner.task_count == 2
@@ -368,8 +372,10 @@ class TestAdaptiveLearningRate:
 
         assert adaptive_lr.model == simple_model
         assert adaptive_lr.base_lr == 0.001
-        assert len(adaptive_lr.lr_multipliers) > 0
-        assert len(adaptive_lr.lr_momentum) > 0
+        assert (
+            len(adaptive_lr.lr_multipliers) > 0
+        )  # Per-param learning rate multipliers
+        assert len(adaptive_lr.lr_momentum) > 0  # Momentum buffers for adaptive update
 
     def test_step(self, simple_model):
         """Test adaptive learning rate step."""
@@ -381,13 +387,13 @@ class TestAdaptiveLearningRate:
         predictions = simple_model(X)
         loss = F.mse_loss(predictions, y)
 
-        # Store initial parameters
+        # Store initial parameters before the step
         initial_params = {n: p.clone() for n, p in simple_model.named_parameters()}
 
-        # Take step
+        # Take step (applies adaptive learning rates)
         adaptive_lr.step(loss)
 
-        # Parameters should have changed
+        # Parameters should have changed after the update
         for n, p in simple_model.named_parameters():
             assert not torch.allclose(p, initial_params[n])
 
@@ -439,7 +445,7 @@ class TestMetaTradingAgent:
 
         # Should return probabilities for 3 classes
         assert probs.shape == (10, 3)
-        assert np.allclose(probs.sum(axis=1), 1.0, atol=1e-6)
+        assert np.allclose(probs.sum(axis=1), 1.0, atol=1e-6)  # Rows sum to 1
 
 
 class TestProductionFunctions:
@@ -585,7 +591,7 @@ class TestMetaLearningIntegration:
             initial_predictions = model(support_x)
             initial_loss = F.mse_loss(initial_predictions, support_y).item()
 
-        # Adapt
+        # Adapt model to this task
         adapted_model = maml.adapt_to_task(support_x, support_y)
 
         # Evaluate loss after adaptation
@@ -594,5 +600,5 @@ class TestMetaLearningIntegration:
             adapted_predictions = adapted_model(support_x)
             adapted_loss = F.mse_loss(adapted_predictions, support_y).item()
 
-        # Adaptation should reduce loss
+        # Adaptation should reduce loss on the support set
         assert adapted_loss < initial_loss

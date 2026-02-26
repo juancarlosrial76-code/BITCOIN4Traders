@@ -41,7 +41,12 @@ class PortfolioEnvConfig:
 
     def __post_init__(self):
         if self.tech_indicator_list is None:
-            self.tech_indicator_list = ["macd", "rsi", "cci", "adx"]
+            self.tech_indicator_list = [
+                "macd",
+                "rsi",
+                "cci",
+                "adx",
+            ]  # Default indicator set
 
 
 class PortfolioAllocationEnv(gym.Env):
@@ -91,8 +96,8 @@ class PortfolioAllocationEnv(gym.Env):
         # State space
         # Covariance matrix + technical indicators + weights
         n_features = (
-            self.stock_dim * self.stock_dim  # Covariance matrix
-            + self.stock_dim * len(config.tech_indicator_list)  # Indicators
+            self.stock_dim * self.stock_dim  # Covariance matrix (flattened)
+            + self.stock_dim * len(config.tech_indicator_list)  # Per-stock indicators
             + self.stock_dim  # Current weights
         )
 
@@ -101,20 +106,20 @@ class PortfolioAllocationEnv(gym.Env):
         )
 
         # Initialize state
-        self.data = self.df.loc[self.day, :]
-        self.covs = None
-        self.state = None
+        self.data = self.df.loc[self.day, :]  # Current day's row
+        self.covs = None  # Will hold covariance matrix
+        self.state = None  # Will hold observation vector
         self.portfolio_value = config.initial_capital
-        self.portfolio_values = [config.initial_capital]
-        self.asset_memory = [config.initial_capital]
-        self.rewards_memory = []
-        self.actions_memory = []
-        self.date_memory = []
+        self.portfolio_values = [config.initial_capital]  # History of portfolio values
+        self.asset_memory = [config.initial_capital]  # Tracks equity curve
+        self.rewards_memory = []  # History of rewards
+        self.actions_memory = []  # History of weight allocations
+        self.date_memory = []  # History of dates
 
         # Terminal state flag
         self.terminal = False
 
-        # Risk-free rate per day
+        # Risk-free rate per day (convert annual to daily using compound formula)
         self.daily_risk_free = (1 + config.risk_free_rate) ** (1 / 252) - 1
 
         # Transaction cost
@@ -129,7 +134,7 @@ class PortfolioAllocationEnv(gym.Env):
         # Get past returns
         returns = []
         for i in range(window):
-            day_idx = self.day - i
+            day_idx = self.day - i  # Walk backward through history
             if day_idx >= 0:
                 day_data = self.df.loc[day_idx, :]
                 # Calculate returns for each stock
@@ -138,16 +143,16 @@ class PortfolioAllocationEnv(gym.Env):
                     if day_idx > 0:
                         prev_close = self.df.loc[day_idx - 1, f"close_{j}"]
                         curr_close = day_data[f"close_{j}"]
-                        ret = (curr_close - prev_close) / prev_close
+                        ret = (curr_close - prev_close) / prev_close  # Simple return
                     else:
-                        ret = 0.0
+                        ret = 0.0  # No return for first day
                     day_returns.append(ret)
                 returns.append(day_returns)
 
         returns = np.array(returns)
-        cov_matrix = np.cov(returns.T)
+        cov_matrix = np.cov(returns.T)  # Covariance across stocks (columns)
 
-        # Ensure positive definite
+        # Ensure positive definite by adding small identity matrix
         cov_matrix += np.eye(self.stock_dim) * 1e-6
 
         return cov_matrix
@@ -158,22 +163,22 @@ class PortfolioAllocationEnv(gym.Env):
         cov_matrix = self._calculate_covariance()
         self.covs = cov_matrix
 
-        # Flatten covariance matrix
+        # Flatten covariance matrix into 1D vector
         cov_flat = cov_matrix.flatten()
 
         # Get technical indicators for all stocks
         tech_features = []
         for i in range(self.stock_dim):
             for indicator in self.config.tech_indicator_list:
-                tech_features.append(self.data[f"{indicator}_{i}"])
+                tech_features.append(self.data[f"{indicator}_{i}"])  # e.g., "macd_0"
 
         # Current portfolio weights (if any)
         if len(self.actions_memory) > 0:
-            current_weights = self.actions_memory[-1]
+            current_weights = self.actions_memory[-1]  # Last allocation
         else:
-            current_weights = np.zeros(self.stock_dim)
+            current_weights = np.zeros(self.stock_dim)  # Start with flat/empty weights
 
-        # Combine all features
+        # Combine all features into a single observation vector
         state = np.concatenate([cov_flat, np.array(tech_features), current_weights])
 
         return state.astype(np.float32)
@@ -200,7 +205,7 @@ class PortfolioAllocationEnv(gym.Env):
         """Get current date from data."""
         if "date" in self.data.index:
             return self.data["date"]
-        return self.day
+        return self.day  # Fall back to day index if no date column
 
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         """
@@ -212,7 +217,7 @@ class PortfolioAllocationEnv(gym.Env):
         Returns:
             state, reward, terminated, truncated, info
         """
-        # Normalize action to sum to 1 using softmax
+        # Normalize action to sum to 1 using softmax (ensures valid probability distribution)
         action = np.exp(action) / np.sum(np.exp(action))
         self.actions_memory.append(action)
 
@@ -224,12 +229,12 @@ class PortfolioAllocationEnv(gym.Env):
         self.data = self.df.loc[self.day, :]
         self.date_memory.append(self._get_date())
 
-        # Calculate portfolio return
+        # Calculate individual stock returns for this day
         individual_returns = []
         for i in range(self.stock_dim):
             prev_close = self.df.loc[self.day - 1, f"close_{i}"]
             curr_close = self.data[f"close_{i}"]
-            ret = (curr_close - prev_close) / prev_close
+            ret = (curr_close - prev_close) / prev_close  # Daily return
             individual_returns.append(ret)
 
         individual_returns = np.array(individual_returns)
@@ -240,15 +245,15 @@ class PortfolioAllocationEnv(gym.Env):
         # Calculate transaction costs (if rebalancing)
         if len(self.actions_memory) >= 2:
             prev_weights = self.actions_memory[-2]
-            turnover = np.sum(np.abs(action - prev_weights))
+            turnover = np.sum(np.abs(action - prev_weights))  # Total weight shift
             transaction_cost = turnover * self.transaction_cost_pct
         else:
-            transaction_cost = 0.0
+            transaction_cost = 0.0  # No cost on first allocation
 
-        # Net portfolio return
+        # Net portfolio return after transaction costs
         net_return = portfolio_return - transaction_cost
 
-        # Update portfolio value
+        # Update portfolio value (compound)
         self.portfolio_value = self.portfolio_value * (1 + net_return)
         self.portfolio_values.append(self.portfolio_value)
         self.asset_memory.append(self.portfolio_value)
@@ -288,12 +293,14 @@ class PortfolioAllocationEnv(gym.Env):
 
         # Risk-adjusted return (approximation)
         if len(self.rewards_memory) > 20:
-            recent_returns = np.array(self.rewards_memory[-20:])
-            volatility = np.std(recent_returns) + 1e-6
-            sharpe_like = portfolio_return / volatility
+            recent_returns = np.array(
+                self.rewards_memory[-20:]
+            )  # Rolling 20-step window
+            volatility = np.std(recent_returns) + 1e-6  # Add epsilon to avoid /0
+            sharpe_like = portfolio_return / volatility  # Sharpe-like ratio
             return sharpe_like
 
-        return portfolio_return * 100
+        return portfolio_return * 100  # Scale up during warm-up period
 
     def _calculate_sharpe(self) -> float:
         """Calculate Sharpe ratio."""
@@ -301,13 +308,13 @@ class PortfolioAllocationEnv(gym.Env):
             return 0.0
 
         returns = np.array(self.rewards_memory)
-        excess_returns = returns - self.daily_risk_free
+        excess_returns = returns - self.daily_risk_free  # Subtract risk-free benchmark
 
         if np.std(returns) == 0:
-            return 0.0
+            return 0.0  # Avoid division by zero when returns are constant
 
         sharpe = np.mean(excess_returns) / (np.std(returns) + 1e-6)
-        return sharpe * np.sqrt(252)  # Annualize
+        return sharpe * np.sqrt(252)  # Annualize by scaling with sqrt of trading days
 
     def render(self, mode="human"):
         """Render environment state."""
@@ -332,7 +339,7 @@ class PortfolioAllocationEnv(gym.Env):
         n_days = len(self.rewards_memory)
         annual_return = (1 + total_return) ** (252 / n_days) - 1 if n_days > 0 else 0.0
 
-        # Volatility
+        # Volatility (annualized)
         volatility = (
             np.std(portfolio_returns) * np.sqrt(252)
             if len(portfolio_returns) > 0
@@ -344,9 +351,9 @@ class PortfolioAllocationEnv(gym.Env):
 
         # Max drawdown
         portfolio_values = np.array(self.portfolio_values)
-        peak = np.maximum.accumulate(portfolio_values)
-        drawdown = (portfolio_values - peak) / peak
-        max_drawdown = np.min(drawdown)
+        peak = np.maximum.accumulate(portfolio_values)  # Running peak
+        drawdown = (portfolio_values - peak) / peak  # Drawdown from peak
+        max_drawdown = np.min(drawdown)  # Worst drawdown
 
         return {
             "total_return": total_return,
@@ -375,7 +382,7 @@ class MultiStockTradingEnv(PortfolioAllocationEnv):
     ):
         super().__init__(df, config, day)
 
-        self.hmax = hmax
+        self.hmax = hmax  # Maximum shares allowed per single trade
 
         # Discrete action space: 3 actions per stock (buy, sell, hold)
         self.action_space = spaces.MultiDiscrete([3] * self.stock_dim)
@@ -391,8 +398,8 @@ class MultiStockTradingEnv(PortfolioAllocationEnv):
         )
 
         # Track holdings
-        self.holdings = np.zeros(self.stock_dim)
-        self.cash = config.initial_capital
+        self.holdings = np.zeros(self.stock_dim)  # Shares held for each stock
+        self.cash = config.initial_capital  # Available cash
 
     def _get_state(self) -> np.ndarray:
         """Construct state for multi-stock trading."""
@@ -407,7 +414,7 @@ class MultiStockTradingEnv(PortfolioAllocationEnv):
         for i in range(self.stock_dim):
             prices.append(self.data[f"close_{i}"])
 
-        # Combine features
+        # Combine features: indicators + prices + holdings
         state = np.concatenate(
             [np.array(tech_features), np.array(prices), self.holdings]
         )
@@ -418,8 +425,8 @@ class MultiStockTradingEnv(PortfolioAllocationEnv):
         """Reset environment."""
         super().reset(seed=seed, options=options)
 
-        self.holdings = np.zeros(self.stock_dim)
-        self.cash = self.config.initial_capital
+        self.holdings = np.zeros(self.stock_dim)  # Clear all positions
+        self.cash = self.config.initial_capital  # Restore full capital
 
         return self.state, {}
 
@@ -431,7 +438,7 @@ class MultiStockTradingEnv(PortfolioAllocationEnv):
             action: Array of actions (0=hold, 1=buy, 2=sell) for each stock
         """
         # Map actions: 0=hold, 1=buy, 2=sell
-        prev_holdings = self.holdings.copy()
+        prev_holdings = self.holdings.copy()  # Snapshot for return calc
         prev_cash = self.cash
 
         # Execute trades
@@ -439,9 +446,11 @@ class MultiStockTradingEnv(PortfolioAllocationEnv):
             price = self.data[f"close_{i}"]
 
             if action[i] == 1:  # Buy
-                # Buy max possible shares
+                # Buy max possible shares (capped at hmax)
                 max_shares = min(self.hmax, int(self.cash / price))
-                cost = max_shares * price * (1 + self.transaction_cost_pct)
+                cost = (
+                    max_shares * price * (1 + self.transaction_cost_pct)
+                )  # Include fee
                 if cost <= self.cash:
                     self.holdings[i] += max_shares
                     self.cash -= cost
@@ -449,30 +458,34 @@ class MultiStockTradingEnv(PortfolioAllocationEnv):
             elif action[i] == 2:  # Sell
                 # Sell all holdings
                 if self.holdings[i] > 0:
-                    revenue = self.holdings[i] * price * (1 - self.transaction_cost_pct)
+                    revenue = (
+                        self.holdings[i] * price * (1 - self.transaction_cost_pct)
+                    )  # Include fee
                     self.cash += revenue
-                    self.holdings[i] = 0
+                    self.holdings[i] = 0  # Clear position
 
         # Move to next day
         self.day += 1
         self.data = self.df.loc[self.day, :]
 
-        # Calculate new portfolio value
+        # Calculate new portfolio value (cash + stock values)
         stock_values = []
         for i in range(self.stock_dim):
             price = self.data[f"close_{i}"]
-            stock_values.append(self.holdings[i] * price)
+            stock_values.append(self.holdings[i] * price)  # Market value of holding
 
         self.portfolio_value = self.cash + np.sum(stock_values)
         self.portfolio_values.append(self.portfolio_value)
 
-        # Calculate reward
+        # Calculate reward (simplified return estimate)
         portfolio_return = (
             self.portfolio_value
             - prev_cash
-            - np.sum(prev_holdings * self.data[f"close_0"])
+            - np.sum(
+                prev_holdings * self.data[f"close_0"]
+            )  # Approximate prev stock value
         ) / (prev_cash + np.sum(prev_holdings * self.data[f"close_0"]))
-        reward = portfolio_return * 100
+        reward = portfolio_return * 100  # Scale up for training signal
         self.rewards_memory.append(reward)
 
         # Check terminal

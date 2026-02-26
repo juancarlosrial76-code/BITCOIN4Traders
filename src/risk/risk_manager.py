@@ -284,11 +284,13 @@ class RiskManager:
         if len(returns) == 0:
             return 0.0
 
-        # Historical VaR (percentile method)
-        var_percentile = (1 - confidence) * 100
-        var_return = np.percentile(returns, var_percentile)
+        # Historical VaR (percentile method): find the (1-confidence) worst return
+        var_percentile = (
+            1 - confidence
+        ) * 100  # e.g. 5th percentile for 95% confidence
+        var_return = np.percentile(returns, var_percentile)  # Negative value (loss)
 
-        # Convert to dollar amount
+        # Convert return-based VaR to dollar loss amount
         var_dollars = abs(var_return * position_value)
 
         return float(var_dollars)
@@ -392,8 +394,9 @@ class RiskManager:
         if self.state.peak_equity == 0:
             return 0.0
 
+        # Drawdown = (peak - current) / peak  (as a fraction, e.g. 0.05 = 5% drawdown)
         drawdown = (self.state.peak_equity - current_equity) / self.state.peak_equity
-        return max(0.0, drawdown)
+        return max(0.0, drawdown)  # Clamp to zero (can't have negative drawdown)
 
     def get_kelly_parameters(self, lookback: int = 50) -> Optional[KellyParameters]:
         """

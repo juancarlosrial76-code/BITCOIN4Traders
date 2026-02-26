@@ -64,7 +64,7 @@ class FoldSplit:
 
 class PurgedWalkForwardCV:
     """
-    Purged Walk-Forward CV mit Purging + Embargo.
+    Purged Walk-Forward CV with Purging + Embargo.
 
     Usage:
         cv = PurgedWalkForwardCV(config)
@@ -92,20 +92,29 @@ class PurgedWalkForwardCV:
         cfg = self.config
         n = n_samples
 
-        holdout_n = int(n * cfg.holdout_pct)
-        working_n = n - holdout_n
-        holdout_idx = np.arange(working_n, n)
+        holdout_n = int(
+            n * cfg.holdout_pct
+        )  # bars reserved as final holdout (never used in CV)
+        working_n = n - holdout_n  # bars available for train/test splits
+        holdout_idx = np.arange(
+            working_n, n
+        )  # holdout = last holdout_pct% of the series
 
-        embargo_n = max(1, int(n * cfg.embargo_pct))
-        test_n = int(working_n * cfg.test_pct)
+        embargo_n = max(
+            1, int(n * cfg.embargo_pct)
+        )  # gap between train end and test start to prevent feature leakage
+        test_n = int(working_n * cfg.test_pct)  # number of bars in each test fold
 
         folds: List[FoldSplit] = []
 
         for fold_id in range(cfg.n_splits):
+            # Walk backwards from the end: newest fold first
             test_end = working_n - fold_id * (test_n + embargo_n)
             test_start = test_end - test_n
 
-            if test_start < int(working_n * cfg.min_train_pct):
+            if test_start < int(
+                working_n * cfg.min_train_pct
+            ):  # ensure enough training data remains
                 logger.warning(
                     "Fold %d: test_start=%d too early, skipping fold.",
                     fold_id,
@@ -113,18 +122,25 @@ class PurgedWalkForwardCV:
                 )
                 break
 
-            embargo_start = test_start - embargo_n
-            embargo_idx = np.arange(embargo_start, test_start)
+            embargo_start = (
+                test_start - embargo_n
+            )  # end of training data (before embargo gap)
+            embargo_idx = np.arange(embargo_start, test_start)  # excluded gap indices
 
             if cfg.expanding_window:
-                train_start = 0
+                train_start = 0  # expanding window: train always starts from bar 0
             else:
-                window_size = embargo_start - embargo_n
+                window_size = (
+                    embargo_start - embargo_n
+                )  # rolling window: fixed train length
                 train_start = max(0, embargo_start - window_size)
 
-            raw_train_idx = np.arange(train_start, embargo_start)
+            raw_train_idx = np.arange(
+                train_start, embargo_start
+            )  # candidate training indices
 
             if cfg.purge:
+                # Remove train samples whose feature window reaches into the test period
                 train_idx, purged = self._purge(
                     raw_train_idx, test_start, cfg.feature_lookback
                 )
@@ -132,7 +148,7 @@ class PurgedWalkForwardCV:
                 train_idx = raw_train_idx
                 purged = 0
 
-            test_idx = np.arange(test_start, test_end)
+            test_idx = np.arange(test_start, test_end)  # out-of-sample test indices
 
             fold = FoldSplit(
                 fold_id=fold_id,
@@ -203,15 +219,19 @@ class PurgedScaler:
     def fit(self, X: np.ndarray) -> "PurgedScaler":
         """Fit scaler statistics on training data ONLY. Never call on test/live data."""
         if self.method == "zscore":
-            self._loc = X.mean(axis=0)
-            self._scale = X.std(axis=0) + 1e-8
+            self._loc = X.mean(axis=0)  # feature means (training set only)
+            self._scale = (
+                X.std(axis=0) + 1e-8
+            )  # feature std devs + epsilon to avoid div/0
         elif self.method == "minmax":
-            self._loc = X.min(axis=0)
-            self._scale = (X.max(axis=0) - X.min(axis=0)) + 1e-8
+            self._loc = X.min(axis=0)  # training minimum per feature
+            self._scale = (
+                X.max(axis=0) - X.min(axis=0)
+            ) + 1e-8  # training range per feature
         elif self.method == "robust":
-            self._loc = np.median(X, axis=0)
+            self._loc = np.median(X, axis=0)  # median is robust to outliers
             q75, q25 = np.percentile(X, [75, 25], axis=0)
-            self._scale = (q75 - q25) + 1e-8
+            self._scale = (q75 - q25) + 1e-8  # IQR: robust scale estimator
         self._fitted = True
         return self
 

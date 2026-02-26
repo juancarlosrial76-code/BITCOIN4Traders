@@ -1,7 +1,7 @@
 """
 ANTI-BIAS FRAMEWORK – Integration Tests
 ========================================
-Testet alle Kernmodule im Kontext des complete_trading_system.
+Tests all core modules in the context of the complete_trading_system.
 """
 
 import sys
@@ -47,14 +47,14 @@ RNG = np.random.default_rng(42)
 
 
 def make_returns(n: int = 500, sharpe: float = 0.5) -> np.ndarray:
-    """Erzeuge Returns mit gegebenem Sharpe."""
+    """Generate returns with given Sharpe ratio."""
     mu = sharpe / np.sqrt(252)
     sig = 1 / np.sqrt(252)
     return RNG.normal(mu, sig, n).astype(np.float32)
 
 
 def make_positions(n: int = 500, flip_prob: float = 0.3) -> np.ndarray:
-    """Erzeuge realistische Position-Serie."""
+    """Generate realistic position series."""
     pos = np.ones(n)
     for i in range(1, n):
         if RNG.random() < flip_prob:

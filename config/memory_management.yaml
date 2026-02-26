@@ -1,0 +1,92 @@
+# =============================================================================
+# Memory Management Configuration
+# =============================================================================
+# All parameters for RAM optimisation – especially important for Google Colab.
+# Locally this has no negative consequences, as GC is rarely relevant there.
+# In Colab this configuration prevents session timeouts caused by RAM overflow.
+
+# ── Trainer History ──────────────────────────────────────────────────────────
+history:
+  # Maximum number of stored metrics per category in self.history.
+  # Prevents unbounded growth of in-memory lists across 500+ iterations.
+  # Recommendation Colab: 200 | Local: 0 = unlimited
+  max_entries: 200
+
+# ── Adversary Buffer ─────────────────────────────────────────────────────────
+adversary_buffer:
+  # Explicitly free the adversary buffer from RAM after training.
+  # true = del + gc.collect() after train_adversary()
+  # Recommendation: always true (no downside locally)
+  clear_after_train: true
+
+# ── GPU / CUDA Cache ─────────────────────────────────────────────────────────
+cuda:
+  # Call torch.cuda.empty_cache() after every training iteration.
+  # Important in Colab (15 GB GPU RAM), usually no downside locally.
+  empty_cache_every_n_iterations: 10
+
+# ── Matplotlib ───────────────────────────────────────────────────────────────
+matplotlib:
+  # Call plt.close(fig) and gc.collect() after every generated chart.
+  # CRITICAL for Colab: every unclosed plt.Figure stays in RAM.
+  close_after_save: true
+  # Call gc.collect() additionally after visualisations
+  gc_after_plot: true
+
+# ── DataFrame Window ─────────────────────────────────────────────────────────
+dataframe:
+  # Maximum number of candles kept in RAM.
+  # Applied in live-trading loops (df = df.iloc[-max_candles:]).
+  # 0 = disabled (no limit)
+  # Recommendation Colab: 1000 | Local: 0
+  max_candles: 1000
+
+  # Limit equity history in the environment (for reward calculation).
+  # Older entries are discarded (only the last N are kept).
+  # Affects Sharpe calculation: window must be >= Sharpe lookback.
+  max_equity_history: 500
+
+  # OHLCV data type when loading: 'float32' halves RAM vs. 'float64'.
+  # float32 is fully sufficient for trading calculations (prices, volume).
+  # Only switch to 'float64' when extremely high precision is required.
+  # Recommendation Colab: float32 | Local: float32
+  dtype_ohlcv: float32
+
+# ── Chunk-based Loading ──────────────────────────────────────────────────────
+chunked_loading:
+  # Enables loading data in time slices instead of all at once.
+  # AKTIVIERT fuer Colab: verhindert OOM bei >2 Jahren Daten (12 GB RAM-Limit)
+  enabled: true
+  # Length of a chunk in months
+  chunk_months: 12
+  # Chunks are removed from RAM after processing
+  delete_chunk_after_use: true
+
+# ── IPython Output Cache (Colab only) ────────────────────────────────────────
+ipython:
+  # Enable %reset_out after every training iteration.
+  # Only relevant in notebook environments – ignored locally.
+  reset_output_cache: true
+  # Clear the output cache every N iterations
+  reset_every_n_iterations: 50
+
+# ── Logging ──────────────────────────────────────────────────────────────────
+logging:
+  # Maximum log file size before rotation
+  max_log_size_mb: 50
+  # Number of rotated log backups to keep
+  log_retention: 3
+  # Log compression (gz, bz2, or null for no compression)
+  log_compression: gz
+
+# ── Drive Sync (Colab only) ──────────────────────────────────────────────────
+drive_sync:
+  # Sync checkpoints to Google Drive every N iterations
+  sync_every_n_iterations: 25
+  # Keep local checkpoints after syncing to Drive (true) or delete them (false)
+  keep_local_after_sync: true
+  # Maximum number of local checkpoints (oldest are deleted)
+  max_local_checkpoints: 3
+  # Target folder on Drive for logs and CSVs (save_and_trim_data)
+  # Also used as default for cleanup_memory() and save_and_trim_data()
+  drive_log_path: /content/drive/MyDrive/BITCOIN4Traders/logs/

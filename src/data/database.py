@@ -3,9 +3,12 @@ Database Models and Persistence Layer
 ======================================
 PostgreSQL storage for trades, orders, and market data.
 
-Connection: postgresql://myapp_user:VrSHl0M1h5AaHQ1dO7PQ@127.0.0.1:5432/myapp_db
+Connection is configured via the DATABASE_URL environment variable.
+Set it in your .env file (see .env.example for the format):
+  DATABASE_URL=postgresql://user:password@host:port/dbname
 """
 
+import os
 from datetime import datetime
 from typing import Optional, List
 from sqlalchemy import create_engine, Column, String, Float, DateTime, Integer, Boolean
@@ -15,12 +18,21 @@ from sqlalchemy.sql import func
 import pandas as pd
 from loguru import logger
 
-# Database configuration
-DATABASE_URL = "postgresql://myapp_user:VrSHl0M1h5AaHQ1dO7PQ@127.0.0.1:5432/myapp_db"
+# Database configuration — read from environment, never hardcoded
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if DATABASE_URL is None:
+    logger.warning(
+        "DATABASE_URL environment variable is not set. "
+        "Database operations will fail. "
+        "Add DATABASE_URL to your .env file (see .env.example)."
+    )
+    DATABASE_URL = ""  # placeholder so module loads without crash
 
-Base = declarative_base()
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(bind=engine)
+Base = declarative_base()  # ORM base class; all models inherit from this
+engine = create_engine(DATABASE_URL)  # SQLAlchemy engine: manages connection pool
+SessionLocal = sessionmaker(
+    bind=engine
+)  # Session factory; call SessionLocal() to get a session
 
 
 class Trade(Base):
@@ -39,7 +51,9 @@ class Trade(Base):
     fee = Column(Float)
     exchange = Column(String)
     strategy = Column(String, nullable=True)
-    timestamp = Column(DateTime, default=func.now())
+    timestamp = Column(
+        DateTime, default=func.now()
+    )  # server-side default: DB sets current time on insert
 
     def to_dict(self):
         return {
@@ -71,8 +85,8 @@ class Order(Base):
     filled_qty = Column(Float, default=0.0)
     avg_price = Column(Float, nullable=True)
     exchange = Column(String)
-    created_at = Column(DateTime, default=func.now())
-    updated_at = Column(DateTime, onupdate=func.now())
+    created_at = Column(DateTime, default=func.now())  # set once on insert
+    updated_at = Column(DateTime, onupdate=func.now())  # auto-updated on every UPDATE
 
     def to_dict(self):
         return {
@@ -222,8 +236,10 @@ class DatabaseManager:
                     )
                 )
 
-            session.bulk_save_objects(records)
-            session.commit()
+            session.bulk_save_objects(
+                records
+            )  # batch INSERT: much faster than individual session.add() calls
+            session.commit()  # flush all pending INSERT statements to the DB atomically
             logger.success(f"Saved {len(records)} records for {symbol}")
         except Exception as e:
             session.rollback()
@@ -239,18 +255,28 @@ class DatabaseManager:
         try:
             query = session.query(MarketData).filter(
                 MarketData.symbol == symbol, MarketData.timestamp >= start_date
-            )
+            )  # build SQLAlchemy query with mandatory symbol + start_date filters
 
             if end_date:
-                query = query.filter(MarketData.timestamp <= end_date)
+                query = query.filter(
+                    MarketData.timestamp <= end_date
+                )  # optional upper-bound filter
 
-            results = query.order_by(MarketData.timestamp).all()
+            results = query.order_by(
+                MarketData.timestamp
+            ).all()  # execute query; returns list of ORM objects
 
             if not results:
-                return pd.DataFrame()
+                return (
+                    pd.DataFrame()
+                )  # return empty frame rather than None to avoid caller type errors
 
-            df = pd.DataFrame([r.to_dict() for r in results])
-            df.set_index("timestamp", inplace=True)
+            df = pd.DataFrame(
+                [r.to_dict() for r in results]
+            )  # convert ORM rows to plain dicts, then DataFrame
+            df.set_index(
+                "timestamp", inplace=True
+            )  # use timestamp as index for time-series operations
             return df
 
         except Exception as e:
@@ -360,5 +386,6 @@ if __name__ == "__main__":
     # Initialize database
     print("Initializing database...")
     db = init_database()
-    print("✓ Database initialized successfully!")
-    print(f"✓ Connected to: {DATABASE_URL}")
+    print("Database initialized successfully!")
+    url_display = DATABASE_URL.split("@")[-1] if DATABASE_URL else "(not configured)"
+    print(f"Connected to: {url_display}")

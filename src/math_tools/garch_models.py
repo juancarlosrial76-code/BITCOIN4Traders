@@ -1,7 +1,60 @@
 """
 GARCH Models for Volatility Forecasting
-========================================
+=======================================
 Generalized Autoregressive Conditional Heteroskedasticity
+
+Mathematical Foundation:
+------------------------
+GARCH models capture volatility clustering - the empirical observation that
+large price changes tend to follow large changes, and small tend to follow small.
+
+GARCH(1,1) Model:
+    σ²_t = ω + α·ε²_{t-1} + β·σ²_{t-1}
+
+    where:
+        σ²_t: Conditional variance at time t (forecasted volatility²)
+        ω (omega): Long-term average variance (baseline)
+        α (alpha): ARCH parameter - impact of yesterday's shock
+        β (beta): GARCH parameter - persistence of variance
+        ε_{t-1}: Squared return at t-1 (shock)
+
+    Constraint: α + β < 1 (ensures stationarity)
+
+Integrated GARCH (IGARCH):
+    If α + β = 1, variance follows random walk
+    Today's variance = yesterday's variance + ω + shock²
+
+Volatility Persistence:
+    P = α + β (sum of coefficients)
+
+    - P → 1: High persistence (shocks decay slowly)
+    - P < 1: Stationary (shocks decay exponentially)
+
+Half-Life of Volatility Shocks:
+    t_½ = ln(0.5) / ln(α + β)
+
+    Time for a volatility shock to decay by 50%
+
+Long-Run (Unconditional) Variance:
+    Var(∞) = ω / (1 - α - β)
+
+    This is the variance the process reverts to over time
+
+Log-Likelihood (Gaussian):
+    LL = -½Σ[log(2π) + log(σ²_t) + ε²_t/σ²_t]
+
+    Maximized during estimation
+
+Value at Risk (VaR):
+    VaR_α = z_α × σ_t
+
+    where z_α is the standard normal quantile
+
+Conditional VaR (Expected Shortfall):
+    CVaR_α = E[loss | loss > VaR_α]
+           = σ_t × [φ(z_α) / (1-α)]
+
+    where φ is the PDF
 
 Used for:
 - Volatility clustering modeling
@@ -10,15 +63,15 @@ Used for:
 - Position sizing based on volatility
 - Market regime detection
 
-Mathematical Model:
-    σ²_t = ω + α*ε²_{t-1} + β*σ²_{t-1}
+References:
+- Engle, R.F. (1982) "Autoregressive Conditional Heteroskedasticity with Estimates of UK Inflation"
+- Bollerslev, T. (1986) "Generalized Autoregressive Conditional Heteroskedasticity"
+- Tsay, R.S. (2010) "Analysis of Financial Time Series"
 
-Where:
-    σ²_t: Conditional variance at time t
-    ω: Long-term average variance
-    α: ARCH parameter (impact of shocks)
-    β: GARCH parameter (persistence)
-    ε_{t-1}: Previous return shock
+Dependencies:
+- numpy: Numerical computations
+- pandas: Time series handling
+- scipy: Optimization and statistics
 """
 
 import numpy as np
@@ -37,6 +90,124 @@ class GARCHModel:
 
     The GARCH(1,1) is the industry standard for volatility modeling
     due to its parsimony and effectiveness.
+
+    Mathematical Background:
+    -----------------------
+    GARCH(1,1) models time-varying volatility as:
+
+        σ²_t = ω + α·r²_{t-1} + β·σ²_{t-1}
+
+    where:
+        σ²_t: Conditional variance at time t
+        r_{t-1}: Return at time t-1
+        σ²_{t-1}: Conditional variance at t-1
+
+    Key Properties:
+
+    1. Volatility Persistence (α + β):
+       - Close to 1 = high persistence (volatility shocks linger)
+       - Financial data typically: 0.90 - 0.99
+
+    2. Half-Life:
+       t_½ = ln(0.5) / ln(α + β)
+
+       Example: If α + β = 0.95
+                t_½ = ln(0.5) / ln(0.95) ≈ 13.5 periods
+
+    3. Long-Run Variance:
+       σ²_∞ = ω / (1 - α - β)
+
+       The variance the process reverts to
+
+    4. Forecasting:
+       σ²_{t+h} = σ²_∞ + (α+β)^h × (σ²_t - σ²_∞)
+
+    Parameter Estimation:
+    --------------------
+    Uses Maximum Likelihood Estimation (MLE):
+
+    1. Initialize: σ²_0 = sample variance
+    2. Iterate: σ²_t = ω + αr²_{t-1} + βσ²_{t-1}
+    3. Compute: LL = -½Σ[log(2π) + log(σ²_t) + r²_t/σ²_t]
+    4. Optimize: Maximize LL w.r.t. (ω, α, β)
+
+    Constraints:
+       ω > 0, α ≥ 0, β ≥ 0, α + β < 1
+
+    Parameters:
+    -----------
+    p : int
+        GARCH order (number of lagged variance terms). Default: 1
+        Typically p=1 is sufficient for financial data
+
+    q : int
+        ARCH order (number of lagged squared returns). Default: 1
+        Typically q=1 is sufficient
+
+    Attributes:
+    ----------
+    omega : float
+        Long-term variance coefficient (ω)
+
+    alpha : float
+        ARCH coefficient (α) - impact of recent returns
+
+    beta : float
+        GARCH coefficient (β) - volatility persistence
+
+    sigma_history : np.ndarray
+        Fitted conditional volatility series
+
+    log_likelihood : float
+        Log-likelihood at fitted parameters
+
+    is_fitted : bool
+        Whether model has been fitted
+
+    Methods:
+    --------
+    fit(returns)
+        Estimate parameters using MLE
+
+    forecast(steps)
+        Forecast future volatility
+
+    get_conditional_volatility()
+        Get historical conditional volatility
+
+    calculate_var(confidence, horizon)
+        Calculate Value at Risk
+
+    Returns:
+    --------
+    Dictionary containing:
+        - omega, alpha, beta: Fitted parameters
+        - persistence: α + β
+        - half_life: Mean reversion half-life in periods
+        - log_likelihood: Model fit
+        - aic, bic: Information criteria
+
+    Example:
+    -------
+    >>> import numpy as np
+    >>>
+    >>> # Generate returns with volatility clustering
+    >>> np.random.seed(42)
+    >>> returns = np.random.randn(1000) * 0.01
+    >>> returns[500:510] *= 5  # Add volatility cluster
+    >>>
+    >>> # Fit GARCH
+    >>> model = GARCHModel(p=1, q=1)
+    >>> result = model.fit(returns)
+    >>>
+    >>> print(f"Alpha: {result['alpha']:.4f}")
+    >>> print(f"Beta: {result['beta']:.4f}")
+    >>> print(f"Persistence: {result['persistence']:.4f}")
+    >>> print(f"Half-life: {result['half_life']:.1f} periods")
+    >>>
+    >>> # Forecast volatility
+    >>> vol_forecast = model.forecast(5)
+    >>> print(f"5-day volatility forecast: {vol_forecast[-1]:.4f}")
     """
 
     def __init__(self, p: int = 1, q: int = 1):
@@ -61,23 +232,54 @@ class GARCHModel:
 
     def _garch_variance(self, params: np.ndarray, returns: np.ndarray) -> np.ndarray:
         """
-        Calculate conditional variance series.
+        Calculate conditional variance series given parameters.
+
+        Uses the GARCH(1,1) recursion to compute variance at each time step.
+
+        Mathematical Formula:
+        --------------------
+        σ²_t = ω + α·r²_{t-1} + β·σ²_{t-1}
+
+        where:
+            σ²_t: Conditional variance at time t
+            r²_{t-1}: Squared return at t-1 (recent "shock")
+            σ²_{t-1}: Previous conditional variance
+            ω: Long-term variance baseline
+            α: Weight on recent shock (ARCH term)
+            β: Weight on past variance (GARCH term)
+
+        This is a recursive definition - each variance depends on the previous.
 
         Args:
-            params: [omega, alpha, beta]
-            returns: Return series
+            params: Parameter vector [omega, alpha, beta]
+            returns: Return series (not squared)
 
         Returns:
-            Variance series
+            Variance series of same length as returns
         """
         omega, alpha, beta = params
         T = len(returns)
 
+        # Initialize with unconditional (sample) variance
+        # This is σ²_0 = Var(r) before we have any observations
         sigma2 = np.zeros(T)
-        sigma2[0] = np.var(returns)  # Initialize with unconditional variance
+        sigma2[0] = np.var(returns)
 
+        # GARCH(1,1) recursion: σ²_t = ω + α·r²_{t-1} + β·σ²_{t-1}
+        #
+        # Interpretation:
+        # - ω (omega): Baseline variance - the long-run average
+        # - α (alpha): How much yesterday's return shock affects today's variance
+        # - β (beta): How much yesterday's variance persists to today
+        # - α + β: Volatility persistence (should be < 1 for stationarity)
         for t in range(1, T):
-            sigma2[t] = omega + alpha * returns[t - 1] ** 2 + beta * sigma2[t - 1]
+            # Squared return is the "shock" or "innovation"
+            # Large |return| → large squared return → increased variance
+            shock = returns[t - 1] ** 2
+
+            # Recursive update:
+            # New variance = baseline + α*(recent shock) + β*(past variance)
+            sigma2[t] = omega + alpha * shock + beta * sigma2[t - 1]
 
         return sigma2
 
@@ -97,7 +299,7 @@ class GARCHModel:
         # Avoid log of zero
         sigma2 = np.maximum(sigma2, 1e-10)
 
-        # Log-likelihood for normal distribution
+        # Gaussian log-likelihood: -0.5 * Σ[log(2π σ²) + ε²/σ²]
         ll = -0.5 * np.sum(np.log(2 * np.pi * sigma2) + returns**2 / sigma2)
 
         return -ll  # Return negative for minimization
@@ -151,8 +353,9 @@ class GARCHModel:
             # Calculate variance history
             self.sigma_history = self._garch_variance(result.x, returns)
 
-            # Calculate persistence
+            # Calculate persistence: α+β < 1 required for stationarity
             persistence = self.alpha + self.beta
+            # Half-life: time for shock to decay to half its initial size
             half_life = np.log(0.5) / np.log(persistence) if persistence < 1 else np.inf
 
             return {
@@ -162,8 +365,10 @@ class GARCHModel:
                 "persistence": persistence,
                 "half_life": half_life,
                 "log_likelihood": self.log_likelihood,
-                "aic": -2 * self.log_likelihood + 2 * 3,  # AIC = -2*LL + 2*k
-                "bic": -2 * self.log_likelihood + 3 * np.log(len(returns)),
+                "aic": -2 * self.log_likelihood
+                + 2 * 3,  # AIC = -2*LL + 2*k, penalizes complexity
+                "bic": -2 * self.log_likelihood
+                + 3 * np.log(len(returns)),  # BIC penalizes more heavily
                 "success": True,
             }
         else:
@@ -185,16 +390,16 @@ class GARCHModel:
         if len(self.sigma_history) == 0:
             raise ValueError("No variance history available")
 
-        # Long-run variance
+        # Long-run (unconditional) variance: ω / (1 - α - β)
         long_run_var = self.omega / (1 - self.alpha - self.beta)
 
-        # Current variance
+        # Most recent conditional variance (starting point for forecast)
         current_var = self.sigma_history[-1]
 
         forecasts = np.zeros(steps)
 
         for i in range(steps):
-            # GARCH(1,1) forecast converges to long-run variance
+            # GARCH(1,1) multi-step forecast: mean-reverts to long-run variance at rate (α+β)^i
             forecasts[i] = long_run_var + (self.alpha + self.beta) ** i * (
                 current_var - long_run_var
             )
@@ -224,9 +429,9 @@ class GARCHModel:
         # Forecast volatility for horizon
         vol_forecast = self.forecast(horizon)[-1]
 
-        # VaR = z-score * volatility
-        z_score = norm.ppf(confidence)
-        var = z_score * vol_forecast
+        # VaR = z-score * volatility  (normal distribution assumption)
+        z_score = norm.ppf(confidence)  # Inverse CDF: e.g. 1.645 for 95% confidence
+        var = z_score * vol_forecast  # VaR in return units
 
         return var
 
@@ -346,13 +551,13 @@ class VolatilityTargeting:
         # Forecast volatility
         forecast_vol = self.garch_model.forecast(1)[0]
 
-        # Annualize (assuming daily data)
+        # Annualize (assuming daily data): σ_daily * sqrt(252 trading days)
         annual_vol = forecast_vol * np.sqrt(252)
 
-        # Calculate scalar
+        # Position scalar: target_vol / realized_vol  (scale up when vol is low, scale down when high)
         scalar = self.target_vol / annual_vol
 
-        # Limit extremes
+        # Limit extremes to prevent excessive leverage or zero exposure
         return np.clip(scalar, 0.1, 3.0)
 
     def apply_volatility_targeting(self, signal: float, returns: np.ndarray) -> float:

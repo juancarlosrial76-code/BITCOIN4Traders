@@ -20,7 +20,7 @@ Use Cases:
 
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Optional, Callable
+from typing import Dict, List, Optional, Callable, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from collections import deque
@@ -156,9 +156,9 @@ class LiveQualityMonitor:
             [self.sources[name], new_data], ignore_index=True
         )
 
-        # Keep only recent data (last 10000 rows)
+        # Keep only recent data to limit memory usage (sliding window)
         if len(self.sources[name]) > 10000:
-            self.sources[name] = self.sources[name].tail(10000)
+            self.sources[name] = self.sources[name].tail(10000)  # retain last 10k rows
 
         # Check quality
         self._check_source_quality(name)
@@ -363,7 +363,7 @@ class LiveQualityMonitor:
         if source_name not in self.quality_history:
             return {"error": "Source not found"}
 
-        history = list(self.quality_history[source_name])[-window:]
+        history = list(self.quality_history[source_name])[-window:]  # last N snapshots
 
         if not history:
             return {"error": "No quality history"}
@@ -375,9 +375,13 @@ class LiveQualityMonitor:
             "window": len(scores),
             "current": scores[-1],
             "mean": np.mean(scores),
-            "trend": "improving" if scores[-1] > scores[0] else "degrading",
-            "trend_strength": abs(scores[-1] - scores[0]),
-            "volatility": np.std(scores),
+            "trend": "improving"
+            if scores[-1] > scores[0]
+            else "degrading",  # compare first vs last in window
+            "trend_strength": abs(
+                scores[-1] - scores[0]
+            ),  # magnitude of change over window
+            "volatility": np.std(scores),  # stability of quality score
         }
 
     def get_alerts(
@@ -427,12 +431,16 @@ class LiveQualityMonitor:
             for source_name, history in self.quality_history.items():
                 if source_name != self.current_best_source and history:
                     score = history[-1].overall_score
+                    # candidate must beat both current best_score AND the minimum threshold
                     if score > best_score and score >= self.quality_threshold:
                         best_score = score
                         best_alternative = source_name
 
             if best_alternative:
-                return True, best_alternative
+                return (
+                    True,
+                    best_alternative,
+                )  # signal caller to switch to best_alternative
 
         return False, None
 
@@ -504,12 +512,12 @@ class DynamicSourceSelector:
 
     def select_source(self) -> Optional[str]:
         """Select best source based on current quality."""
-        # Check cooldown
+        # Check cooldown: avoid thrashing by enforcing minimum time between switches
         if self.last_switch_time:
             elapsed = (datetime.now() - self.last_switch_time).total_seconds()
             if elapsed < self.cooldown_period:
                 logger.debug(f"In cooldown period ({elapsed:.0f}s remaining)")
-                return self.current_source
+                return self.current_source  # stay on current source during cooldown
 
         # Get recommendation from monitor
         should_switch, new_source = self.monitor.should_switch_source()
@@ -517,7 +525,7 @@ class DynamicSourceSelector:
         if should_switch and new_source:
             self._switch_source(new_source)
         elif not self.current_source:
-            # Initial selection
+            # Initial selection: pick the best available source on first call
             best = self.monitor.get_best_source()
             if best:
                 self._switch_source(best)

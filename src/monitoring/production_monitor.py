@@ -93,20 +93,24 @@ class ProductionMonitor:
         self, check_interval_seconds: float = 5.0, metrics_history_size: int = 10000
     ):
         self.check_interval = check_interval_seconds
-        self.metrics_history = deque(maxlen=metrics_history_size)
-        self.alerts = deque(maxlen=1000)
+        self.metrics_history = deque(
+            maxlen=metrics_history_size
+        )  # ring buffer: oldest metrics auto-evicted when full
+        self.alerts = deque(
+            maxlen=1000
+        )  # ring buffer: keeps the 1000 most recent alerts
         self.alert_handlers = []
         self.running = False
         self.monitor_thread = None
 
-        # Thresholds
+        # Risk thresholds: breach triggers an alert (and possibly emergency stop)
         self.thresholds = {
-            "max_drawdown_pct": 0.10,
-            "daily_loss_limit_pct": 0.05,
-            "position_concentration": 0.25,
-            "max_latency_ms": 500,
-            "min_win_rate": 0.45,
-            "max_exposure_pct": 0.8,
+            "max_drawdown_pct": 0.10,  # halt if portfolio drops >10% from peak
+            "daily_loss_limit_pct": 0.05,  # EMERGENCY if daily loss > 5% of total P&L
+            "position_concentration": 0.25,  # single position may not exceed 25% of capital
+            "max_latency_ms": 500,  # order latency >500ms indicates connectivity issues
+            "min_win_rate": 0.45,  # WARNING if win rate falls below 45% (after ≥20 trades)
+            "max_exposure_pct": 0.8,  # WARNING if gross exposure exceeds 80% of capital
         }
 
         # State
@@ -153,7 +157,8 @@ class ProductionMonitor:
 
         if (
             metrics.daily_pnl
-            < -self.thresholds["daily_loss_limit_pct"] * metrics.total_pnl
+            < -self.thresholds["daily_loss_limit_pct"]
+            * metrics.total_pnl  # daily loss exceeds allowed fraction of running P&L
         ):
             self._trigger_alert(
                 AlertLevel.EMERGENCY,
@@ -227,9 +232,9 @@ class ProductionMonitor:
 
         # Log alert
         log_func = (
-            logger.warning
+            logger.warning  # WARNING and CRITICAL → loguru warning level
             if level in [AlertLevel.WARNING, AlertLevel.CRITICAL]
-            else logger.info
+            else logger.info  # INFO and EMERGENCY → info level (EMERGENCY is separately handled via emergency_stop flag)
         )
         log_func(f"ALERT [{level.value.upper()}] {type.value}: {message}")
 
@@ -246,7 +251,9 @@ class ProductionMonitor:
             return
 
         self.running = True
-        self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self.monitor_thread = threading.Thread(
+            target=self._monitor_loop, daemon=True
+        )  # daemon=True: thread dies automatically when main process exits
         self.monitor_thread.start()
         logger.info("Production monitoring started")
 
@@ -254,7 +261,9 @@ class ProductionMonitor:
         """Stop monitoring."""
         self.running = False
         if self.monitor_thread:
-            self.monitor_thread.join(timeout=5.0)
+            self.monitor_thread.join(
+                timeout=5.0
+            )  # wait up to 5s for clean thread exit before abandoning
         logger.info("Production monitoring stopped")
 
     def _monitor_loop(self):
@@ -383,9 +392,13 @@ class LiveTrader:
                     break
 
                 # Check daily loss limit
-                if self.daily_pnl < -self.max_daily_loss_pct * self.starting_capital:
+                if (
+                    self.daily_pnl < -self.max_daily_loss_pct * self.starting_capital
+                ):  # e.g. -5% of capital
                     logger.error(f"Daily loss limit hit: ${self.daily_pnl:,.2f}")
-                    self.circuit_breaker_triggered = True
+                    self.circuit_breaker_triggered = (
+                        True  # arm circuit breaker; next loop iteration halts trading
+                    )
                     continue
 
                 # Get strategy signal
@@ -437,7 +450,9 @@ class LiveTrader:
     def _pre_trade_checks(self, signal: Dict) -> bool:
         """Perform pre-trade safety checks."""
         # Check position limits
-        if signal["size"] > self.starting_capital * 0.25:
+        if (
+            signal["size"] > self.starting_capital * 0.25
+        ):  # hard cap: single position ≤25% of capital (Kelly/position-sizing constraint)
             logger.warning("Position size exceeds limit")
             return False
 
@@ -455,7 +470,7 @@ class LiveTrader:
             daily_pnl=self.daily_pnl,
             open_positions=len(self.positions),
             exposure_pct=sum(abs(p.get("size", 0)) for p in self.positions.values())
-            / self.starting_capital,
+            / self.starting_capital,  # gross exposure = sum of |position sizes| / capital
             margin_used_pct=0.1,  # Placeholder
             sharpe_24h=1.5,  # Placeholder
             max_drawdown_pct=0.05,  # Placeholder
@@ -478,10 +493,12 @@ class LiveTrader:
         """Handle monitoring alerts."""
         if alert.level == AlertLevel.EMERGENCY:
             logger.error(f"Emergency alert received: {alert.message}")
-            self.emergency_stop = True
+            self.emergency_stop = (
+                True  # immediately halt all new trades on next loop iteration
+            )
         elif alert.level == AlertLevel.CRITICAL and alert.action_required:
             logger.warning(f"Critical alert: {alert.message}")
-            # Could trigger position reduction here
+            # Could trigger position reduction here (e.g., halve sizes to reduce drawdown)
 
 
 class PerformanceReporter:
@@ -509,7 +526,9 @@ class PerformanceReporter:
         start_metric = today_metrics[0]
         end_metric = today_metrics[-1]
 
-        pnl_change = end_metric.total_pnl - start_metric.total_pnl
+        pnl_change = (
+            end_metric.total_pnl - start_metric.total_pnl
+        )  # daily P&L = end-of-day minus start-of-day cumulative P&L
 
         report = f"""
 ═══════════════════════════════════════════════════════════════

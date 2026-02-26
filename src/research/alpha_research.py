@@ -74,31 +74,46 @@ class AlphaMiner:
 
         # Mean reversion alphas
         for lookback in [5, 10, 20]:
+            # z-score of price deviation from rolling mean
             zscore = (close - close.rolling(lookback).mean()) / close.rolling(
                 lookback
             ).std()
-            alphas[f"mr_{lookback}"] = -zscore  # Negative for mean reversion
+            alphas[
+                f"mr_{lookback}"
+            ] = -zscore  # flip sign: high z-score → expect reversal down
 
         # Volume-weighted alphas
-        vwma = (close * volume).rolling(20).sum() / volume.rolling(20).sum()
-        alphas["vwma_dist"] = (close - vwma) / vwma
+        vwma = (close * volume).rolling(20).sum() / volume.rolling(
+            20
+        ).sum()  # volume-weighted moving average
+        alphas["vwma_dist"] = (
+            close - vwma
+        ) / vwma  # relative distance of price from VWMA
 
         # Volatility breakout
-        vol = close.pct_change().rolling(20).std()
-        alphas["vol_regime"] = (vol > vol.rolling(60).mean()).astype(float)
+        vol = close.pct_change().rolling(20).std()  # realised vol (20-bar window)
+        alphas["vol_regime"] = (vol > vol.rolling(60).mean()).astype(
+            float
+        )  # 1 if vol above 60-bar average
 
         # RSI divergence (simplified)
         delta = close.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
-        alphas["rsi_extreme"] = ((rsi > 70) | (rsi < 30)).astype(float) * (50 - rsi)
+        gain = (
+            (delta.where(delta > 0, 0)).rolling(14).mean()
+        )  # average gain (Wilder smoothing approximation)
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()  # average loss magnitude
+        rs = gain / loss  # relative strength = avg gain / avg loss
+        rsi = 100 - (100 / (1 + rs))  # RSI: 0–100 scale; >70 overbought, <30 oversold
+        alphas["rsi_extreme"] = ((rsi > 70) | (rsi < 30)).astype(float) * (
+            50 - rsi
+        )  # signed extreme signal
 
         # Bollinger Band position
         bb_middle = close.rolling(20).mean()
         bb_std = close.rolling(20).std()
-        bb_position = (close - bb_middle) / (2 * bb_std)
+        bb_position = (close - bb_middle) / (
+            2 * bb_std
+        )  # ±1 = at upper/lower band; 0 = at middle band
         alphas["bb_position"] = bb_position
 
         logger.info(f"Generated {len(alphas)} technical alphas")
@@ -118,33 +133,46 @@ class AlphaMiner:
 
         # Beta-adjusted returns
         rolling_beta = (
-            returns.rolling(60).cov(market_returns) / market_returns.rolling(60).var()
+            returns.rolling(60).cov(market_returns)
+            / market_returns.rolling(60).var()  # rolling β
         )
-        alphas["residual"] = returns - rolling_beta * market_returns
+        alphas["residual"] = (
+            returns - rolling_beta * market_returns
+        )  # market-neutral residual alpha
 
         # Skewness (crash risk)
-        alphas["skew"] = returns.rolling(20).skew()
+        alphas["skew"] = returns.rolling(
+            20
+        ).skew()  # negative skew → fat left tail / crash risk
 
         # Kurtosis (tail risk)
-        alphas["kurt"] = returns.rolling(20).kurt()
+        alphas["kurt"] = returns.rolling(
+            20
+        ).kurt()  # excess kurtosis > 3 → fatter tails than normal
 
         # Volatility of volatility
         vol = returns.rolling(20).std()
-        alphas["vol_of_vol"] = vol.rolling(20).std()
+        alphas["vol_of_vol"] = vol.rolling(
+            20
+        ).std()  # second-order vol: measures vol regime instability
 
         # Autocorrelation (reversal/momentum)
         alphas["autocorr_1"] = returns.rolling(20).apply(
-            lambda x: x.autocorr(lag=1) if len(x) > 1 else 0
+            lambda x: x.autocorr(lag=1)
+            if len(x) > 1
+            else 0  # positive → momentum, negative → mean reversion
         )
 
         # Hurst exponent (trend strength)
         def hurst_exponent(ts):
             if len(ts) < 20:
-                return 0.5
+                return 0.5  # not enough data → assume random walk (H=0.5)
             lags = range(2, min(20, len(ts) // 2))
-            tau = [np.std(np.subtract(ts[lag:], ts[:-lag])) for lag in lags]
-            reg = np.polyfit(np.log(lags), np.log(tau), 1)
-            return reg[0] * 2.0
+            tau = [
+                np.std(np.subtract(ts[lag:], ts[:-lag])) for lag in lags
+            ]  # R/S statistic at each lag
+            reg = np.polyfit(np.log(lags), np.log(tau), 1)  # log-log regression slope
+            return reg[0] * 2.0  # H > 0.5 = trending, H < 0.5 = mean-reverting
 
         alphas["hurst"] = df["close"].rolling(60).apply(hurst_exponent)
 

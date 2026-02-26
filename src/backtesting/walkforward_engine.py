@@ -171,17 +171,19 @@ class WalkForwardEngine:
             # Calculate window dates
             train_start = current_start
             train_end = train_start + timedelta(days=self.config.train_window_days)
-            test_start = train_end
+            test_start = train_end  # test window starts immediately after training ends
             test_end = test_start + timedelta(days=self.config.test_window_days)
 
             # Check if we've reached the end
             if test_end > end_date:
-                break
+                break  # stop if the full test window would exceed available data
 
             windows.append((train_start, train_end, test_start, test_end))
 
             # Step forward
-            current_start += timedelta(days=self.config.step_days)
+            current_start += timedelta(
+                days=self.config.step_days
+            )  # overlapping windows (anchored walk-forward)
 
         logger.info(f"Created {len(windows)} walk-forward windows")
 
@@ -287,14 +289,18 @@ class WalkForwardEngine:
 
         # Convert to arrays
         equity = np.array(equity_curve)
-        returns = np.diff(equity) / equity[:-1]
+        returns = np.diff(equity) / equity[:-1]  # per-step percentage returns
 
         # Calculate metrics
-        total_return = (equity[-1] - equity[0]) / equity[0]
+        total_return = (equity[-1] - equity[0]) / equity[
+            0
+        ]  # overall equity growth fraction
 
         # Sharpe ratio
         if len(returns) > 1:
-            sharpe = np.mean(returns) / (np.std(returns) + 1e-8) * np.sqrt(252)
+            sharpe = (
+                np.mean(returns) / (np.std(returns) + 1e-8) * np.sqrt(252)
+            )  # annualised (daily steps)
         else:
             sharpe = 0.0
 
@@ -302,19 +308,25 @@ class WalkForwardEngine:
         negative_returns = returns[returns < 0]
         if len(negative_returns) > 0:
             sortino = (
-                np.mean(returns) / (np.std(negative_returns) + 1e-8) * np.sqrt(252)
+                np.mean(returns)
+                / (np.std(negative_returns) + 1e-8)
+                * np.sqrt(252)  # only downside vol in denominator
             )
         else:
-            sortino = sharpe
+            sortino = sharpe  # no losses → use Sharpe as proxy
 
         # Max drawdown
-        running_max = np.maximum.accumulate(equity)
-        drawdowns = (equity - running_max) / running_max
-        max_drawdown = np.min(drawdowns)
+        running_max = np.maximum.accumulate(equity)  # peak equity up to each step
+        drawdowns = (
+            equity - running_max
+        ) / running_max  # negative values represent drawdown depth
+        max_drawdown = np.min(drawdowns)  # worst drawdown (most negative)
 
         # Calmar ratio
         if max_drawdown < 0:
-            calmar = total_return / abs(max_drawdown)
+            calmar = total_return / abs(
+                max_drawdown
+            )  # return per unit of drawdown risk
         else:
             calmar = 0.0
 

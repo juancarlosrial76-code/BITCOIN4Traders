@@ -159,12 +159,14 @@ class BinanceConnector:
     def _rate_limit(self):
         """Enforce rate limiting."""
         current_time = time.time()
-        elapsed = current_time - self.last_request_time
+        elapsed = current_time - self.last_request_time  # Time since last API call
 
         if elapsed < self.min_request_interval:
-            time.sleep(self.min_request_interval - elapsed)
+            time.sleep(
+                self.min_request_interval - elapsed
+            )  # Sleep for remaining interval to avoid 429 errors
 
-        self.last_request_time = time.time()
+        self.last_request_time = time.time()  # Update timestamp after sleeping
 
     def get_account_balance(self) -> Dict[str, Balance]:
         """Get account balance."""
@@ -503,10 +505,16 @@ class BinanceConnector:
             for col in numeric_cols:
                 df[col] = pd.to_numeric(df[col])
 
-            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-            df.set_index("timestamp", inplace=True)
+            df["timestamp"] = pd.to_datetime(
+                df["timestamp"], unit="ms"
+            )  # Convert UNIX milliseconds to datetime
+            df.set_index(
+                "timestamp", inplace=True
+            )  # Use timestamp as index for time-series operations
 
-            return df[["open", "high", "low", "close", "volume"]]
+            return df[
+                ["open", "high", "low", "close", "volume"]
+            ]  # Return standard OHLCV columns only
 
         except Exception as e:
             logger.error(f"Error getting historical data: {e}")
@@ -523,11 +531,13 @@ class BinanceConnector:
             positions = self.client.futures_position_information(symbol=symbol)
 
             for pos in positions:
-                if float(pos["positionAmt"]) != 0:
+                if float(pos["positionAmt"]) != 0:  # Skip empty positions
                     position = Position(
                         symbol=symbol,
-                        side="LONG" if float(pos["positionAmt"]) > 0 else "SHORT",
-                        size=abs(float(pos["positionAmt"])),
+                        side="LONG"
+                        if float(pos["positionAmt"]) > 0
+                        else "SHORT",  # Positive amount = long
+                        size=abs(float(pos["positionAmt"])),  # Always positive size
                         entry_price=float(pos["entryPrice"]),
                         unrealized_pnl=float(pos["unRealizedProfit"]),
                         leverage=float(pos["leverage"]),

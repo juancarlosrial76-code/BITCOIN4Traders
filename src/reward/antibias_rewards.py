@@ -54,25 +54,32 @@ class SharpeIncrementReward(BaseReward):
 
     def __init__(self, window: int = 50, risk_free_rate: float = 0.0):
         self.window = window
-        self.rf = risk_free_rate / (365 * 24)
-        self._ret_buf: deque = deque(maxlen=window)
+        self.rf = risk_free_rate / (
+            365 * 24
+        )  # per-bar risk-free rate (hourly fraction)
+        self._ret_buf: deque = deque(maxlen=window)  # rolling window of net returns
         self._peak_equity: float = 0.0
 
     def compute(
         self, pnl, position, prev_position, equity, cost_this_bar, **kwargs
     ) -> float:
-        net_ret = pnl - cost_this_bar
+        net_ret = pnl - cost_this_bar  # return after transaction costs
         self._ret_buf.append(net_ret)
 
         if len(self._ret_buf) < 5:
-            return float(np.clip(net_ret * 10, -1, 1))
+            return float(
+                np.clip(net_ret * 10, -1, 1)
+            )  # fallback: simple scaled reward during warm-up
 
         arr = np.array(self._ret_buf)
-        mu = arr.mean()
-        sig = arr.std() + 1e-8
+        mu = arr.mean()  # rolling mean return
+        sig = arr.std() + 1e-8  # rolling std dev + epsilon
 
+        # Standardised excess return: reward = (r_t - rf - μ) / σ  (incremental Sharpe contribution)
         sharpe_increment = (net_ret - self.rf - mu) / sig
-        return float(np.clip(sharpe_increment, -3, 3))
+        return float(
+            np.clip(sharpe_increment, -3, 3)
+        )  # clip to ±3 σ for stable training
 
     def reset(self) -> None:
         self._ret_buf.clear()
@@ -95,7 +102,7 @@ class CalmarIncrementReward(BaseReward):
     def compute(
         self, pnl, position, prev_position, equity, cost_this_bar, **kwargs
     ) -> float:
-        net_ret = pnl - cost_this_bar
+        net_ret = pnl - cost_this_bar  # return net of costs
         self._equity_buf.append(equity)
 
         if not self._equity_buf:
@@ -104,10 +111,12 @@ class CalmarIncrementReward(BaseReward):
         eq_arr = np.array(self._equity_buf)
         peak = eq_arr.max()
         trough = eq_arr.min()
-        max_dd = (peak - trough) / (peak + 1e-8)
-        max_dd = max(max_dd, 0.001)
+        max_dd = (peak - trough) / (peak + 1e-8)  # rolling max drawdown magnitude
+        max_dd = max(max_dd, 0.001)  # floor at 0.1% to avoid div/0 in benign regimes
 
-        calmar_inc = net_ret / max_dd
+        calmar_inc = (
+            net_ret / max_dd
+        )  # Calmar increment: positive reward divided by recent worst drawdown
         return float(np.clip(calmar_inc * 10, -3, 3))
 
     def reset(self) -> None:
@@ -143,21 +152,31 @@ class CostAwareReward(BaseReward):
     def compute(
         self, pnl, position, prev_position, equity, cost_this_bar, **kwargs
     ) -> float:
-        position_change = abs(position - prev_position)
+        position_change = abs(
+            position - prev_position
+        )  # fraction of capital repositioned
         self._equity_buf.append(equity)
 
-        net_pnl = pnl - cost_this_bar
-        churn_penalty = self.lambda_cost * position_change * self.cost_rate
+        net_pnl = pnl - cost_this_bar  # P&L after exchange fees
+        churn_penalty = (
+            self.lambda_cost * position_change * self.cost_rate
+        )  # penalise unnecessary trades
 
-        self._peak_equity = max(self._peak_equity, equity)
-        drawdown = max(0, (self._peak_equity - equity) / (self._peak_equity + 1e-8))
-        draw_penalty = self.lambda_draw * drawdown * max(0, -net_pnl)
+        self._peak_equity = max(self._peak_equity, equity)  # update high-water mark
+        drawdown = max(
+            0, (self._peak_equity - equity) / (self._peak_equity + 1e-8)
+        )  # current drawdown fraction
+        draw_penalty = (
+            self.lambda_draw * drawdown * max(0, -net_pnl)
+        )  # extra penalty only during losing drawdown bars
 
         if position_change > 0.01:
-            self._trade_count += 1
+            self._trade_count += 1  # count meaningful trades (ignore micro-adjustments)
 
         reward = net_pnl - churn_penalty - draw_penalty
-        return float(np.clip(reward * 100, -3, 3))
+        return float(
+            np.clip(reward * 100, -3, 3)
+        )  # scale to ±3 range for stable RL gradients
 
     def reset(self) -> None:
         self._equity_buf.clear()

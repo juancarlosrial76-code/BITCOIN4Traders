@@ -201,12 +201,16 @@ class DataQualityAssessor:
         """Assess data completeness."""
         # Calculate missing values percentage
         missing_counts = self.df.isnull().sum()
-        total_cells = len(self.df) * len(self.df.columns)
+        total_cells = len(self.df) * len(
+            self.df.columns
+        )  # total number of values in the dataframe
         missing_total = missing_counts.sum()
         missing_pct = (missing_total / total_cells) * 100
 
         # Score: 100 if no missing, decreases with more missing
-        score = max(0, 100 - (missing_pct * 5))  # 20% missing = 0 score
+        score = max(
+            0, 100 - (missing_pct * 5)
+        )  # each 1% of missing data costs 5 score points
 
         # Detect missing pattern
         if missing_pct == 0:
@@ -214,11 +218,11 @@ class DataQualityAssessor:
         elif missing_pct < 1:
             pattern = "random"
         elif missing_pct < 10:
-            # Check if clustered
+            # Check if clustered (few transitions between missing/non-missing rows → clustered)
             missing_by_row = self.df.isnull().sum(axis=1)
             clustered = (missing_by_row > 0).astype(int).diff().abs().sum() < len(
                 self.df
-            ) * 0.1
+            ) * 0.1  # low number of transitions = clustered missingness
             pattern = "clustered" if clustered else "random"
         else:
             pattern = "systematic"
@@ -237,18 +241,23 @@ class DataQualityAssessor:
 
         if "timestamp" in self.df.columns:
             timestamps = pd.to_datetime(self.df["timestamp"]).sort_values()
-            diffs = timestamps.diff().dropna()
+            diffs = timestamps.diff().dropna()  # time between consecutive rows
 
             if len(diffs) > 0:
+                # expected interval = mode of time differences (most common bar spacing)
                 expected_diff = (
                     diffs.mode()[0] if len(diffs.mode()) > 0 else diffs.median()
                 )
-                gaps = (diffs > expected_diff * 1.5).sum()
+                gaps = (
+                    diffs > expected_diff * 1.5
+                ).sum()  # bars with gaps > 1.5× expected interval
 
-                # Determine gap distribution
+                # Determine gap distribution using coefficient of variation
                 gap_std = diffs.std()
                 gap_mean = diffs.mean()
-                cv = gap_std / gap_mean if gap_mean > 0 else 0
+                cv = (
+                    gap_std / gap_mean if gap_mean > 0 else 0
+                )  # CV = std/mean; lower = more uniform
 
                 if cv < 0.1:
                     gap_distribution = "uniform"
@@ -259,9 +268,9 @@ class DataQualityAssessor:
 
         # Score based on duplicates and gaps
         score = 100
-        score -= min(30, duplicates_pct * 3)  # Up to 30 points for duplicates
-        score -= min(40, gaps * 0.5)  # Up to 40 points for gaps
-        score = max(0, score)
+        score -= min(30, duplicates_pct * 3)  # up to 30 point penalty for duplicates
+        score -= min(40, gaps * 0.5)  # up to 40 point penalty for timestamp gaps
+        score = max(0, score)  # floor at 0
 
         return {
             "score": score,
@@ -341,11 +350,15 @@ class DataQualityAssessor:
             jb_pvalue = 0.5
 
         # Score based on normality (financial data shouldn't be perfectly normal)
-        # But extreme skewness/kurtosis indicates data issues
+        # But extreme skewness/kurtosis indicates data issues (e.g., bad fills, errors)
         score = 100
-        score -= min(30, abs(skew_val) * 10)  # Penalize extreme skewness
-        score -= min(30, max(0, kurt_val - 3) * 5)  # Penalize excess kurtosis
-        score = max(0, score)
+        score -= min(
+            30, abs(skew_val) * 10
+        )  # each unit of skewness costs 10 points (max -30)
+        score -= min(
+            30, max(0, kurt_val - 3) * 5
+        )  # excess kurtosis (beyond normal=3) costs 5 pts/unit
+        score = max(0, score)  # floor at 0
 
         return {
             "score": score,

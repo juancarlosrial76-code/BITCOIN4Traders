@@ -1,8 +1,8 @@
 # Mathematical Trading Models - Complete Guide
 
-## Überblick
+## Overview
 
-BITCOIN4Traders implementiert **9 professionelle mathematische Modelle** für quantitativen Trading:
+BITCOIN4Traders implements **9 professional mathematical models** for quantitative trading:
 
 1. **Ornstein-Uhlenbeck** - Mean-Reversion
 2. **Hidden Markov Models** - Regime Detection
@@ -14,19 +14,19 @@ BITCOIN4Traders implementiert **9 professionelle mathematische Modelle** für qu
 8. **Bayesian MCMC** - Robust Parameter Estimation
 9. **Wavelet Analysis** - Multi-Scale Analysis
 
-**Total: ~4,000 Zeilen mathematischer Code**
+**Total: ~4,000 lines of mathematical code**
 
 ---
 
 ## 1. Ornstein-Uhlenbeck Process
 
-### Verwendung
-Mean-reversion Strategien, statistische Arbitrage.
+### Usage
+Mean-reversion strategies, statistical arbitrage.
 
 ```python
 from math_tools import OrnsteinUhlenbeckProcess, calculate_ou_score
 
-# OU-Prozess für Mean-Reversion-Scores
+# OU Process for Mean-Reversion Scores
 ou = OrnsteinUhlenbeckProcess(theta=0.5, mu=100, sigma=2.0)
 prices = ou.simulate(1000)
 
@@ -38,7 +38,7 @@ elif score < -0.8:
     signal = 1   # Long
 ```
 
-### Mathematische Formel
+### Mathematical Formula
 ```
 dX_t = θ(μ - X_t)dt + σdW_t
 
@@ -52,8 +52,8 @@ Where:
 
 ## 2. Hidden Markov Model (HMM)
 
-### Verwendung
-Markt-Regime-Erkennung (Bull/Bear/Neutral).
+### Usage
+Market regime detection (Bull/Bear/Neutral).
 
 ```python
 from math_tools import HMMRegimeDetector
@@ -70,30 +70,30 @@ elif current_regime == 2:  # Bull
 ```
 
 ### Features
-- 3-Regime Modell (Bär/Neutral/Bulle)
-- Übergangswahrscheinlichkeiten
-- Automatische Kalibration
+- 3-Regime Model (Bear/Neutral/Bull)
+- Transition probabilities
+- Automatic calibration
 
 ---
 
 ## 3. Kelly Criterion
 
-### Verwendung
-Optimale Positionsgröße für maximales Wachstum.
+### Usage
+Optimal position size for maximum growth.
 
 ```python
 from math_tools import KellyCriterion, kelly_fraction
 
-# Methode 1: Einfache Formel
+# Method 1: Simple Formula
 kelly = kelly_fraction(win_rate=0.55, win_loss_ratio=1.5)
 position_size = min(kelly, 0.25)  # Cap at 25%
 
-# Methode 2: Mit Returns-History
+# Method 2: With Returns History
 kelly = KellyCriterion(half_kelly=True)
 size = kelly.calculate_position_size(returns, max_position=0.25)
 ```
 
-### Formel
+### Formula
 ```
 f* = (bp - q) / b
 
@@ -107,34 +107,34 @@ q = 1 - p
 
 ## 4. Kalman Filter
 
-### 4.1 Preis-Glättung
+### 4.1 Price Smoothing
 ```python
 from math_tools import KalmanFilter1D, apply_kalman_smoothing
 
-# Rauschreduktion
+# Noise reduction
 kf = KalmanFilter1D(Q=0.001, R=0.1)
 smoothed_prices = kf.filter_series(noisy_prices)
 ```
 
-### 4.2 Pairs Trading (Dynamisches Hedge Ratio)
+### 4.2 Pairs Trading (Dynamic Hedge Ratio)
 ```python
 from math_tools import KalmanFilterPairs
 
 kf = KalmanFilterPairs()
 for price1, price2 in zip(asset1, asset2):
     alpha, beta, spread = kf.update(price1, price2)
-    # beta = dynamisches Hedge Ratio
+    # beta = dynamic hedge ratio
 ```
 
-### 4.3 Trend-Detektion
+### 4.3 Trend Detection
 ```python
 from math_tools import KalmanTrendDetector
 
 kf = KalmanTrendDetector()
 for price in prices:
     result = kf.update(price)
-    velocity = result['velocity']  # Trend-Stärke
-    acceleration = result['acceleration']  # Trend-Beschleunigung
+    velocity = result['velocity']      # Trend strength
+    acceleration = result['acceleration']  # Trend acceleration
 ```
 
 ---
@@ -145,7 +145,7 @@ for price in prices:
 ```python
 from math_tools import CointegrationTest, PairsTradingStrategy
 
-# Test auf Kointegration
+# Test for cointegration
 test = CointegrationTest()
 result = test.engle_granger_test(asset1, asset2)
 
@@ -154,9 +154,9 @@ if result['cointegrated']:
     half_life = result['half_life']
 ```
 
-### Pairs Trading Strategie
+### Pairs Trading Strategy
 ```python
-# Strategie erstellen
+# Create strategy
 strategy = PairsTradingStrategy(entry_zscore=2.0, exit_zscore=0.5)
 strategy.fit(asset1_train, asset2_train)
 
@@ -178,15 +178,15 @@ signals = portfolio.update(current_prices)
 
 ## 6. GARCH Volatility Models
 
-### Volatilitäts-Prognose
+### Volatility Forecast
 ```python
 from math_tools import GARCHModel, forecast_volatility_garch
 
-# Modell fitten
+# Fit model
 model = GARCHModel()
 result = model.fit(returns)
 
-# 5-Tages Prognose
+# 5-day forecast
 vol_forecast = model.forecast(steps=5)
 ```
 
@@ -198,19 +198,19 @@ var, cvar = calculate_var_garch(returns, confidence=0.95)
 print(f"95% VaR: {var:.2%}")
 ```
 
-### Volatilitäts-Targeting
+### Volatility Targeting
 ```python
 from math_tools import VolatilityTargeting
 
 vt = VolatilityTargeting(target_volatility=0.15)
 vt.fit(returns)
 
-# Position anpassen
+# Adjust position
 scalar = vt.get_position_scalar()
 adjusted_position = base_position * scalar
 ```
 
-### Regime-Detektion
+### Regime Detection
 ```python
 from math_tools import VolatilityRegimeDetector
 
@@ -225,22 +225,22 @@ if result['current_regime'] == 2:  # High Vol
 
 ## 7. Hurst Exponent
 
-### Trend vs Mean-Reversion Erkennung
+### Trend vs Mean-Reversion Detection
 ```python
 from math_tools import HurstExponent, quick_hurst_check
 
-# Schnelle Analyse
+# Quick analysis
 result = quick_hurst_check(prices)
 print(f"Hurst: {result['hurst_exponent']:.2f}")
 print(f"Regime: {result['regime']}")
 print(f"Strategy: {result['strategy']}")
 
 H < 0.5: Mean-Reversion → Bollinger Bands, RSI
-H ≈ 0.5: Random Walk → Keine Strategie
+H ≈ 0.5: Random Walk → No strategy
 H > 0.5: Trending → Moving Averages, Momentum
 ```
 
-### Multi-Skalen Analyse
+### Multi-Scale Analysis
 ```python
 from math_tools import MultiScaleHurst
 
@@ -251,11 +251,11 @@ consensus = analyzer.get_consensus(results)
 print(f"Consensus: {consensus['consensus_regime']}")
 ```
 
-### Adaptive Strategie
+### Adaptive Strategy
 ```python
 from math_tools import hurst_adaptive_strategy
 
-# Signal an Hurst anpassen
+# Adjust signal to Hurst
 base_signal = 1.0  # Long
 adjusted_signal = hurst_adaptive_strategy(prices, base_signal)
 ```
@@ -264,71 +264,71 @@ adjusted_signal = hurst_adaptive_strategy(prices, base_signal)
 
 ## 8. Bayesian MCMC
 
-> **Hinweis:** Dieses Modul ist noch nicht implementiert. Die Klassen
+> **Note:** This module is not yet implemented. The classes
 > `BayesianLinearRegression`, `MetropolisHastingsSampler`, `BayesianSharpeRatio`
-> und `BayesianModelAveraging` sind geplant aber noch nicht verfügbar.
-> Das Verzeichnis `src/math_tools/advanced/` ist noch leer.
+> and `BayesianModelAveraging` are planned but not yet available.
+> The directory `src/math_tools/advanced/` is still empty.
 
-### Geplante Funktionalität (noch nicht implementiert)
+### Planned Functionality (Not Yet Implemented)
 
-- **BayesianLinearRegression**: Robuste Parameterschätzung mit Unsicherheitsquantifizierung
-- **MetropolisHastingsSampler**: MCMC-Sampling für Posterior-Schätzung
-- **BayesianSharpeRatio**: Wahrscheinlichkeitsbasierte Sharpe-Ratio-Schätzung
-- **BayesianModelAveraging**: Kombination mehrerer Modelle mit Bayes'schen Gewichten
+- **BayesianLinearRegression**: Robust parameter estimation with uncertainty quantification
+- **MetropolisHastingsSampler**: MCMC sampling for posterior estimation
+- **BayesianSharpeRatio**: Probability-based Sharpe ratio estimation
+- **BayesianModelAveraging**: Combination of multiple models with Bayesian weights
 
 ---
 
-## 9. Kombinierte Strategien
+## 9. Combined Strategies
 
-### Beispiel 1: Adaptive Pairs Trading
+### Example 1: Adaptive Pairs Trading
 ```python
-# 1. Kointegration prüfen
+# 1. Check cointegration
 test = CointegrationTest()
 result = test.engle_granger_test(asset1, asset2)
 
 if result['cointegrated']:
-    # 2. Hurst für Strategie-Auswahl
+    # 2. Hurst for strategy selection
     spread = calculate_spread(asset1, asset2)
     hurst = HurstExponent()
     h = hurst.calculate(spread.pct_change().dropna())
     
     if h < 0.4:
-        # 3. Kalman für dynamisches Hedge
+        # 3. Kalman for dynamic hedge
         kf = KalmanFilterPairs()
         # ... trading logic
 ```
 
-### Beispiel 2: Regime-basierte Volatilitäts-Allokation
+### Example 2: Regime-Based Volatility Allocation
 ```python
-# 1. Regime erkennen
+# 1. Detect regime
 hmm = HMMRegimeDetector()
 regime = hmm.fit_predict(returns)
 
-# 2. Volatilität prognostizieren
+# 2. Forecast volatility
 if regime[-1] == 2:  # High vol regime
     garch = GARCHModel()
     garch.fit(returns)
     vol_pred = garch.forecast(5)
     
-    # 3. Kelly für Position Sizing
+    # 3. Kelly for position sizing
     kelly = KellyCriterion()
     position = kelly.calculate_position_size(returns) * 0.5  # Reduce in high vol
 ```
 
-### Beispiel 3: Multi-Faktor Signal
+### Example 3: Multi-Factor Signal
 ```python
 def generate_signal(prices, returns):
     signals = {}
     
-    # 1. Hurst für Trend/Mean-Reversion
+    # 1. Hurst for Trend/Mean-Reversion
     hurst = HurstExponent().calculate(returns)
     signals['hurst'] = 1 if hurst > 0.55 else -1 if hurst < 0.45 else 0
     
-    # 2. OU für Mean-Reversion-Stärke
+    # 2. OU for Mean-Reversion Strength
     ou_score = calculate_ou_score(prices[-50:])
     signals['ou'] = np.sign(ou_score) if abs(ou_score) > 0.7 else 0
     
-    # 3. Kalman für Trend
+    # 3. Kalman for trend
     kf = KalmanTrendDetector()
     for p in prices[-20:]:
         trend = kf.update(p)
@@ -341,14 +341,14 @@ def generate_signal(prices, returns):
 
 ---
 
-## Testen der Modelle
+## Testing the Models
 
 ```bash
-# Alle mathematischen Modelle testen
-cd /home/hp17/Tradingbot/BITCOIN4Traders
+# Test all mathematical models
+cd /home/hp17/Tradingbot/Quantrivo/BITCOIN4Traders
 python -m pytest tests/test_math_models.py -v
 
-# Spezifische Tests
+# Specific tests
 pytest tests/test_math_models.py::TestKalmanFilter -v
 pytest tests/test_math_models.py::TestGARCH -v
 pytest tests/test_math_models.py::TestHurstExponent -v
@@ -356,33 +356,33 @@ pytest tests/test_math_models.py::TestHurstExponent -v
 
 ---
 
-## Performance-Optimierung
+## Performance Optimization
 
-Alle Modelle sind für Performance optimiert:
+All models are optimized for performance:
 
-- **Numba JIT** für OU, Kelly, HMM (50-100x schneller)
-- **Vektorisierte NumPy** Operationen
-- **Effiziente Algorithmen** (DFA für Hurst, iterative GARCH)
+- **Numba JIT** for OU, Kelly, HMM (50-100x faster)
+- **Vectorized NumPy** operations
+- **Efficient algorithms** (DFA for Hurst, iterative GARCH)
 
 ---
 
-## Zusammenfassung
+## Summary
 
-**9 Mathematische Modelle für professionelles Trading:**
+**9 Mathematical Models for Professional Trading:**
 
-| Modell | Verwendung | Key Feature |
-|--------|-----------|-------------|
-| **Ornstein-Uhlenbeck** | Mean-Reversion | Rückkehr zur Mittelwert |
-| **HMM** | Regime Detection | Bull/Bär/Neutral |
-| **Kelly Criterion** | Position Sizing | Optimales Wachstum |
-| **Kalman Filter** | State Estimation | Rauschfreie Preise |
-| **Cointegration** | Pairs Trading | Statistische Arbitrage |
-| **GARCH** | Volatility | VaR, Vol-Prognosen |
+| Model | Usage | Key Feature |
+|-------|-------|-------------|
+| **Ornstein-Uhlenbeck** | Mean-Reversion | Return to mean |
+| **HMM** | Regime Detection | Bull/Bear/Neutral |
+| **Kelly Criterion** | Position Sizing | Optimal growth |
+| **Kalman Filter** | State Estimation | Noise-free prices |
+| **Cointegration** | Pairs Trading | Statistical arbitrage |
+| **GARCH** | Volatility | VaR, Vol forecasts |
 | **Hurst** | Trend Detection | Trend vs Mean-Reversion |
-| **Bayesian MCMC** | Robust Estimation | Geplant (noch nicht impl.) |
+| **Bayesian MCMC** | Robust Estimation | Planned (not yet impl.) |
 
-**Total: ~4,000 Zeilen Code (Bayesian MCMC noch ausstehend)**
+**Total: ~4,000 lines of code (Bayesian MCMC still pending)**
 
 ---
 
-**Das Framework bietet jetzt professionelle mathematische Tools für jede Trading-Strategie!** 🚀
+**The framework now provides professional mathematical tools for any trading strategy!** 🚀

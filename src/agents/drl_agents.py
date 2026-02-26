@@ -1,12 +1,58 @@
 """
 DRL Agents Module - Extended Algorithms
-========================================
-Additional DRL algorithms beyond PPO:
-- DQN (Deep Q-Network)
-- DDPG (Deep Deterministic Policy Gradient)
-- SAC (Soft Actor-Critic)
-- A2C (Advantage Actor-Critic)
-- TD3 (Twin Delayed Deep Deterministic Policy Gradient)
+=======================================
+Additional Deep Reinforcement Learning algorithms for various trading scenarios.
+
+This module provides a collection of state-of-the-art RL algorithms, each
+suited for different action spaces and trading objectives:
+
+Algorithms:
+-----------
+1. DQN (Deep Q-Network):
+   - For discrete action spaces (buy/sell/hold)
+   - Uses experience replay and target networks
+   - Excellent for simple action selection
+
+2. DDPG (Deep Deterministic Policy Gradient):
+   - For continuous action spaces
+   - Actor-critic with deterministic policy
+   - Good for smooth action control
+
+3. SAC (Soft Actor-Critic):
+   - Maximum entropy reinforcement learning
+   - Best sample efficiency among continuous algorithms
+   - Automatic entropy temperature tuning
+
+4. A2C (Advantage Actor-Critic):
+   - Synchronous advantage actor-critic
+   - On-policy learning for both discrete and continuous
+   - Efficient for parallel training
+
+5. TD3 (Twin Delayed DDPG):
+   - Improved DDPG with twin critics
+   - Addresses Q-value overestimation
+   - Delayed policy updates for stability
+
+Key Concepts:
+-------------
+- Experience Replay: Stores transitions in buffer for efficient learning
+- Target Networks: Stabilize Q-learning by providing fixed targets
+- Soft Updates: Polyak averaging for gradual target network updates
+- Entropy Regularization: Encourages exploration
+
+Factory Function:
+-----------------
+Use create_agent() to instantiate the appropriate agent:
+    >>> agent = create_agent("dqn", state_dim=20, action_dim=3, discrete=True)
+    >>> agent = create_agent("sac", state_dim=20, action_dim=1, discrete=False)
+
+Reference:
+---------
+- Mnih et al. (2015) - Human-level control through deep reinforcement learning (DQN)
+- Lillicrap et al. (2015) - Continuous control with deep reinforcement learning (DDPG)
+- Haarnoja et al. (2018) - Soft Actor-Critic: Off-Policy Maximum Entropy Deep RL
+- Mnih et al. (2016) - Asynchronous Methods for Deep Reinforcement Learning (A2C)
+- Fujita et al. (2018) - Addressing Function Approximation Error in Actor-Critic Methods (TD3)
 """
 
 import torch
@@ -21,8 +67,65 @@ class DQNAgent:
     """
     Deep Q-Network (DQN) Agent.
 
-    For discrete action spaces. Uses experience replay and target network.
-    Suitable for trading with discrete actions (buy/sell/hold).
+    DQN is a value-based algorithm that learns to approximate the optimal
+    Q-function Q(s, a) representing the expected return from taking action a
+    in state s. It uses a deep neural network as a function approximator.
+
+    Key Features:
+    - Experience Replay: Stores (s, a, r, s', done) tuples in a replay buffer
+      and samples random mini-batches to break temporal correlation
+    - Target Network: Separate network with frozen weights provides stable
+      target values for Q-learning
+    - Epsilon-Greedy Exploration: Balances exploration vs exploitation
+
+    Algorithm:
+    ---------
+    1. Select action using epsilon-greedy policy from current Q-network
+    2. Store transition in replay buffer
+    3. Sample random mini-batch from buffer
+    4. Compute target Q-value: y = r + γ * max_a' Q_target(s', a')
+    5. Update Q-network to minimize MSE between Q(s,a) and y
+    6. Periodically update target network weights
+
+    Attributes:
+        state_dim (int): Dimension of state space.
+        n_actions (int): Number of discrete actions.
+        gamma (float): Discount factor for future rewards.
+        epsilon (float): Current exploration rate.
+        epsilon_end (float): Minimum exploration rate.
+        epsilon_decay (float): Decay rate for epsilon.
+        batch_size (int): Mini-batch size for training.
+        target_update (int): Steps between target network updates.
+        device (str): Computation device.
+        q_network (nn.Sequential): Main Q-network.
+        target_network (nn.Sequential): Target Q-network (frozen).
+        buffer (ReplayBuffer): Experience replay buffer.
+
+    Args:
+        state_dim (int): Dimension of state space.
+        n_actions (int): Number of discrete actions.
+        learning_rate (float): Learning rate for optimizer. Default: 1e-3.
+        gamma (float): Discount factor. Default: 0.99.
+        epsilon_start (float): Initial exploration rate. Default: 1.0.
+        epsilon_end (float): Minimum exploration rate. Default: 0.01.
+        epsilon_decay (float): Exponential decay rate. Default: 0.995.
+        buffer_size (int): Replay buffer capacity. Default: 100000.
+        batch_size (int): Mini-batch size. Default: 64.
+        target_update (int): Target network update frequency. Default: 1000.
+        device (str): Computation device. Default: "cuda" if available else "cpu".
+
+    Example:
+        >>> agent = DQNAgent(state_dim=20, n_actions=3)
+        >>> state = env.reset()
+        >>> action = agent.select_action(state)  # Epsilon-greedy
+        >>> next_state, reward, done, _ = env.step(action)
+        >>> agent.store_transition(state, action, reward, next_state, done)
+        >>> loss = agent.train()  # Returns loss or None if buffer not full
+
+    Note:
+        - DQN requires discrete action spaces (e.g., Buy/Sell/Hold)
+        - Epsilon decays exponentially after each training step
+        - Training returns None until buffer has batch_size samples
     """
 
     def __init__(
@@ -101,26 +204,36 @@ class DQNAgent:
         dones = torch.FloatTensor(dones).to(self.device)
 
         # Current Q values
-        current_q = self.q_network(states).gather(1, actions.unsqueeze(1)).squeeze()
+        current_q = (
+            self.q_network(states).gather(1, actions.unsqueeze(1)).squeeze()
+        )  # Q(s,a) for taken actions
 
         # Target Q values
         with torch.no_grad():
-            next_q = self.target_network(next_states).max(1)[0]
-            target_q = rewards + (1 - dones) * self.gamma * next_q
+            next_q = self.target_network(next_states).max(1)[
+                0
+            ]  # max_a' Q_target(s',a')
+            target_q = (
+                rewards + (1 - dones) * self.gamma * next_q
+            )  # Bellman target: r + γ * max Q'
 
         # Loss and update
-        loss = nn.MSELoss()(current_q, target_q)
+        loss = nn.MSELoss()(current_q, target_q)  # TD error squared
         self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
+        loss.backward()  # Compute gradients via backpropagation
+        self.optimizer.step()  # Apply gradient update
 
         # Update target network
         self.steps += 1
         if self.steps % self.target_update == 0:
-            self.target_network.load_state_dict(self.q_network.state_dict())
+            self.target_network.load_state_dict(
+                self.q_network.state_dict()
+            )  # Hard copy weights to target
 
         # Decay epsilon
-        self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
+        self.epsilon = max(
+            self.epsilon_end, self.epsilon * self.epsilon_decay
+        )  # Exponential ε-decay
 
         return loss.item()
 
@@ -180,15 +293,70 @@ class CriticNetwork(nn.Module):
         )
 
     def forward(self, state, action):
-        return self.net(torch.cat([state, action], dim=1))
+        return self.net(
+            torch.cat([state, action], dim=1)
+        )  # Concatenate state+action before Q-value estimation
 
 
 class DDPGAgent:
     """
     Deep Deterministic Policy Gradient (DDPG) Agent.
 
-    For continuous action spaces. Uses actor-critic architecture
-    with target networks and soft updates.
+    DDPG is an actor-critic algorithm designed for continuous action spaces.
+    It combines the benefits of Q-learning with policy gradient methods.
+
+    Key Features:
+    - Actor-Critic Architecture: Actor learns deterministic policy, critic estimates Q-values
+    - Target Networks: Both actor and critic have target versions for stable learning
+    - Soft Updates: Polyak averaging (τ << 1) for gradual target updates
+    - Ornstein-Uhlenbeck Noise: Correlated exploration noise for physics-based domains
+
+    Algorithm:
+    ---------
+    1. Actor selects action: a = π(s) + noise (exploration)
+    2. Store transition in replay buffer
+    3. Sample mini-batch from buffer
+    4. Critic update: minimize MSE between Q(s,a) and target y = r + γ * Q_target(s', a')
+    5. Actor update: maximize Q(s, π(s)) via gradient ascent
+    6. Soft update both target networks
+
+    Attributes:
+        state_dim (int): Dimension of state space.
+        action_dim (int): Dimension of continuous action space.
+        max_action (float): Maximum action magnitude (for scaling).
+        gamma (float): Discount factor.
+        tau (float): Soft update coefficient (typically 0.001-0.01).
+        batch_size (int): Mini-batch size.
+        device (str): Computation device.
+        actor (ActorNetwork): Main actor network.
+        actor_target (ActorNetwork): Target actor network.
+        critic (CriticNetwork): Main critic network.
+        critic_target (CriticNetwork): Target critic network.
+        buffer (ReplayBuffer): Experience replay buffer.
+
+    Args:
+        state_dim (int): Dimension of state space.
+        action_dim (int): Dimension of continuous action.
+        max_action (float): Maximum action value. Default: 1.0.
+        learning_rate (float): Learning rate for optimizers. Default: 1e-3.
+        gamma (float): Discount factor. Default: 0.99.
+        tau (float): Soft update coefficient. Default: 0.005.
+        buffer_size (int): Replay buffer capacity. Default: 1000000.
+        batch_size (int): Mini-batch size. Default: 64.
+        device (str): Computation device. Default: "cuda" if available else "cpu".
+
+    Example:
+        >>> agent = DDPGAgent(state_dim=20, action_dim=1, max_action=1.0)
+        >>> state = env.reset()
+        >>> action = agent.select_action(state, noise=0.1)
+        >>> next_state, reward, done, _ = env.step(action)
+        >>> agent.store_transition(state, action, reward, next_state, done)
+        >>> critic_loss, actor_loss = agent.train()
+
+    Note:
+        - DDPG requires continuous action spaces
+        - Exploration noise (Ornstein-Uhlenbeck or Gaussian) is added to actions
+        - Sensitive to hyperparameters; consider SAC or TD3 for better stability
     """
 
     def __init__(
@@ -259,27 +427,33 @@ class DDPGAgent:
 
         # Update Critic
         with torch.no_grad():
-            next_actions = self.actor_target(next_states)
-            target_q = self.critic_target(next_states, next_actions)
-            target_q = rewards + (1 - dones) * self.gamma * target_q
+            next_actions = self.actor_target(
+                next_states
+            )  # Deterministic next action from target actor
+            target_q = self.critic_target(next_states, next_actions)  # Q_target(s', a')
+            target_q = rewards + (1 - dones) * self.gamma * target_q  # Bellman target
 
-        current_q = self.critic(states, actions)
-        critic_loss = nn.MSELoss()(current_q, target_q)
+        current_q = self.critic(states, actions)  # Q(s,a) from online critic
+        critic_loss = nn.MSELoss()(current_q, target_q)  # TD error
 
         self.critic_optimizer.zero_grad()
-        critic_loss.backward()
+        critic_loss.backward()  # Backpropagate critic loss
         self.critic_optimizer.step()
 
         # Update Actor
-        actor_actions = self.actor(states)
-        actor_loss = -self.critic(states, actor_actions).mean()
+        actor_actions = self.actor(states)  # Deterministic actions from online actor
+        actor_loss = -self.critic(
+            states, actor_actions
+        ).mean()  # Maximize Q: negate for gradient ascent
 
         self.actor_optimizer.zero_grad()
-        actor_loss.backward()
+        actor_loss.backward()  # Backpropagate actor loss through critic
         self.actor_optimizer.step()
 
         # Soft update targets
-        self._soft_update(self.actor, self.actor_target)
+        self._soft_update(
+            self.actor, self.actor_target
+        )  # θ_target ← τ*θ + (1-τ)*θ_target
         self._soft_update(self.critic, self.critic_target)
 
         return critic_loss.item(), actor_loss.item()
@@ -288,7 +462,9 @@ class DDPGAgent:
         """Soft update target network."""
         for param, target_param in zip(source.parameters(), target.parameters()):
             target_param.data.copy_(
-                self.tau * param.data + (1 - self.tau) * target_param.data
+                self.tau * param.data
+                + (1 - self.tau)
+                * target_param.data  # Polyak averaging: θ' ← τθ + (1-τ)θ'
             )
 
 
@@ -370,33 +546,43 @@ class SACAgent:
 
         # Update Critics
         with torch.no_grad():
-            next_actions, next_log_probs, _ = self.actor.sample(next_states)
+            next_actions, next_log_probs, _ = self.actor.sample(
+                next_states
+            )  # Sample next action from policy
             target_q1 = self.critic1_target(next_states, next_actions)
             target_q2 = self.critic2_target(next_states, next_actions)
-            target_q = torch.min(target_q1, target_q2) - self.alpha * next_log_probs
-            target_q = rewards + (1 - dones) * self.gamma * target_q
+            target_q = (
+                torch.min(target_q1, target_q2) - self.alpha * next_log_probs
+            )  # Conservative Q: clipped double-Q minus entropy
+            target_q = (
+                rewards + (1 - dones) * self.gamma * target_q
+            )  # Soft Bellman target
 
-        current_q1 = self.critic1(states, actions)
-        current_q2 = self.critic2(states, actions)
+        current_q1 = self.critic1(states, actions)  # Q1(s,a)
+        current_q2 = self.critic2(states, actions)  # Q2(s,a)
 
-        critic1_loss = nn.MSELoss()(current_q1, target_q)
-        critic2_loss = nn.MSELoss()(current_q2, target_q)
+        critic1_loss = nn.MSELoss()(current_q1, target_q)  # Critic 1 TD error
+        critic2_loss = nn.MSELoss()(current_q2, target_q)  # Critic 2 TD error
 
         self.critic1_optimizer.zero_grad()
-        critic1_loss.backward()
+        critic1_loss.backward()  # Backpropagate critic 1 loss
         self.critic1_optimizer.step()
 
         self.critic2_optimizer.zero_grad()
-        critic2_loss.backward()
+        critic2_loss.backward()  # Backpropagate critic 2 loss
         self.critic2_optimizer.step()
 
         # Update Actor
-        new_actions, log_probs, _ = self.actor.sample(states)
+        new_actions, log_probs, _ = self.actor.sample(
+            states
+        )  # Re-sample actions for actor update
         q1_new = self.critic1(states, new_actions)
         q2_new = self.critic2(states, new_actions)
-        q_new = torch.min(q1_new, q2_new)
+        q_new = torch.min(q1_new, q2_new)  # Conservative Q-value for actor update
 
-        actor_loss = (self.alpha * log_probs - q_new).mean()
+        actor_loss = (
+            self.alpha * log_probs - q_new
+        ).mean()  # Max entropy objective: maximize Q - α*log_π
 
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
@@ -443,17 +629,22 @@ class GaussianActor(nn.Module):
 
     def sample(self, state):
         mean, log_std = self.forward(state)
-        std = log_std.exp()
+        std = log_std.exp()  # Convert log_std to std (always positive)
         normal = torch.distributions.Normal(mean, std)
-        x_t = normal.rsample()
-        action = torch.tanh(x_t) * self.max_action
+        x_t = normal.rsample()  # Reparameterized sample: x = μ + ε*σ (differentiable)
+        action = (
+            torch.tanh(x_t) * self.max_action
+        )  # Squash to [-max_action, max_action]
 
-        # Compute log probability
+        # Compute log probability with tanh correction (change of variables)
         log_prob = normal.log_prob(x_t)
         log_prob -= torch.log(
-            self.max_action * (1 - action.pow(2) / self.max_action**2) + 1e-6
+            self.max_action * (1 - action.pow(2) / self.max_action**2)
+            + 1e-6  # Jacobian correction for tanh squashing
         )
-        log_prob = log_prob.sum(1, keepdim=True)
+        log_prob = log_prob.sum(
+            1, keepdim=True
+        )  # Sum log-probs across action dimensions
 
         return action, log_prob, mean
 
@@ -469,9 +660,11 @@ class ReplayBuffer:
     def push(self, state, action, reward, next_state, done):
         """Add transition to buffer."""
         if len(self.buffer) < self.capacity:
-            self.buffer.append(None)
+            self.buffer.append(None)  # Grow buffer until capacity is reached
         self.buffer[self.position] = (state, action, reward, next_state, done)
-        self.position = (self.position + 1) % self.capacity
+        self.position = (
+            self.position + 1
+        ) % self.capacity  # Circular overwrite when full
 
     def sample(self, batch_size: int):
         """Sample random batch."""
@@ -613,27 +806,33 @@ class A2CAgent:
             log_probs = dist.log_prob(actions).sum(dim=-1)
             entropy = dist.entropy().sum(dim=-1)
 
-        # Compute advantages
+        # Compute advantages (TD residuals: how much better than expected)
         advantages = returns - values.squeeze()
 
         # Losses
-        actor_loss = -(log_probs * advantages.detach()).mean()
-        critic_loss = advantages.pow(2).mean()
-        entropy_loss = entropy.mean()
+        actor_loss = -(
+            log_probs * advantages.detach()
+        ).mean()  # Policy gradient: -E[log π * A] (detach A to stop gradients)
+        critic_loss = advantages.pow(
+            2
+        ).mean()  # Value function loss: MSE of advantage (equiv. to TD error squared)
+        entropy_loss = entropy.mean()  # Mean policy entropy (higher = more exploration)
 
         total_loss = (
             actor_loss
-            + self.value_loss_coef * critic_loss
-            - self.entropy_coef * entropy_loss
+            + self.value_loss_coef * critic_loss  # Weighted value loss component
+            - self.entropy_coef
+            * entropy_loss  # Subtract entropy to encourage exploration
         )
 
         # Update
         self.optimizer.zero_grad()
-        total_loss.backward()
+        total_loss.backward()  # Compute gradients via backpropagation
         torch.nn.utils.clip_grad_norm_(
-            self.actor_critic.parameters(), self.max_grad_norm
+            self.actor_critic.parameters(),
+            self.max_grad_norm,  # Clip gradients to prevent exploding gradients
         )
-        self.optimizer.step()
+        self.optimizer.step()  # Apply gradient update
 
         return {
             "total_loss": total_loss.item(),
@@ -676,7 +875,9 @@ class ActorCriticNetwork(nn.Module):
             self.actor = nn.Linear(256, action_dim)
         else:
             self.actor_mean = nn.Linear(256, action_dim)
-            self.actor_log_std = nn.Parameter(torch.zeros(action_dim))
+            self.actor_log_std = nn.Parameter(
+                torch.zeros(action_dim)
+            )  # Learnable log_std (shared across states)
 
         # Critic head
         self.critic = nn.Linear(256, 1)
@@ -690,7 +891,9 @@ class ActorCriticNetwork(nn.Module):
             return logits, value
         else:
             mean = self.actor_mean(x)
-            log_std = self.actor_log_std.expand_as(mean)
+            log_std = self.actor_log_std.expand_as(
+                mean
+            )  # Broadcast shared log_std to batch shape
             return mean, log_std, value
 
 
@@ -724,8 +927,8 @@ class TD3Agent:
         self.max_action = max_action
         self.gamma = gamma
         self.tau = tau
-        self.policy_noise = policy_noise * max_action
-        self.noise_clip = noise_clip * max_action
+        self.policy_noise = policy_noise * max_action  # Scale noise to action range
+        self.noise_clip = noise_clip * max_action  # Clip noise to action range
         self.policy_freq = policy_freq
         self.batch_size = batch_size
         self.device = device
@@ -785,19 +988,23 @@ class TD3Agent:
 
         # Update Critics
         with torch.no_grad():
-            # Target policy smoothing
+            # Target policy smoothing: add clipped noise to target action to reduce Q overestimation
             noise = (torch.randn_like(actions) * self.policy_noise).clamp(
-                -self.noise_clip, self.noise_clip
+                -self.noise_clip,
+                self.noise_clip,  # Clamp noise to prevent extreme perturbations
             )
             next_actions = (self.actor_target(next_states) + noise).clamp(
-                -self.max_action, self.max_action
+                -self.max_action,
+                self.max_action,  # Ensure noisy action stays within valid range
             )
 
-            # Twin target Q-values
+            # Twin target Q-values: take minimum to reduce overestimation bias
             target_q1 = self.critic1_target(next_states, next_actions)
             target_q2 = self.critic2_target(next_states, next_actions)
-            target_q = torch.min(target_q1, target_q2)
-            target_q = rewards + (1 - dones) * self.gamma * target_q
+            target_q = torch.min(
+                target_q1, target_q2
+            )  # Conservative estimate avoids Q overestimation
+            target_q = rewards + (1 - dones) * self.gamma * target_q  # Bellman target
 
         # Current Q-values
         current_q1 = self.critic1(states, actions)
@@ -816,20 +1023,30 @@ class TD3Agent:
         critic2_loss.backward()
         self.critic2_optimizer.step()
 
-        # Delayed policy updates
+        # Delayed policy updates: actor updated less frequently than critics to reduce variance
         actor_loss = torch.tensor(0.0)
-        if self.total_it % self.policy_freq == 0:
+        if (
+            self.total_it % self.policy_freq == 0
+        ):  # Only update every policy_freq critic steps
             # Update Actor
-            actor_loss = -self.critic1(states, self.actor(states)).mean()
+            actor_loss = -self.critic1(
+                states, self.actor(states)
+            ).mean()  # Maximize Q1 w.r.t. actor params
 
             self.actor_optimizer.zero_grad()
-            actor_loss.backward()
+            actor_loss.backward()  # Gradients flow through critic1 into actor
             self.actor_optimizer.step()
 
-            # Soft update targets
-            self._soft_update(self.actor, self.actor_target)
-            self._soft_update(self.critic1, self.critic1_target)
-            self._soft_update(self.critic2, self.critic2_target)
+            # Soft update targets (only on actor update steps)
+            self._soft_update(
+                self.actor, self.actor_target
+            )  # Polyak-average actor target
+            self._soft_update(
+                self.critic1, self.critic1_target
+            )  # Polyak-average critic1 target
+            self._soft_update(
+                self.critic2, self.critic2_target
+            )  # Polyak-average critic2 target
 
         return {
             "critic1_loss": critic1_loss.item(),

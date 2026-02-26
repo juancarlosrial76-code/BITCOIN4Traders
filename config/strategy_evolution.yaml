@@ -1,0 +1,62 @@
+# =============================================================================
+# Strategy Evolution Configuration
+# =============================================================================
+strategies:
+  RSI_Oversold:
+    enabled: true
+    type: threshold
+    indicator: rsi_14
+    lower_threshold: 30
+    upper_threshold: 70
+    allow_short: false
+  SMA_Cross:
+    enabled: true
+    type: cross
+    fast_window: 20
+    slow_window: 50
+    allow_short: false
+  Bollinger_Lower:
+    enabled: true
+    type: threshold
+    indicator: bb_position
+    lower_threshold: 0.1
+    upper_threshold: 0.9
+    allow_short: false
+  MACD_Momentum:
+    enabled: true
+    type: cross_zero
+    indicator: macd_hist
+    allow_short: false
+  OU_MeanReversion:
+    enabled: true
+    type: threshold
+    indicator: ou_score
+    lower_threshold: -1.5
+    upper_threshold: 1.5
+    allow_short: false
+
+validation:
+  min_candles: 500
+  min_trades: 20
+  profit_factor_threshold: 1.5
+  fee_adjusted_threshold: 1.2
+
+costs:
+  fee_bps: 10
+  slippage_bps: 3
+
+backtest:
+  lookback_window: 200
+  signal_shift: 1
+
+adaptive:
+  reeval_every_n_candles: 50
+  switch_hysteresis: 0.1
+
+memory:
+  delete_loser_columns: true
+  gc_after_cleanup: true
+
+reporting:
+  print_full_ranking: true
+  use_emoji: true

@@ -134,15 +134,19 @@ class MicrostructureAnalyzer:
         """
         Calculate comprehensive order flow metrics.
         """
-        # Buy/Sell pressure
-        buy_pressure = np.sum(bid_volumes * bid_prices)
-        sell_pressure = np.sum(ask_volumes * ask_prices)
+        # Buy/Sell pressure: volume-weighted dollar value at bid/ask levels
+        buy_pressure = np.sum(
+            bid_volumes * bid_prices
+        )  # Total bid-side liquidity in USD
+        sell_pressure = np.sum(
+            ask_volumes * ask_prices
+        )  # Total ask-side liquidity in USD
 
-        # Order imbalance
+        # Order imbalance: (bid_vol - ask_vol) / total_vol  (-1=fully ask-side, +1=fully bid-side)
         total_bid_vol = np.sum(bid_volumes)
         total_ask_vol = np.sum(ask_volumes)
         order_imbalance = (total_bid_vol - total_ask_vol) / (
-            total_bid_vol + total_ask_vol + 1e-10
+            total_bid_vol + total_ask_vol + 1e-10  # Epsilon prevents division by zero
         )
 
         # Classify trades
@@ -259,20 +263,24 @@ def calculate_spread_metrics(
     Returns:
         (quoted_spread, effective_spread, realized_spread)
     """
-    # Quoted spread
+    # Quoted spread: (ask - bid) / mid  (relative cost of crossing the spread)
     best_bid = bids[0]
     best_ask = asks[0]
     mid_price = (best_bid + best_ask) / 2
     quoted_spread = (best_ask - best_bid) / mid_price
 
-    # Weighted spread
+    # Volume-weighted mid: accounts for asymmetric liquidity at best bid/ask
     bid_weight = bid_vols[0] / (bid_vols[0] + ask_vols[0] + 1e-10)
     ask_weight = ask_vols[0] / (bid_vols[0] + ask_vols[0] + 1e-10)
 
-    weighted_mid = best_bid * bid_weight + best_ask * ask_weight
-    effective_spread = abs(weighted_mid - mid_price) / mid_price
+    weighted_mid = (
+        best_bid * bid_weight + best_ask * ask_weight
+    )  # Volume-weighted fair value
+    effective_spread = (
+        abs(weighted_mid - mid_price) / mid_price
+    )  # Deviation of weighted mid
 
-    # Realized spread (simplified)
+    # Realized spread (simplified): portion of quoted spread retained by market maker
     realized_spread = quoted_spread * 0.5
 
     return quoted_spread, effective_spread, realized_spread
@@ -307,7 +315,7 @@ class LiquidityAnalyzer:
         X = signed_volumes.reshape(-1, 1)
         y = price_changes
 
-        # Simple OLS
+        # Simple OLS: λ = Σ(x*y) / Σ(x²)  (price impact per unit of signed order flow)
         lambda_coef = np.sum(X * y) / (np.sum(X**2) + 1e-10)
 
         return lambda_coef
@@ -324,8 +332,11 @@ class LiquidityAnalyzer:
         if len(returns) != len(volumes) or len(returns) == 0:
             return 0.0
 
+        # Amihud ratio: |return| / dollar_volume  (price impact per dollar traded)
         ratios = np.abs(returns) / (volumes + 1e-10)
-        amihud = np.mean(ratios) * 1e6  # Scale for readability
+        amihud = (
+            np.mean(ratios) * 1e6
+        )  # Scale by 10^6 for readability (very small numbers)
 
         return amihud
 
@@ -431,10 +442,13 @@ def create_microstructure_features(df: pd.DataFrame) -> pd.DataFrame:
     ].rolling(20).sum()
     features["vwap_deviation"] = (df["close"] - features["vwap"]) / features["vwap"]
 
-    # Roll's implicit spread measure
+    # Roll's implicit spread measure: S = 2 * sqrt(-Cov(ΔP_t, ΔP_{t-1}))
+    # Negative autocovariance of price changes implies bid-ask bounce
     if len(df) > 2:
         price_changes = df["close"].diff().dropna()
-        cov = price_changes.cov(price_changes.shift(1))
-        features["roll_spread"] = np.sqrt(-4 * cov) if cov < 0 else 0
+        cov = price_changes.cov(price_changes.shift(1))  # First-order autocovariance
+        features["roll_spread"] = (
+            np.sqrt(-4 * cov) if cov < 0 else 0
+        )  # Only valid if cov < 0
 
     return features

@@ -151,22 +151,30 @@ class TransactionCostEngine:
             side: Trade direction ('buy' or 'sell')
         """
         cfg = self.config
-        notional = price * quantity
+        notional = price * quantity  # total trade value in USD
 
         fee = self._compute_fee()
         spread = self._compute_spread()
 
         impact = 0.0
         if cfg.enable_impact and adv > 0:
-            impact = self._compute_impact(notional, adv, volatility)
+            impact = self._compute_impact(
+                notional, adv, volatility
+            )  # market-impact slippage
 
         funding = 0.0
         if cfg.enable_funding and cfg.market_type == MarketType.FUTURES:
-            funding = self._compute_funding()
+            funding = (
+                self._compute_funding()
+            )  # perpetual funding rate cost (futures only)
 
-        one_way = fee + spread + impact
-        roundtrip = 2 * (fee + spread + impact) + funding
-        min_edge_req = roundtrip * 1.5
+        one_way = fee + spread + impact  # cost for one leg (entry or exit)
+        roundtrip = (
+            2 * (fee + spread + impact) + funding
+        )  # full round-trip (entry + exit + funding)
+        min_edge_req = (
+            roundtrip * 1.5
+        )  # required edge = 1.5× round-trip cost (safety margin)
 
         return CostBreakdown(
             fee_one_way=fee,
@@ -195,11 +203,17 @@ class TransactionCostEngine:
     def _compute_spread(self) -> float:
         cfg = self.config
         if cfg.spread_override is not None:
-            return cfg.spread_override / 2
+            return (
+                cfg.spread_override / 2
+            )  # divide by 2: one-way is half the full spread
 
         base_bps = BASE_SPREAD_BPS.get(cfg.symbol, BASE_SPREAD_BPS["DEFAULT"])
-        mult = SPREAD_MULT.get(cfg.timeframe, 1.0)
-        return (base_bps * mult) / 10_000 / 2
+        mult = SPREAD_MULT.get(
+            cfg.timeframe, 1.0
+        )  # shorter timeframes have wider relative spreads
+        return (
+            (base_bps * mult) / 10_000 / 2
+        )  # convert bps to fraction, then one-way half-spread
 
     def _compute_impact(
         self,
@@ -210,22 +224,28 @@ class TransactionCostEngine:
         """Square-Root Market Impact Model."""
         cfg = self.config
         if cfg.slippage_model == "fixed":
-            return cfg.fixed_slippage_bps / 10_000
+            return cfg.fixed_slippage_bps / 10_000  # convert bps to fraction
 
-        participation = notional / (adv + 1e-8)
+        participation = notional / (
+            adv + 1e-8
+        )  # fraction of daily volume; 1e-8 avoids div-by-zero
 
         if cfg.slippage_model == "sqrt":
+            # Almgren-Chriss square-root model: impact scales with sqrt(participation)
             impact = cfg.impact_coefficient * volatility * np.sqrt(participation)
         elif cfg.slippage_model == "linear":
-            impact = cfg.impact_coefficient * volatility * participation
+            impact = (
+                cfg.impact_coefficient * volatility * participation
+            )  # simplified linear model
         else:
             impact = 0.0
 
-        return min(impact, 0.01)
+        return min(impact, 0.01)  # cap at 1% to prevent unrealistic estimates
 
     def _compute_funding(self) -> float:
         """Compute funding rate costs for the holding period."""
         cfg = self.config
+        # number of bars in one 8-hour funding interval per timeframe
         bars_per_8h = {
             Timeframe.M1: 480,
             Timeframe.M5: 96,
@@ -234,18 +254,24 @@ class TransactionCostEngine:
             Timeframe.H4: 2,
         }
         b_per_8h = bars_per_8h.get(cfg.timeframe, 8)
-        n_funding_payments = cfg.holding_bars / b_per_8h
+        n_funding_payments = (
+            cfg.holding_bars / b_per_8h
+        )  # fractional number of 8h funding periods
 
         if cfg.funding_scenario == "mean":
-            rate_per_8h = FUNDING_MEAN_8H
+            rate_per_8h = FUNDING_MEAN_8H  # typical market conditions
         elif cfg.funding_scenario == "stress":
-            rate_per_8h = FUNDING_MEAN_8H + 2 * FUNDING_STD_8H
+            rate_per_8h = (
+                FUNDING_MEAN_8H + 2 * FUNDING_STD_8H
+            )  # 2-sigma stress scenario
         elif cfg.funding_scenario == "extreme":
-            rate_per_8h = FUNDING_MAX_8H
+            rate_per_8h = FUNDING_MAX_8H  # historical maximum observed rate
         else:
             rate_per_8h = FUNDING_MEAN_8H
 
-        return abs(rate_per_8h * n_funding_payments)
+        return abs(
+            rate_per_8h * n_funding_payments
+        )  # abs() because long/short both pay funding cost
 
 
 class BreakEvenAnalyzer:

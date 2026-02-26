@@ -8,8 +8,11 @@ initial_capital: 100000
 max_position_size: 0.30  # Maximum 30% of capital per position
 
 # Episode Parameters
-max_steps: 1000
-lookback_window: 60
+# max_steps=500: ~3 weeks of trading data (500h @ 1h-candles)
+# → each 2048-step iteration contains ~4 complete episodes
+# → GRU hidden states are reset ~4x → healthy gradients
+max_steps: 500
+lookback_window: 50
 
 # Transaction Costs (in basis points)
 transaction_costs:
@@ -31,22 +34,23 @@ orderbook:
   spread_bps: 2              # Bid-ask spread: 0.02%
   depth_multiplier: 2.0      # Volume per level
 
-# Market Regimes
-regime:
-  low_volatility:
-    volatility: 0.01
-    volume: 500
-    trend: 0.0005
-  
-  high_volatility_bull:
-    volatility: 0.03
-    volume: 1500
-    trend: 0.002
-  
-  high_volatility_bear:
-    volatility: 0.04
-    volume: 2000
-    trend: -0.001
+# Market Regimes (key must be 'market' to match config_system.py)
+market:
+  vol_regimes:
+    low_volatility:
+      volatility: 0.01
+      volume: 500
+      trend: 0.0005
+    
+    high_volatility_bull:
+      volatility: 0.03
+      volume: 1500
+      trend: 0.002
+    
+    high_volatility_bear:
+      volatility: 0.04
+      volume: 2000
+      trend: -0.001
 
 # Reward Function Configuration
 reward:
@@ -72,8 +76,10 @@ reward:
     clip_range: [-10, 10]
 
 # Risk Management
-max_drawdown: 0.70              # 70% maximum drawdown (more learning room)
-max_consecutive_losses: 20       # More tolerance for losses
+# TRAINING: intentionally loose – agent should learn from long episodes.
+# For live trading: set max_drawdown to 0.15, max_consecutive_losses to 10.
+max_drawdown: 0.80              # 80% for training – agent needs room to explore
+max_consecutive_losses: 200     # no early termination during training
 
 # Data Requirements
 required_features:

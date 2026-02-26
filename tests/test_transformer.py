@@ -29,7 +29,7 @@ class TestPositionalEncoding:
         output = pe(x)
 
         assert output.shape == x.shape
-        assert not torch.allclose(output, x)  # Should add positional info
+        assert not torch.allclose(output, x)  # Positional info should change values
 
     def test_fixed_encoding(self):
         """Test fixed sinusoidal encoding."""
@@ -38,7 +38,7 @@ class TestPositionalEncoding:
         x = torch.randn(2, 50, 64)
         output = pe(x)
 
-        assert output.shape == x.shape
+        assert output.shape == x.shape  # Shape unchanged after adding positional codes
 
 
 class TestAdaptiveAttentionSpan:
@@ -55,13 +55,13 @@ class TestAdaptiveAttentionSpan:
         """Test that attention is adaptively masked."""
         span = AdaptiveAttentionSpan(max_span=50, d_model=32)
 
-        attention_weights = torch.randn(2, 8, 30, 30)  # batch, heads, seq, seq
+        attention_weights = torch.randn(2, 8, 30, 30)  # (batch, heads, seq, seq)
         attention_weights = torch.softmax(attention_weights, dim=-1)
 
-        masked = span(attention_weights)
+        masked = span(attention_weights)  # Apply learned span mask
 
         assert masked.shape == attention_weights.shape
-        # Masked attention should still sum to 1
+        # Masked attention should still sum to 1 (valid distribution)
         sums = masked.sum(dim=-1)
         assert torch.allclose(sums, torch.ones_like(sums), atol=1e-6)
 
@@ -77,7 +77,7 @@ class TestTradingTransformer:
             nhead=4,
             num_layers=2,
             max_seq_len=100,
-            output_dim=3,
+            output_dim=3,  # 3 classes: bullish, neutral, bearish
         )
 
     @pytest.fixture
@@ -121,7 +121,7 @@ class TestTradingTransformer:
         output = model(sample_input)
 
         # Predictions should not be affected by future values
-        # (due to causal masking)
+        # (due to causal masking — past attends only to itself)
         assert output["trend_probs"].shape == (4, 3)
 
     def test_attention_extraction(self, config, sample_input):
@@ -146,7 +146,7 @@ class TestTradingTransformer:
             x = torch.randn(2, seq_len, 10)
             output = model(x)
 
-            assert output["trend_probs"].shape == (2, 3)
+            assert output["trend_probs"].shape == (2, 3)  # Shape independent of seq len
 
     def test_get_context_importance(self, config, sample_input):
         """Test context importance extraction."""
@@ -176,12 +176,12 @@ class TestTemporalFusionTransformer:
         )
 
         batch_size = 4
-        static = torch.randn(batch_size, 5)
-        temporal = torch.randn(batch_size, 50, 10)
+        static = torch.randn(batch_size, 5)  # Static features (e.g., asset class)
+        temporal = torch.randn(batch_size, 50, 10)  # Time-series features
 
         output = model(static, temporal)
 
-        assert output.shape == (batch_size, 1)
+        assert output.shape == (batch_size, 1)  # Single scalar prediction per sample
 
 
 class TestIntegrationFunctions:
@@ -206,8 +206,8 @@ class TestIntegrationFunctions:
         losses = train_transformer(model, train_data, epochs=5, lr=0.001)
 
         assert len(losses) == 5
-        # Loss should generally decrease or stay stable
-        assert losses[-1] <= losses[0] * 1.5  # Allow some variance
+        # Loss should generally decrease or stay stable (allow some variance)
+        assert losses[-1] <= losses[0] * 1.5
 
     def test_interpret_attention(self):
         """Test attention interpretation."""
@@ -219,7 +219,7 @@ class TestIntegrationFunctions:
 
         assert "attention_weights" in result
         assert "predictions" in result
-        assert "most_important_timesteps" in result
+        assert "most_important_timesteps" in result  # Timesteps with highest attention
 
 
 class TestEdgeCases:
@@ -229,7 +229,7 @@ class TestEdgeCases:
         """Test handling of very short sequences."""
         model = TradingTransformer(config)
 
-        x = torch.randn(1, 1, 10)  # Very short sequence
+        x = torch.randn(1, 1, 10)  # Very short sequence (single timestep)
 
         # Should handle gracefully
         output = model(x)
@@ -239,7 +239,7 @@ class TestEdgeCases:
         """Test with large batch size."""
         model = TradingTransformer(config)
 
-        x = torch.randn(100, 50, 10)  # Large batch
+        x = torch.randn(100, 50, 10)  # Large batch (stress test)
         output = model(x)
 
         assert output["trend_probs"].shape == (100, 3)
@@ -251,16 +251,16 @@ class TestEdgeCases:
 
         output = model(sample_input)
         loss = output["trend_probs"].mean()
-        loss.backward()
+        loss.backward()  # Backpropagate through entire model
 
-        # Check that gradients exist
+        # Check that gradients exist (at least one parameter has non-zero grad)
         has_gradients = False
         for param in model.parameters():
             if param.grad is not None and param.grad.abs().sum() > 0:
                 has_gradients = True
                 break
 
-        assert has_gradients
+        assert has_gradients  # Gradient must flow back to parameters
 
 
 if __name__ == "__main__":

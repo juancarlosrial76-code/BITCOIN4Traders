@@ -1,19 +1,76 @@
 """
 PPO Agent - Proximal Policy Optimization
-=========================================
+========================================
 State-of-the-art actor-critic RL algorithm for continuous control.
 
+This module implements Proximal Policy Optimization (PPO), a policy gradient
+algorithm that strikes a balance between sample efficiency and training stability.
+PPO uses a clipped surrogate objective to prevent destructive large policy updates.
+
 Key Features:
-- Clipped surrogate objective
-- Separate actor and critic networks
-- GAE (Generalized Advantage Estimation)
-- Batch training with mini-batches
-- Early stopping via KL divergence
-- Support for LSTM/GRU (Recurrent Policy)
-- Layer Normalization and Dropout
-- Learning Rate Scheduling
+- Clipped surrogate objective: Prevents excessively large policy changes
+- Separate actor and critic networks: Independent learning rates and architectures
+- GAE (Generalized Advantage Estimation): Computes low-variance advantage estimates
+- Batch training with mini-batches: Efficient gradient updates
+- Early stopping via KL divergence: Prevents policy collapse
+- Support for LSTM/GRU (Recurrent Policy): Handles sequential dependencies
+- Layer Normalization and Dropout: Improves generalization and prevents overfitting
+- Learning Rate Scheduling: Adaptive learning rate decay
+
+Algorithm Overview:
+--------------------
+PPO optimizes the following clipped objective:
+
+    L(θ) = E[min(r(θ) * A, clip(r(θ), 1-ε, 1+ε) * A)]
+
+where r(θ) = π_θ(a|s) / π_θ_old(a|s) is the probability ratio, and A is the
+advantage estimate. The clipping prevents the policy from changing too much
+in a single update.
 
 Reference: Schulman et al. (2017) - Proximal Policy Optimization Algorithms
+            https://arxiv.org/abs/1707.06347
+
+Example Usage:
+--------------
+    from src.agents.ppo_agent import PPOAgent, PPOConfig
+
+    # Create configuration
+    config = PPOConfig(
+        state_dim=20,
+        hidden_dim=128,
+        n_actions=3,
+        gamma=0.99,
+        gae_lambda=0.95,
+        clip_epsilon=0.2,
+        actor_lr=3e-4,
+        critic_lr=1e-3,
+    )
+
+    # Initialize agent
+    agent = PPOAgent(config, device="cuda")
+
+    # Collect experience
+    state = env.reset()
+    hidden = agent.get_initial_hidden_state()
+    action, log_prob, value, hidden = agent.select_action(state, hidden)
+
+    # Store transition
+    agent.store_transition(state, action, reward, log_prob, value, done, hidden)
+
+    # Train
+    stats = agent.train(next_value=0.0)
+    print(f"Actor loss: {stats['actor_loss']:.4f}")
+
+    # Save/Load
+    agent.save("models/ppo_agent.pth")
+    agent.load("models/ppo_agent.pth")
+
+Imports:
+--------
+    torch: PyTorch deep learning framework
+    numpy: Numerical computing
+    loguru: Logging utility
+    typing: Type hints for better code clarity
 """
 
 import torch
@@ -30,7 +87,54 @@ from torch.optim.lr_scheduler import ExponentialLR
 
 @dataclass
 class PPOConfig:
-    """PPO hyperparameters."""
+    """
+    PPO Hyperparameters Configuration.
+
+    This dataclass encapsulates all hyperparameters for the PPO algorithm,
+    including network architecture, learning rates, PPO-specific parameters,
+    and regularization settings.
+
+    Attributes:
+        state_dim (int): Dimension of the state space (required).
+        hidden_dim (int): Number of hidden units in each layer. Default: 128.
+        n_actions (int): Number of discrete actions. Default: 3.
+
+    Network Architecture:
+        use_recurrent (bool): Whether to use RNN (LSTM/GRU). Default: True.
+        rnn_type (str): Type of RNN - "LSTM" or "GRU". Default: "GRU".
+        rnn_layers (int): Number of RNN layers. Default: 1.
+        dropout (float): Dropout probability (0 = no dropout). Default: 0.1.
+        use_layer_norm (bool): Apply layer normalization. Default: True.
+
+    Learning Rates & Scheduling:
+        actor_lr (float): Learning rate for actor optimizer. Default: 3e-4.
+        critic_lr (float): Learning rate for critic optimizer. Default: 1e-3.
+        use_lr_decay (bool): Enable exponential learning rate decay. Default: True.
+        lr_decay_gamma (float): Decay factor per epoch. Default: 0.99.
+
+    PPO Specific:
+        gamma (float): Discount factor for future rewards [0, 1]. Default: 0.99.
+        gae_lambda (float): GAE lambda parameter [0, 1]. Default: 0.95.
+        clip_epsilon (float): PPO clipping epsilon [0, 1]. Default: 0.2.
+
+    Training:
+        n_epochs (int): Number of epochs per update. Default: 10.
+        batch_size (int): Mini-batch size for training. Default: 64.
+        seq_len (int): Sequence length for recurrent training. Default: 10.
+
+    Regularization:
+        entropy_coef (float): Entropy bonus coefficient. Default: 0.01.
+        value_loss_coef (float): Value loss weight. Default: 0.5.
+        max_grad_norm (float): Gradient clipping threshold. Default: 0.5.
+
+    Early Stopping:
+        target_kl (float): KL divergence threshold for early stopping. Default: 0.01.
+
+    Example:
+        >>> config = PPOConfig(state_dim=20, n_actions=3, gamma=0.99)
+        >>> print(config.gamma)
+        0.99
+    """
 
     # Network architecture
     state_dim: int
@@ -72,7 +176,43 @@ class PPOConfig:
 
 
 class BaseNetwork(nn.Module):
-    """Base network with MLP feature extractor and optional RNN."""
+    """
+    Base Network with MLP Feature Extractor and Optional Recurrent Layer.
+
+    This is the foundational network architecture used by both Actor and Critic.
+    It consists of:
+    1. MLP Feature Extractor: Two hidden layers with activation, normalization, and dropout
+    2. Optional Recurrent Layer: LSTM or GRU for handling sequential state dependencies
+    3. Output Head: Linear projection to output dimension
+
+    The network uses orthogonal weight initialization, which is particularly
+    beneficial for reinforcement learning as it improves gradient flow.
+
+    Architecture:
+        Input (state_dim)
+            → Linear → LayerNorm → ReLU → Dropout
+            → Linear → LayerNorm → ReLU → Dropout
+            → [Optional RNN (GRU/LSTM)]
+            → Linear (output)
+
+    Attributes:
+        config (PPOConfig): Configuration object with network hyperparameters.
+        feature_extractor (nn.Sequential): MLP feature extraction layers.
+        rnn (nn.LSTM or nn.GRU or None): Recurrent layer if use_recurrent=True.
+        head (nn.Linear): Output projection layer.
+
+    Args:
+        config (PPOConfig): PPO configuration containing architecture parameters.
+        output_dim (int): Dimension of the output layer.
+
+    Example:
+        >>> config = PPOConfig(state_dim=20, hidden_dim=128, use_recurrent=True)
+        >>> network = BaseNetwork(config, output_dim=3)
+        >>> state = torch.randn(1, 20)
+        >>> output, hidden = network(state)
+        >>> print(output.shape)
+        torch.Size([1, 3])
+    """
 
     def __init__(self, config: PPOConfig, output_dim: int):
         super().__init__()
@@ -122,20 +262,26 @@ class BaseNetwork(nn.Module):
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
-            nn.init.orthogonal_(module.weight)
+            nn.init.orthogonal_(
+                module.weight
+            )  # Orthogonal init improves gradient flow in RL
             if module.bias is not None:
-                nn.init.constant_(module.bias, 0)
+                nn.init.constant_(module.bias, 0)  # Zero-initialize biases
         elif isinstance(module, nn.LayerNorm):
-            nn.init.constant_(module.weight, 1)
-            nn.init.constant_(module.bias, 0)
+            nn.init.constant_(module.weight, 1)  # Scale=1 (identity transform at init)
+            nn.init.constant_(module.bias, 0)  # Shift=0 (identity transform at init)
         elif isinstance(module, (nn.LSTM, nn.GRU)):
             for name, param in module.named_parameters():
                 if "weight_ih" in name:
-                    nn.init.orthogonal_(param.data)
+                    nn.init.orthogonal_(
+                        param.data
+                    )  # Input-hidden weights: orthogonal init
                 elif "weight_hh" in name:
-                    nn.init.orthogonal_(param.data)
+                    nn.init.orthogonal_(
+                        param.data
+                    )  # Hidden-hidden weights: orthogonal init
                 elif "bias" in name:
-                    nn.init.constant_(param.data, 0)
+                    nn.init.constant_(param.data, 0)  # Zero-initialize RNN biases
 
     def forward(
         self, x: torch.Tensor, hidden: Optional[Union[Tuple, torch.Tensor]] = None
@@ -149,15 +295,19 @@ class BaseNetwork(nn.Module):
             if x.dim() == 2:
                 x = x.unsqueeze(1)  # (batch, 1, features)
 
-        features = self.feature_extractor(x)
+        features = self.feature_extractor(x)  # Extract features via MLP trunk
 
         next_hidden = None
         if self.rnn is not None:
-            features, next_hidden = self.rnn(features, hidden)
+            features, next_hidden = self.rnn(
+                features, hidden
+            )  # Propagate recurrent state
 
         # If we added a sequence dim, remove it for the head if it's 1
         if x.dim() == 3 and features.size(1) == 1:
-            features = features.squeeze(1)
+            features = features.squeeze(
+                1
+            )  # Remove seq dim so head sees (batch, hidden_dim)
 
         # If input was sequence, output is sequence. If input was batch, output is batch.
         # But head expects (..., hidden_dim).
@@ -167,7 +317,38 @@ class BaseNetwork(nn.Module):
 
 
 class ActorNetwork(BaseNetwork):
-    """Policy network (actor)."""
+    """
+    Actor (Policy) Network for PPO.
+
+    The actor network learns a stochastic policy π(a|s) that maps states to
+    action probabilities. It uses a Categorical distribution over discrete actions.
+
+    The actor is optimized to maximize expected rewards while the critic provides
+    value estimates for advantage computation.
+
+    Attributes:
+        Inherits all attributes from BaseNetwork.
+
+    Args:
+        config (PPOConfig): PPO configuration with state_dim and n_actions.
+
+    Returns:
+        Tuple[Categorical, Optional[Union[Tuple, torch.Tensor]]]:
+            - Categorical distribution over actions
+            - Next hidden state (if recurrent, else None)
+
+    Forward Pass:
+        Input: state tensor of shape (batch_size, state_dim) or (batch_size, seq_len, state_dim)
+        Output: (logits, hidden_state) where logits shape is (batch_size, n_actions)
+
+    Example:
+        >>> config = PPOConfig(state_dim=20, n_actions=3)
+        >>> actor = ActorNetwork(config)
+        >>> state = torch.randn(4, 20)
+        >>> dist, hidden = actor(state)
+        >>> action = dist.sample()  # Sample action from policy
+        >>> print(dist.probs)  # Action probabilities
+    """
 
     def __init__(self, config: PPOConfig):
         super().__init__(config, config.n_actions)
@@ -180,7 +361,39 @@ class ActorNetwork(BaseNetwork):
 
 
 class CriticNetwork(BaseNetwork):
-    """Value network (critic)."""
+    """
+    Critic (Value) Network for PPO.
+
+    The critic network estimates the value function V(s), which represents
+    the expected return from a given state under the current policy. This
+    value estimate is used to compute advantages for policy gradient updates.
+
+    The critic outputs a single scalar value (not a distribution) representing
+    the state value estimate.
+
+    Attributes:
+        Inherits all attributes from BaseNetwork.
+
+    Args:
+        config (PPOConfig): PPO configuration with state_dim.
+
+    Returns:
+        Tuple[torch.Tensor, Optional[Union[Tuple, torch.Tensor]]]:
+            - Value estimate (scalar per state)
+            - Next hidden state (if recurrent, else None)
+
+    Forward Pass:
+        Input: state tensor of shape (batch_size, state_dim) or (batch_size, seq_len, state_dim)
+        Output: (value, hidden_state) where value shape is (batch_size, 1)
+
+    Example:
+        >>> config = PPOConfig(state_dim=20)
+        >>> critic = CriticNetwork(config)
+        >>> state = torch.randn(4, 20)
+        >>> value, hidden = critic(state)
+        >>> print(value.shape)
+        torch.Size([4, 1])
+    """
 
     def __init__(self, config: PPOConfig):
         super().__init__(config, 1)
@@ -194,7 +407,64 @@ class CriticNetwork(BaseNetwork):
 
 class PPOAgent:
     """
-    PPO Agent for trading with support for Recurrent policies.
+    Proximal Policy Optimization Agent.
+
+    A complete PPO implementation for reinforcement learning in trading environments.
+    Supports both stateless (MLP) and recurrent (LSTM/GRU) policy architectures.
+
+    This agent implements:
+    - On-policy learning with experience replay buffers
+    - Generalized Advantage Estimation (GAE) for low-variance advantage estimates
+    - Clipped surrogate objective to prevent destructive updates
+    - Separate actor and critic optimization with different learning rates
+    - KL divergence early stopping to prevent policy collapse
+    - Learning rate scheduling with exponential decay
+
+    The agent maintains experience buffers and performs multiple epochs of
+    mini-batch updates per training iteration, computing advantages using GAE.
+
+    Attributes:
+        config (PPOConfig): Configuration object with all hyperparameters.
+        device (str): Computation device ("cuda" or "cpu").
+        actor (ActorNetwork): Policy network for action selection.
+        critic (CriticNetwork): Value network for state estimation.
+        actor_optimizer (torch.optim.Adam): Optimizer for actor parameters.
+        critic_optimizer (torch.optim.Adam): Optimizer for critic parameters.
+        actor_scheduler (ExponentialLR or None): Learning rate scheduler for actor.
+        critic_scheduler (ExponentialLR or None): Learning rate scheduler for critic.
+
+    Args:
+        config (PPOConfig): PPO configuration object.
+        device (str): Device for computation. Default: "cpu".
+
+    Example:
+        Basic usage for trading:
+        >>> from src.agents.ppo_agent import PPOAgent, PPOConfig
+        >>>
+        >>> config = PPOConfig(state_dim=20, n_actions=3, gamma=0.99)
+        >>> agent = PPOAgent(config, device="cuda")
+        >>>
+        >>> # Collect experience
+        >>> state = env.reset()
+        >>> hidden = agent.get_initial_hidden_state()
+        >>>
+        >>> for step in range(2048):
+        ...     action, log_prob, value, hidden = agent.select_action(state, hidden)
+        ...     next_state, reward, done, info = env.step(action)
+        ...     agent.store_transition(state, action, reward, log_prob, value, done, hidden)
+        ...     state = next_state
+        ...     if done:
+        ...         state = env.reset()
+        ...         hidden = None
+        >>>
+        >>> # Train agent
+        >>> stats = agent.train(next_value=0.0)
+        >>> print(f"Training complete. Actor loss: {stats['actor_loss']:.4f}")
+
+    Note:
+        - The agent uses separate buffers for states, actions, rewards, etc.
+        - Hidden states are stored to support truncated backpropagation through time.
+        - GAE requires a bootstrap value for the final state (passed as next_value).
     """
 
     def __init__(self, config: PPOConfig, device: str = "cpu"):
@@ -355,23 +625,28 @@ class PPOAgent:
             self.hiddens.append(None)
 
     def compute_gae(self, next_value: float) -> Tuple[np.ndarray, np.ndarray]:
-        values = self.values + [next_value]
+        values = self.values + [next_value]  # Append bootstrap value for final state
         advantages = []
-        gae = 0
-        for t in reversed(range(len(self.rewards))):
+        gae = 0  # Running GAE accumulator (initialized to 0)
+        for t in reversed(
+            range(len(self.rewards))
+        ):  # Iterate backwards through trajectory
             delta = (
                 self.rewards[t]
-                + self.config.gamma * values[t + 1] * (1 - self.dones[t])
-                - values[t]
+                + self.config.gamma * values[t + 1] * (1 - self.dones[t])  # TD target
+                - values[t]  # Subtract current value estimate → TD error
             )
+            # GAE recursion: A_t = δ_t + (γλ)(1-done) * A_{t+1}
             gae = (
                 delta
                 + self.config.gamma * self.config.gae_lambda * (1 - self.dones[t]) * gae
             )
-            advantages.insert(0, gae)
+            advantages.insert(0, gae)  # Prepend to maintain time-order
 
         advantages = np.array(advantages)
-        returns = advantages + np.array(self.values)
+        returns = advantages + np.array(
+            self.values
+        )  # Target returns = advantage + value baseline
         return advantages, returns
 
     def train(self, next_value: float = 0.0) -> Dict:
@@ -381,7 +656,7 @@ class PPOAgent:
         # Compute advantages
         advantages, returns = self.compute_gae(next_value)
 
-        # Normalize advantages
+        # Normalize advantages to zero-mean, unit-variance for training stability
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         # Convert to tensors
@@ -411,6 +686,7 @@ class PPOAgent:
 
         for epoch in range(self.config.n_epochs):
             np.random.shuffle(indices)
+            epoch_kls = []  # KL only measured for this epoch (not cumulative)
 
             for start_idx in range(0, dataset_size, self.config.batch_size):
                 end_idx = min(start_idx + self.config.batch_size, dataset_size)
@@ -465,24 +741,31 @@ class PPOAgent:
                 log_probs = dist.log_prob(batch_actions)
                 entropy = dist.entropy().mean()
 
-                ratio = torch.exp(log_probs - batch_old_log_probs)
-                surr1 = ratio * batch_advantages
+                ratio = torch.exp(
+                    log_probs - batch_old_log_probs
+                )  # Importance sampling ratio π_new/π_old
+                surr1 = ratio * batch_advantages  # Unclipped surrogate objective
                 surr2 = (
                     torch.clamp(
                         ratio,
                         1 - self.config.clip_epsilon,
                         1 + self.config.clip_epsilon,
                     )
-                    * batch_advantages
+                    * batch_advantages  # Clipped surrogate: prevents large policy updates
                 )
 
-                actor_loss = -torch.min(surr1, surr2).mean()
-                critic_loss = F.mse_loss(critic_values, batch_returns)
+                actor_loss = -torch.min(
+                    surr1, surr2
+                ).mean()  # PPO-clip objective (negated for gradient ascent)
+                critic_loss = F.mse_loss(
+                    critic_values, batch_returns
+                )  # Value function MSE loss
 
                 loss = (
                     actor_loss
-                    + self.config.value_loss_coef * critic_loss
-                    - self.config.entropy_coef * entropy
+                    + self.config.value_loss_coef * critic_loss  # Weighted value loss
+                    - self.config.entropy_coef
+                    * entropy  # Entropy bonus encourages exploration
                 )
 
                 self.actor_optimizer.zero_grad()
@@ -504,11 +787,17 @@ class PPOAgent:
                 total_entropy += entropy.item()
 
                 with torch.no_grad():
-                    kl = (batch_old_log_probs - log_probs).mean()
+                    kl = (
+                        batch_old_log_probs - log_probs
+                    ).mean()  # Approx KL: KL(old||new) ≈ mean(log_old - log_new)
                     kl_divergences.append(kl.item())
+                    epoch_kls.append(kl.item())
 
-            if np.mean(kl_divergences) > self.config.target_kl:
-                logger.info(f"Early stopping at epoch {epoch + 1}")
+            # Early stopping: check KL only for this epoch (not cumulative across epochs)
+            if np.mean(epoch_kls) > self.config.target_kl:
+                logger.debug(
+                    f"Early stopping at epoch {epoch + 1} (KL={np.mean(epoch_kls):.4f})"
+                )
                 break
 
         # Step Schedulers

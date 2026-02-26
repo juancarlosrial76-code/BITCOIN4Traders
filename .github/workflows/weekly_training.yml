@@ -1,0 +1,181 @@
+name: BITCOIN4Traders - Weekly Backup Training (GitHub)
+
+# ============================================================
+# Runs every Sunday at 02:00 UTC automatically.
+# Task: Full evolution on GitHub (lightweight),
+#       run unit tests, update champion cache.
+#
+# 3-pillar architecture:
+#   [Linux PC Local Master] --> Main training (12h, daily evolution)
+#   [GitHub Actions]        --> BACKUP training (Sunday, light, 55min)
+#   [Google Colab]          --> GPU training (neural nets, PPO)
+#
+# This workflow is the BACKUP training.
+# The Local Master (Linux PC) trains 24/7 with auto_12h_train.py
+# and pushes the champion into this repo every 6h via sync_champion.sh.
+# Colab then pulls the best champion for GPU fine-tuning.
+# ============================================================
+
+on:
+  schedule:
+    - cron: "0 2 * * 0"   # Every Sunday at 02:00 UTC
+  workflow_dispatch:        # Manual trigger via GitHub UI at any time
+
+jobs:
+  training_and_ci:
+    name: Evolution Training & Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 55     # GitHub Actions Free Tier: max 6h, capped at 55 min
+
+    env:
+      # Telegram Credentials (store in GitHub Secrets)
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+      # Binance API (optional - public endpoints work without keys)
+      BINANCE_API_KEY:    ${{ secrets.BINANCE_API_KEY }}
+      BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
+      # GitHub Actions marker (read by detect_environment())
+      GITHUB_ACTIONS: "true"
+      # Role in the 3-pillar architecture
+      NODE_ROLE: "github_backup"
+      LOCAL_MASTER: "false"
+
+    steps:
+      # ----------------------------------------------------------
+      # 1. Check out repository
+      # ----------------------------------------------------------
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # ----------------------------------------------------------
+      # 2. Set up Python
+      # ----------------------------------------------------------
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      # ----------------------------------------------------------
+      # 3. Install dependencies (full, including test tools)
+      # ----------------------------------------------------------
+      - name: Install dependencies
+        run: |
+          pip install --quiet --upgrade pip
+          pip install --quiet \
+            numpy pandas ccxt pyarrow numba joblib tqdm loguru \
+            pytest python-dotenv torch scikit-learn scipy
+
+      # ----------------------------------------------------------
+      # 4. Load champion cache (from previous workflow run)
+      # ----------------------------------------------------------
+      - name: Load champion cache
+        uses: actions/cache@v4
+        with:
+          path: data/cache/
+          key: champion-cache-${{ runner.os }}
+          restore-keys: |
+            champion-cache-
+
+      # ----------------------------------------------------------
+      # 5. Run unit tests (CI check)
+      # ----------------------------------------------------------
+      - name: Run unit tests
+        run: |
+          python3 -m pytest tests/ -x -q --tb=short --ignore=tests/test_integration.py
+        continue-on-error: true   # Tests should not block training
+
+      # ----------------------------------------------------------
+      # 6. Lightweight evolution (GitHub backup training)
+      #    Fewer generations than Colab - serves as fallback champion
+      # ----------------------------------------------------------
+      - name: Run backup evolution
+        run: |
+          python3 - <<'EOF'
+          import sys
+          sys.path.insert(0, ".")
+
+          from darwin_engine import (
+              run_multiverse,
+              generate_synthetic_btc,
+              TelegramNotifier,
+              detect_environment,
+          )
+          from dotenv import load_dotenv
+          import os
+
+          load_dotenv()
+
+          env = detect_environment()
+          print(f"Environment: {env}")
+
+          notifier = TelegramNotifier.from_env()
+
+          # Try real Binance data, fall back to synthetic
+          try:
+              from darwin_engine import load_live_data
+              df = load_live_data(symbol="BTC/USDT", timeframe="1h", limit=1000)
+              print(f"Real Binance data loaded: {len(df)} bars")
+              data_source = "Binance Live"
+          except Exception as exc:
+              print(f"Binance unreachable ({exc}), using synthetic data")
+              df = generate_synthetic_btc(n_bars=2000, seed=42)
+              data_source = "Synthetic"
+
+          # Lightweight evolution (GitHub backup - fewer generations)
+          champion = run_multiverse(
+              symbol="BTC/USDT",
+              timeframe="1h",
+              n_bars=len(df),
+              generations=5,       # Light: 5 instead of 15 (Colab does 15+)
+              pop_size=12,         # Light: 12 instead of 20
+              n_mc_scenarios=20,   # Light: 20 instead of 50
+              max_dd_threshold=0.20,
+              auto_load_champion=True,   # Keep better champion
+              save_dir="data/cache",
+              seed=42,
+          )
+
+          if champion is not None:
+              notifier.send(
+                  f"<b>GitHub Backup Training complete</b>\n"
+                  f"Champion : {champion.name}\n"
+                  f"Data     : {data_source}\n"
+                  f"Env      : {env}"
+              )
+              print(f"Champion: {champion.name}")
+          else:
+              notifier.send_alert(
+                  "Backup training failed",
+                  "No champion found. Check GitHub Actions logs."
+              )
+          EOF
+
+      # ----------------------------------------------------------
+      # 7. Save champion cache (always, even on failure)
+      # ----------------------------------------------------------
+      - name: Save champion cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: data/cache/
+          key: champion-cache-${{ runner.os }}-${{ github.run_id }}
+
+      # ----------------------------------------------------------
+      # 8. Print status summary
+      # ----------------------------------------------------------
+      - name: Print status
+        if: always()
+        run: |
+          echo "========================================"
+          echo "  BITCOIN4Traders Weekly Training"
+          echo "  Time: $(date -u '+%Y-%m-%d %H:%M UTC')"
+          echo "  Run:  ${{ github.run_number }}"
+          echo "========================================"
+          if [ -f data/cache/multiverse_champion_meta.json ]; then
+            echo "  Champion meta:"
+            cat data/cache/multiverse_champion_meta.json
+          fi
+          if [ -f data/cache/heartbeat.txt ]; then
+            echo "  Heartbeat: $(cat data/cache/heartbeat.txt)"
+          fi

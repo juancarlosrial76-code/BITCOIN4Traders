@@ -51,8 +51,8 @@ class TestCausalDiscovery:
         np.random.seed(42)
         n = 1000
         X = np.random.randn(n)
-        Y = 2 * X + np.random.randn(n) * 0.1
-        Z = 1.5 * Y + np.random.randn(n) * 0.1
+        Y = 2 * X + np.random.randn(n) * 0.1  # Y caused by X
+        Z = 1.5 * Y + np.random.randn(n) * 0.1  # Z caused by Y
 
         return pd.DataFrame({"X": X, "Y": Y, "Z": Z})
 
@@ -64,9 +64,9 @@ class TestCausalDiscovery:
 
         # Confounder affects both X and Y
         confounder = np.random.randn(n)
-        X = confounder + np.random.randn(n) * 0.5
-        Y = 2 * confounder + np.random.randn(n) * 0.5
-        Z = X + Y + np.random.randn(n) * 0.1
+        X = confounder + np.random.randn(n) * 0.5  # X influenced by confounder
+        Y = 2 * confounder + np.random.randn(n) * 0.5  # Y influenced by same confounder
+        Z = X + Y + np.random.randn(n) * 0.1  # Z depends on both X and Y
 
         return pd.DataFrame({"X": X, "Y": Y, "Z": Z, "confounder": confounder})
 
@@ -75,7 +75,7 @@ class TestCausalDiscovery:
         discovery = CausalDiscovery(alpha=0.05)
         assert discovery.alpha == 0.05
         assert isinstance(discovery.causal_graph, nx.DiGraph)
-        assert discovery.causal_graph.number_of_nodes() == 0
+        assert discovery.causal_graph.number_of_nodes() == 0  # Graph starts empty
 
     def test_pc_algorithm_simple(self, simple_causal_data):
         """Test PC algorithm on simple causal structure."""
@@ -100,13 +100,19 @@ class TestCausalDiscovery:
 
         # X and Z should be dependent (marginally)
         independent = discovery._test_conditional_independence(
-            simple_causal_data, "X", "Z", []
+            simple_causal_data,
+            "X",
+            "Z",
+            [],  # Empty conditioning set (marginal test)
         )
         assert not independent  # X and Z are marginally dependent
 
         # X and Z should be independent given Y (Y is the mediator)
         independent_given_y = discovery._test_conditional_independence(
-            simple_causal_data, "X", "Z", ["Y"]
+            simple_causal_data,
+            "X",
+            "Z",
+            ["Y"],  # Condition on mediator
         )
         assert independent_given_y  # Conditioning on Y should make them independent
 
@@ -149,9 +155,9 @@ class TestCausalEffectEstimator:
         # Confounder
         Z = np.random.randn(n)
 
-        # Treatment depends on confounder
-        treatment_prob = 1 / (1 + np.exp(-Z))
-        X = (np.random.rand(n) < treatment_prob).astype(int)
+        # Treatment depends on confounder (selection bias)
+        treatment_prob = 1 / (1 + np.exp(-Z))  # Logistic probability
+        X = (np.random.rand(n) < treatment_prob).astype(int)  # Binary treatment
 
         # Outcome depends on treatment and confounder
         Y = 2 * X + 1.5 * Z + np.random.randn(n) * 0.5
@@ -199,9 +205,9 @@ class TestCausalEffectEstimator:
         # Outcome with treatment effect
         Y = (
             10  # baseline
-            + 2 * group  # group difference
-            + 3 * time  # time trend
-            + 5 * group * time  # treatment effect (DiD)
+            + 2 * group  # group difference (pre-existing)
+            + 3 * time  # time trend (shared across groups)
+            + 5 * group * time  # treatment effect (DiD interaction term)
             + np.random.randn(n) * 0.5
         )
 
@@ -216,7 +222,7 @@ class TestCausalEffectEstimator:
     def test_initialization(self):
         """Test CausalEffectEstimator initialization."""
         estimator = CausalEffectEstimator()
-        assert estimator.estimates == []
+        assert estimator.estimates == []  # Starts with empty estimate history
 
     def test_backdoor_adjustment(self, binary_treatment_data):
         """Test backdoor adjustment."""
@@ -226,7 +232,7 @@ class TestCausalEffectEstimator:
             binary_treatment_data,
             treatment="X",
             outcome="Y",
-            confounders=["Z"],
+            confounders=["Z"],  # Block backdoor path through Z
         )
 
         # Check result structure
@@ -250,7 +256,7 @@ class TestCausalEffectEstimator:
             iv_data,
             treatment="X",
             outcome="Y",
-            instrument="instrument",
+            instrument="instrument",  # Valid instrument: correlated with X, not Y directly
         )
 
         # Check result structure
@@ -329,7 +335,7 @@ class TestCounterfactualReasoning:
     def test_initialization(self):
         """Test CounterfactualReasoning initialization."""
         reasoner = CounterfactualReasoning()
-        assert reasoner.history == []
+        assert reasoner.history == []  # Starts with no recorded counterfactuals
 
     def test_estimate_counterfactual(self):
         """Test counterfactual estimation."""
@@ -337,7 +343,7 @@ class TestCounterfactualReasoning:
 
         # Simple model that predicts outcome from action
         def model(action):
-            return {"buy": 10, "sell": -5}[action]
+            return {"buy": 10, "sell": -5}[action]  # Predefined payoffs
 
         result = reasoner.estimate_counterfactual(
             actual_outcome=10,
@@ -350,9 +356,9 @@ class TestCounterfactualReasoning:
         assert result["actual_outcome"] == 10
         assert result["actual_action"] == "buy"
         assert result["counterfactual_action"] == "sell"
-        assert result["counterfactual_outcome"] == -5
-        assert result["regret"] == -15  # -5 - 10 = -15
-        assert result["optimal"] == False
+        assert result["counterfactual_outcome"] == -5  # What would have happened
+        assert result["regret"] == -15  # -5 - 10 = -15 (counterfactual was worse)
+        assert result["optimal"] == False  # Actual was better, so no regret
 
     def test_analyze_trade_regret(self, sample_trade_history, sample_price_data):
         """Test trade regret analysis."""
@@ -361,7 +367,7 @@ class TestCounterfactualReasoning:
         regrets = reasoner.analyze_trade_regret(
             sample_trade_history,
             sample_price_data,
-            holding_period=5,
+            holding_period=5,  # Alternative: hold for 5 extra bars
         )
 
         # Check result structure
@@ -385,7 +391,7 @@ class TestCounterfactualReasoning:
 
         # Sell trade
         pnl_sell = reasoner._calculate_pnl(50000, 51000, "sell", 0.1)
-        assert pnl_sell == -100  # (50000 - 51000) * 0.1
+        assert pnl_sell == -100  # (50000 - 51000) * 0.1 (sell loses when price rises)
 
 
 class TestCausalTradingStrategy:
@@ -405,8 +411,8 @@ class TestCausalTradingStrategy:
         returns = 0.5 * feature1 + 0.3 * feature2 + np.random.randn(n) * 0.1
 
         # Future returns for prediction
-        future_returns = np.roll(returns, -1)
-        future_returns[-1] = 0
+        future_returns = np.roll(returns, -1)  # Shift returns back by one period
+        future_returns[-1] = 0  # Last element has no future return
 
         return pd.DataFrame(
             {
@@ -423,7 +429,9 @@ class TestCausalTradingStrategy:
         assert strategy.discovery is not None
         assert strategy.estimator is not None
         assert strategy.counterfactual is not None
-        assert strategy.causal_graph is None
+        assert (
+            strategy.causal_graph is None
+        )  # No graph until discover_drivers is called
 
     def test_discover_drivers(self, market_data):
         """Test causal driver discovery."""
@@ -470,7 +478,7 @@ class TestProductionFunctions:
 
         X = np.random.randn(n)
         Z = np.random.randn(n)
-        Y = 2 * X + 1.5 * Z + np.random.randn(n) * 0.5
+        Y = 2 * X + 1.5 * Z + np.random.randn(n) * 0.5  # Y depends on both X and Z
 
         return pd.DataFrame({"X": X, "Y": Y, "Z": Z})
 
@@ -487,7 +495,7 @@ class TestProductionFunctions:
             treatment="X",
             outcome="Y",
             method="backdoor",
-            confounders=["Z"],
+            confounders=["Z"],  # Control for Z to identify X's effect
         )
 
         assert isinstance(effect, CausalEffect)
@@ -502,7 +510,7 @@ class TestProductionFunctions:
             treatment="X",
             outcome="Y",
             method="iv",
-            confounders=["Z"],
+            confounders=["Z"],  # Z used as instrument here
         )
 
         assert isinstance(effect, CausalEffect)
@@ -517,7 +525,7 @@ class TestProductionFunctions:
                 test_data,
                 treatment="X",
                 outcome="Y",
-                method="unknown",
+                method="unknown",  # Should raise ValueError
             )
 
     def test_analyze_trade_counterfactuals(self):
@@ -544,7 +552,7 @@ class TestProductionFunctions:
         result = analyze_trade_counterfactuals(trade_history, price_data)
 
         assert isinstance(result, pd.DataFrame)
-        assert len(result) == len(trade_history)
+        assert len(result) == len(trade_history)  # One row per trade
 
 
 class TestCausalInferenceIntegration:
@@ -558,8 +566,12 @@ class TestCausalInferenceIntegration:
 
         # Causal structure: news -> sentiment -> price_change
         news_sentiment = np.random.randn(n)
-        market_sentiment = 0.8 * news_sentiment + np.random.randn(n) * 0.3
-        price_change = 0.5 * market_sentiment + np.random.randn(n) * 0.2
+        market_sentiment = (
+            0.8 * news_sentiment + np.random.randn(n) * 0.3
+        )  # Influenced by news
+        price_change = (
+            0.5 * market_sentiment + np.random.randn(n) * 0.2
+        )  # Influenced by sentiment
 
         return pd.DataFrame(
             {
@@ -585,7 +597,9 @@ class TestCausalInferenceIntegration:
             full_pipeline_data,
             treatment="market_sentiment",
             outcome="price_change",
-            confounders=["news_sentiment"],
+            confounders=[
+                "news_sentiment"
+            ],  # Control for news to isolate sentiment effect
         )
 
         assert isinstance(effect, CausalEffect)
@@ -595,7 +609,7 @@ class TestCausalInferenceIntegration:
         reasoner = CounterfactualReasoning()
 
         def model(action):
-            return {"positive": 1.0, "negative": -1.0}[action]
+            return {"positive": 1.0, "negative": -1.0}[action]  # Simple outcome model
 
         counterfactual = reasoner.estimate_counterfactual(
             actual_outcome=1.0,
@@ -604,11 +618,11 @@ class TestCausalInferenceIntegration:
             model=model,
         )
 
-        assert counterfactual["regret"] == -2.0
+        assert counterfactual["regret"] == -2.0  # -1.0 - 1.0 = -2.0
 
         # Step 4: Trading strategy
         strategy = CausalTradingStrategy()
-        strategy.causal_graph = graph
+        strategy.causal_graph = graph  # Inject discovered graph
 
         signal = strategy.generate_signal(full_pipeline_data)
         assert "signal" in signal

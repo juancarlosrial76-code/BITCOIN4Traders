@@ -28,15 +28,19 @@ class MockExchangeDataLoader:
         self.dates = pd.date_range("2023-01-01", periods=n_points, freq="1H")
 
         # Generate realistic price data with trend
-        trend = np.linspace(0, 5000, n_points)
-        noise = np.cumsum(np.random.randn(n_points) * 50)
+        trend = np.linspace(0, 5000, n_points)  # Upward drift over time
+        noise = np.cumsum(np.random.randn(n_points) * 50)  # Random walk noise
         close = 50000 + trend + noise
 
         self.data = pd.DataFrame(
             {
                 "open": close + np.random.randn(n_points) * 30,
-                "high": close + abs(np.random.randn(n_points) * 80) + 20,
-                "low": close - abs(np.random.randn(n_points) * 80) - 20,
+                "high": close
+                + abs(np.random.randn(n_points) * 80)
+                + 20,  # Always above close
+                "low": close
+                - abs(np.random.randn(n_points) * 80)
+                - 20,  # Always below close
                 "close": close,
                 "volume": np.random.uniform(500, 2000, n_points),
             },
@@ -110,7 +114,7 @@ class TestCompleteDataFlow:
         engine = FeatureEngine(config)
         features = engine.fit_transform(raw_data)
 
-        # Align data
+        # Align data to common timestamps (features may have NaN rows dropped)
         common_idx = raw_data.index.intersection(features.index)
         price_data = raw_data.loc[common_idx]
         features = features.loc[common_idx]
@@ -163,7 +167,7 @@ class TestCompleteDataFlow:
         )
         agent = PPOAgent(agent_config, device="cpu")
 
-        # Interact
+        # Interact for one episode (or up to 50 steps)
         obs, info = env.reset()
         done = False
         total_reward = 0
@@ -180,7 +184,7 @@ class TestCompleteDataFlow:
             steps += 1
 
         assert steps > 0
-        assert len(agent.states) == steps
+        assert len(agent.states) == steps  # Buffer should have all transitions
 
 
 class TestRiskManagementIntegration:
@@ -217,7 +221,7 @@ class TestRiskManagementIntegration:
         env_config = EnvironmentConfig(
             initial_capital=100000,
             max_position_size=0.25,
-            max_drawdown=0.05,  # 5% drawdown limit
+            max_drawdown=0.05,  # 5% drawdown limit (tight)
             max_steps=100,
         )
 
@@ -300,7 +304,7 @@ class TestAdversarialTrainingIntegration:
 
         adversary_config = PPOConfig(
             state_dim=env.observation_space.shape[0],
-            n_actions=4,
+            n_actions=4,  # 4 perturbation strategies
             hidden_dim=32,
             n_epochs=2,
             batch_size=16,
@@ -311,7 +315,7 @@ class TestAdversarialTrainingIntegration:
             steps_per_iteration=64,
             trader_config=trader_config,
             adversary_config=adversary_config,
-            adversary_start_iteration=0,
+            adversary_start_iteration=0,  # Adversary active from start
             adversary_strength=0.1,
             log_frequency=1,
         )
@@ -377,7 +381,7 @@ class TestDataIntegrity:
             index=test_dates,
         )
 
-        # Fit on train
+        # Fit on train (compute scaler statistics from training data only)
         config = FeatureConfig(
             volatility_window=20,
             ou_window=20,
@@ -393,7 +397,7 @@ class TestDataIntegrity:
         engine = FeatureEngine(config)
         train_features = engine.fit_transform(train_data)
 
-        # Transform test
+        # Transform test (apply train statistics — no look-ahead)
         test_features = engine.transform(test_data)
 
         # Verify test features use train statistics
@@ -429,13 +433,13 @@ class TestDataIntegrity:
         env = ConfigIntegratedTradingEnv(price_data, features, env_config)
 
         obs, _ = env.reset()
-        initial_shape = obs.shape
+        initial_shape = obs.shape  # Lock in expected observation shape
 
         for _ in range(10):
             obs, _, terminated, truncated, _ = env.step(1)
             if terminated or truncated:
                 obs, _ = env.reset()
-            assert obs.shape == initial_shape
+            assert obs.shape == initial_shape  # Shape must not change between steps
 
 
 if __name__ == "__main__":

@@ -93,7 +93,7 @@ class PortfolioRiskManager:
         """
         # Calculate position metrics
         var_1d = self._calculate_var(returns, confidence=self.config.var_confidence)
-        var_5d = var_1d * np.sqrt(5)
+        var_5d = var_1d * np.sqrt(5)  # scale 1-day VaR to 5-day using √T rule
 
         # Calculate beta (market sensitivity)
         beta = self._calculate_beta(returns)
@@ -122,8 +122,10 @@ class PortfolioRiskManager:
         if len(returns) < 30:
             return 0.0
 
-        var = np.percentile(returns.dropna(), (1 - confidence) * 100)
-        return abs(var)
+        var = np.percentile(
+            returns.dropna(), (1 - confidence) * 100
+        )  # left-tail percentile (e.g. 5th for 95% VaR)
+        return abs(var)  # return as positive loss figure
 
     def _calculate_beta(
         self, returns: pd.Series, market_returns: pd.Series = None
@@ -133,10 +135,12 @@ class PortfolioRiskManager:
             # Use returns themselves as proxy
             return 1.0
 
-        covariance = np.cov(returns, market_returns)[0, 1]
-        market_variance = np.var(market_returns)
+        covariance = np.cov(returns, market_returns)[0, 1]  # asset–market covariance
+        market_variance = np.var(market_returns)  # market variance
 
-        return covariance / (market_variance + 1e-10)
+        return covariance / (
+            market_variance + 1e-10
+        )  # β = Cov(asset, market) / Var(market)
 
     def _update_weights(self):
         """Update position weights based on risk budgeting."""
@@ -163,15 +167,18 @@ class PortfolioRiskManager:
         # Calculate covariance matrix
         cov_matrix = returns_df[list(self.positions.keys())].cov() * 252  # Annualized
 
-        # Portfolio variance
+        # Portfolio variance: σ²_p = w^T Σ w (matrix form)
         portfolio_variance = weights.T @ cov_matrix.values @ weights
-        portfolio_volatility = np.sqrt(portfolio_variance)
+        portfolio_volatility = np.sqrt(portfolio_variance)  # annualised portfolio σ
 
         # Parametric VaR (assuming normal distribution)
-        z_score = 1.645  # 95% confidence
-        portfolio_var = portfolio_volatility * z_score / np.sqrt(252)  # Daily VaR
+        z_score = 1.645  # 95% confidence one-tail z-value
+        portfolio_var = (
+            portfolio_volatility * z_score / np.sqrt(252)
+        )  # scale annual σ → daily VaR
 
-        # Diversification ratio
+        # Diversification ratio: weighted sum of individual VaRs / portfolio VaR
+        # DR > 1 means diversification reduces risk below simple sum-of-parts
         individual_vars = np.array([p.var_1d for p in self.positions.values()])
         weighted_individual_var = np.sum(weights * individual_vars)
         diversification_ratio = weighted_individual_var / (portfolio_var + 1e-10)

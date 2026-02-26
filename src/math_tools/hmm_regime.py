@@ -1,22 +1,51 @@
 """
-Hidden Markov Model - Market Regime Detection
-=============================================
+Hidden Markov Model (HMM) - Market Regime Detection
+===================================================
 Identifies hidden market states (bull/bear/neutral) from observable features.
 
-Mathematical Model:
+Mathematical Foundation:
+-------------------------
+A Hidden Markov Model is a statistical model where the system is assumed to be a
+Markov process with unobserved (hidden) states. In market regime detection:
+
+    P(S_t | S_{t-1}) = A_ij    # Transition probability matrix A
+
+    P(O_t | S_t) = B_j(o)      # Emission probability (observation model)
+
+    P(S_1) = π                  # Initial state distribution
+
+The model assumes:
 - Hidden states: {Low Volatility, High Volatility, Transition}
 - Observations: Returns, volatility, volume
-- Transitions: Markov chain with transition matrix
+- Transitions: Markov chain with transition matrix A where A[i,j] = P(state j | state i)
+
+Key Equations:
+    Forward Algorithm: α_t(j) = Σ_i α_{t-1}(i) * A_ij * B_j(O_t)
+    Viterbi Path:      S* = argmax P(S | O; θ)
+    Parameter Learning: θ = argmax Σ_s P(S,O | θ)
 
 Key Properties:
 - Unsupervised learning (no labels needed)
 - Probabilistic regime classification
 - Captures market phase transitions
+- Full covariance Gaussian HMM for flexible state modeling
 
 Applications:
-- Adaptive strategy selection
-- Risk management
-- Position sizing
+- Adaptive strategy selection (switch between trend-following and mean-reversion)
+- Risk management (adjust position sizing based on regime)
+- Position sizing (larger in stable regimes, smaller in volatile regimes)
+- Market timing (identify regime transitions before they occur)
+
+References:
+- Rabiner, L.R. (1989) "A tutorial on hidden Markov models and selected
+  applications in speech recognition"
+- Hamilton, J.D. (1994) "Time Series Analysis"
+
+Dependencies:
+- numpy: Numerical computations
+- pandas: DataFrame handling
+- hmmlearn: HMM implementation (scikit-learn compatible)
+- sklearn: StandardScaler for feature normalization
 """
 
 import numpy as np
@@ -44,9 +73,27 @@ class HMMRegimeDetector:
     Hidden Markov Model for market regime detection.
 
     Detects:
-    - Low Volatility (trending)
-    - High Volatility (mean-reverting)
-    - Transition (regime change)
+    - Low Volatility (consolidation/ranging markets - ideal for mean-reversion)
+    - High Volatility (trending markets - ideal for trend-following)
+    - Transition (regime change - increased risk/uncertainty)
+
+    Mathematical Background:
+    -----------------------
+    The Gaussian HMM models observations as multivariate normal distributions
+    with state-dependent means and covariances:
+
+        P(O_t | S_t=j) = N(μ_j, Σ_j)
+
+    where:
+        O_t: Observation vector at time t (returns, volatility, volume)
+        S_t: Hidden state at time t ∈ {0, 1, ..., n_regimes-1}
+        μ_j: Mean vector for state j
+        Σ_j: Covariance matrix for state j
+
+    The model learns:
+        - transmat_: Transition probability matrix A where A[i,j] = P(S_t=j | S_{t-1}=i)
+        - means_: Mean vectors μ_j for each state
+        - covariances_: Covariance matrices Σ_j for each state
 
     Usage:
     ------
@@ -57,6 +104,70 @@ class HMMRegimeDetector:
     # Classify current regime
     regime_probs = hmm_detector.predict_proba(current_features)
     current_regime = hmm_detector.predict(current_features)
+
+    # Get regime information
+    info = hmm_detector.get_regime_info(current_regime)
+
+    # Analyze transitions
+    trans_matrix = hmm_detector.get_transition_matrix()
+
+    Parameters:
+    -----------
+    n_regimes : int
+        Number of hidden states to detect (default: 3).
+        Common configurations:
+        - 2 regimes: Bull/Bear
+        - 3 regimes: Low/High/Transition (recommended)
+        - 4 regimes: Low/Medium/High/Transition
+
+    n_iter : int
+        Maximum number of Baum-Welch iterations for training (default: 100).
+        More iterations = better convergence but slower training.
+
+    random_state : int
+        Random seed for reproducibility (default: 42).
+        Important for consistent regime labeling across runs.
+
+    Attributes:
+    ----------
+    model : hmm.GaussianHMM
+        Fitted HMM model from hmmlearn
+
+    scaler : StandardScaler
+        Feature scaler for normalization
+
+    is_fitted : bool
+        Whether model has been fitted
+
+    regime_labels : dict
+        Mapping of regime IDs to descriptive labels
+
+    Returns:
+    --------
+    The detector provides:
+    - predict(): Most likely regime ID
+    - predict_proba(): Probability distribution over regimes
+    - get_regime_info(): Detailed regime characteristics
+    - get_transition_matrix(): Regime transition probabilities
+
+    Example:
+    -------
+    >>> import pandas as pd
+    >>> import numpy as np
+    >>>
+    >>> # Prepare features
+    >>> features = prepare_hmm_features(price_data)
+    >>>
+    >>> # Initialize and fit
+    >>> detector = HMMRegimeDetector(n_regimes=3, n_iter=100)
+    >>> detector.fit(features)
+    >>>
+    >>> # Get current regime
+    >>> current_regime = detector.predict(current_features)
+    >>> probs = detector.predict_proba(current_features)
+    >>>
+    >>> print(f"Current regime: {detector.regime_labels[current_regime]}")
+    >>> print(f"Probability: {probs[current_regime]:.2%}")
     """
 
     def __init__(
@@ -78,13 +189,13 @@ class HMMRegimeDetector:
         self.n_iter = n_iter
         self.random_state = random_state
 
-        # Initialize HMM (Gaussian emissions)
+        # Initialize HMM with full covariance Gaussian emissions (each state has own mean+cov)
         self.model = hmm.GaussianHMM(
             n_components=n_regimes,
-            covariance_type="full",
+            covariance_type="full",  # Full covariance matrix per state (most flexible)
             n_iter=n_iter,
             random_state=random_state,
-            init_params="stmc",  # Initialize start, transition, means, covariance
+            init_params="stmc",  # Initialize: start probabilities, transitions, means, covariance
         )
 
         # Scaler for feature normalization
@@ -105,40 +216,85 @@ class HMMRegimeDetector:
         """
         Fit HMM on historical features.
 
+        This method trains the Hidden Markov Model to identify hidden
+        market regimes from observable features.
+
+        Training Process (Baum-Welch Algorithm):
+        -------------------------------------
+        1. Initialize parameters (means, covariances, transition matrix)
+        2. E-step: Calculate expected states given current parameters
+        3. M-step: Update parameters to maximize likelihood
+        4. Repeat 2-3 until convergence
+
         Parameters:
         -----------
         features : pd.DataFrame
-            Feature matrix (returns, volatility, etc.)
+            Feature matrix containing market observations.
+            Typically includes:
+            - returns: Price returns
+            - volatility_20: 20-period rolling volatility
+            - volume_change: Rate of change in volume
+            - range: (high - low) / close
+
         feature_cols : List[str], optional
-            Columns to use (default: all numeric)
+            Columns to use for training. If None, uses all numeric columns.
+
+        Internal Processing:
+        ------------------
+        1. Feature selection: Extract specified numeric columns
+        2. Missing value handling: Fill NaN with column means
+        3. Feature normalization: StandardScaler (zero mean, unit variance)
+        4. HMM fitting: Baum-Welch algorithm
+        5. State decoding: Viterbi algorithm to find most likely states
+        6. Label assignment: Classify each state based on characteristics
         """
-        # Select features
+        # Select features - use all numeric columns if not specified
         if feature_cols is None:
-            # Use all numeric columns
+            # select_dtypes finds all columns that are numeric
+            # This excludes datetime, object, and categorical columns
             feature_cols = features.select_dtypes(include=[np.number]).columns.tolist()
 
+        # Extract feature matrix as numpy array
         X = features[feature_cols].values
 
-        # Handle NaN
+        # Handle missing values
+        # Check for any NaN values in the feature matrix
         if np.isnan(X).any():
             logger.warning(f"Found {np.isnan(X).sum()} NaN values, filling with mean")
+            # Fill NaN with column-wise mean (univariate imputation)
             X = pd.DataFrame(X).fillna(pd.DataFrame(X).mean()).values
 
-        # Track feature column names for later inference
+        # Store feature column names for later inference
+        # Needed when predicting on new data
         self._feature_cols = feature_cols
 
-        # Normalize features
+        # Normalize features using StandardScaler
+        # Transform: z = (x - μ) / σ
+        # This is important because:
+        # 1. HMM assumes Gaussian emissions - normalization helps this assumption
+        # 2. Features on different scales (returns vs volume) are comparable
+        # 3. Numerical stability during optimization
         X_scaled = self.scaler.fit_transform(X)
 
         logger.info(f"Fitting HMM on {len(X)} samples, {X.shape[1]} features")
 
-        # Fit HMM
+        # Fit HMM using Baum-Welch algorithm
+        # This is an EM (Expectation-Maximization) algorithm:
+        # - E-step: Compute expected states
+        # - M-step: Update parameters
+        # The model learns:
+        # - transmat_: Transition probability matrix A
+        # - means_: Mean vector for each state
+        # - covariances_: Covariance matrix for each state
         self.model.fit(X_scaled)
 
-        # Decode hidden states
+        # Decode hidden states using Viterbi algorithm
+        # Given observations and model parameters, find most likely state sequence
+        # This gives us the "true" regime at each time point
         hidden_states = self.model.predict(X_scaled)
 
-        # Assign regime labels based on characteristics
+        # Assign meaningful labels to regimes based on their characteristics
+        # This interprets the mathematical states in trading terms
         self.regime_labels = self._assign_regime_labels(
             X_scaled, hidden_states, features
         )

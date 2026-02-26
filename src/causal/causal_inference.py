@@ -72,18 +72,22 @@ class CausalDiscovery:
         variables = data.columns.tolist()
         n = len(data)
 
-        # Step 1: Initialize complete graph
+        # Step 1: Initialize complete graph (all pairs potentially connected)
         graph = nx.Graph()
         graph.add_nodes_from(variables)
-        graph.add_edges_from(combinations(variables, 2))
+        graph.add_edges_from(
+            combinations(variables, 2)
+        )  # start with fully connected undirected skeleton
 
         # Step 2: Remove edges based on conditional independence
-        for depth in range(max_cond_vars + 1):
+        for depth in range(
+            max_cond_vars + 1
+        ):  # increase conditioning set size iteratively
             edges = list(graph.edges())
 
             for x, y in edges:
                 if not graph.has_edge(x, y):
-                    continue
+                    continue  # edge may have been removed in a previous iteration
 
                 # Find neighbors of x excluding y
                 neighbors = [n for n in graph.neighbors(x) if n != y]
@@ -94,8 +98,10 @@ class CausalDiscovery:
                         cond_set = list(cond_set)
 
                         if self._test_conditional_independence(data, x, y, cond_set):
-                            graph.remove_edge(x, y)
-                            # Store separating set
+                            graph.remove_edge(
+                                x, y
+                            )  # x and y are conditionally independent → no direct edge
+                            # Store separating set for later edge orientation
                             graph.nodes[x][f"sep_{y}"] = cond_set
                             break
 
@@ -281,22 +287,24 @@ class CausalEffectEstimator:
         2. Y = γ + δX_hat
         """
         # Stage 1: Predict treatment from instrument
-        Z = data[[instrument]].values
+        Z = data[[instrument]].values  # instrument as column vector
         X = data[treatment].values
 
         from sklearn.linear_model import LinearRegression
 
         stage1 = LinearRegression().fit(Z, X)
-        X_hat = stage1.predict(Z)
+        X_hat = stage1.predict(Z)  # fitted (exogenous) component of treatment
 
-        # Stage 2: Predict outcome from predicted treatment
+        # Stage 2: Predict outcome from predicted treatment (removes endogeneity bias)
         stage2 = LinearRegression().fit(X_hat.reshape(-1, 1), data[outcome])
-        effect = stage2.coef_[0]
+        effect = stage2.coef_[0]  # causal effect estimate (2SLS coefficient)
 
         # Confidence interval via bootstrap
         bootstrap_effects = []
         for _ in range(1000):
-            idx = np.random.choice(len(data), size=len(data), replace=True)
+            idx = np.random.choice(
+                len(data), size=len(data), replace=True
+            )  # resample with replacement
             Z_boot = data[instrument].values[idx].reshape(-1, 1)
             X_boot = data[treatment].values[idx]
             Y_boot = data[outcome].values[idx]
@@ -311,6 +319,7 @@ class CausalEffectEstimator:
         ci_upper = np.percentile(bootstrap_effects, 97.5)
 
         # First-stage F-statistic (instrument strength)
+        # Rule of thumb: F > 10 indicates instrument is not "weak"
         from sklearn.metrics import r2_score
 
         f_stat = r2_score(X, X_hat) * (len(data) - 1) / (1 - r2_score(X, X_hat))

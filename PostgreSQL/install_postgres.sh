@@ -1,18 +1,18 @@
 #!/bin/bash
 
 # ============================================================
-# PostgreSQL Installation Script für Linux (Ubuntu/Debian)
+# PostgreSQL Installation Script for Linux (Ubuntu/Debian)
 # ============================================================
 
 set -e
 
-# Farben für Ausgabe
+# Colours for output
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
-# Konfiguration – hier anpassen
+# Configuration – adjust here
 DB_NAME="myapp_db"
 DB_USER="myapp_user"
 DB_PASSWORD="$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 20)"
@@ -23,34 +23,34 @@ echo -e "${GREEN}  PostgreSQL Installation & Setup${NC}"
 echo -e "${GREEN}========================================${NC}"
 
 # -----------------------------------------------
-# 1. System-Pakete aktualisieren
+# 1. Update system packages
 # -----------------------------------------------
-echo -e "\n${YELLOW}[1/6] System-Pakete aktualisieren...${NC}"
+echo -e "\n${YELLOW}[1/6] Updating system packages...${NC}"
 sudo apt-get update -qq
 
 # -----------------------------------------------
-# 2. PostgreSQL installieren
+# 2. Install PostgreSQL
 # -----------------------------------------------
-echo -e "\n${YELLOW}[2/6] PostgreSQL installieren...${NC}"
+echo -e "\n${YELLOW}[2/6] Installing PostgreSQL...${NC}"
 sudo apt-get install -y postgresql postgresql-contrib
 
 # -----------------------------------------------
-# 3. PostgreSQL-Dienst starten & aktivieren
+# 3. Start & enable PostgreSQL service
 # -----------------------------------------------
-echo -e "\n${YELLOW}[3/6] Dienst starten und aktivieren...${NC}"
+echo -e "\n${YELLOW}[3/6] Starting and enabling service...${NC}"
 sudo systemctl enable postgresql
 sudo systemctl start postgresql
 
-# Kurz warten bis PostgreSQL bereit ist
+# Wait briefly until PostgreSQL is ready
 sleep 2
 
 # -----------------------------------------------
-# 4. Datenbank & Benutzer anlegen
+# 4. Create database & user
 # -----------------------------------------------
-echo -e "\n${YELLOW}[4/6] Datenbank und Benutzer anlegen...${NC}"
+echo -e "\n${YELLOW}[4/6] Creating database and user...${NC}"
 
 sudo -u postgres psql <<EOF
--- Benutzer anlegen (falls noch nicht vorhanden)
+-- Create user (if not already exists)
 DO \$\$
 BEGIN
   IF NOT EXISTS (SELECT FROM pg_catalog.pg_user WHERE usename = '${DB_USER}') THEN
@@ -61,23 +61,23 @@ BEGIN
 END
 \$\$;
 
--- Datenbank anlegen (falls noch nicht vorhanden)
+-- Create database (if not already exists)
 SELECT 'CREATE DATABASE ${DB_NAME} OWNER ${DB_USER}'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '${DB_NAME}')\gexec
 
--- Berechtigungen vergeben
+-- Grant privileges
 GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};
 EOF
 
 # -----------------------------------------------
-# 5. pg_hba.conf – lokale Verbindung erlauben
+# 5. pg_hba.conf – allow local connections
 # -----------------------------------------------
-echo -e "\n${YELLOW}[5/6] Konfiguration anpassen (pg_hba.conf)...${NC}"
+echo -e "\n${YELLOW}[5/6] Adjusting configuration (pg_hba.conf)...${NC}"
 
 PG_VERSION=$(psql --version | awk '{print $3}' | cut -d. -f1)
 PG_HBA="/etc/postgresql/${PG_VERSION}/main/pg_hba.conf"
 
-# Prüfen ob Eintrag bereits existiert
+# Check if entry already exists
 if ! sudo grep -q "host.*${DB_NAME}.*${DB_USER}" "$PG_HBA"; then
   echo "host    ${DB_NAME}    ${DB_USER}    127.0.0.1/32    md5" | sudo tee -a "$PG_HBA" > /dev/null
   echo "host    ${DB_NAME}    ${DB_USER}    ::1/128         md5" | sudo tee -a "$PG_HBA" > /dev/null
@@ -85,43 +85,43 @@ if ! sudo grep -q "host.*${DB_NAME}.*${DB_USER}" "$PG_HBA"; then
 fi
 
 # -----------------------------------------------
-# 6. Verbindung testen
+# 6. Test connection
 # -----------------------------------------------
-echo -e "\n${YELLOW}[6/6] Verbindung testen...${NC}"
+echo -e "\n${YELLOW}[6/6] Testing connection...${NC}"
 
 export PGPASSWORD="${DB_PASSWORD}"
 if psql -h 127.0.0.1 -U "${DB_USER}" -d "${DB_NAME}" -c "SELECT version();" > /dev/null 2>&1; then
-  echo -e "${GREEN}✓ Verbindung erfolgreich!${NC}"
+  echo -e "${GREEN}✓ Connection successful!${NC}"
 else
-  echo -e "${RED}✗ Verbindungstest fehlgeschlagen. Bitte Logs prüfen: sudo journalctl -u postgresql${NC}"
+  echo -e "${RED}✗ Connection test failed. Check logs: sudo journalctl -u postgresql${NC}"
   exit 1
 fi
 unset PGPASSWORD
 
 # -----------------------------------------------
-# Verbindungsdaten ausgeben & speichern
+# Print & save connection details
 # -----------------------------------------------
 CONN_STRING="postgresql://${DB_USER}:${DB_PASSWORD}@127.0.0.1:${DB_PORT}/${DB_NAME}"
 
 echo -e "\n${GREEN}========================================${NC}"
-echo -e "${GREEN}  ✓ Installation abgeschlossen!${NC}"
+echo -e "${GREEN}  ✓ Installation complete!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
-echo -e "  Host:         ${YELLOW}127.0.0.1${NC}"
-echo -e "  Port:         ${YELLOW}${DB_PORT}${NC}"
-echo -e "  Datenbank:    ${YELLOW}${DB_NAME}${NC}"
-echo -e "  Benutzer:     ${YELLOW}${DB_USER}${NC}"
-echo -e "  Passwort:     ${YELLOW}${DB_PASSWORD}${NC}"
+echo -e "  Host:      ${YELLOW}127.0.0.1${NC}"
+echo -e "  Port:      ${YELLOW}${DB_PORT}${NC}"
+echo -e "  Database:  ${YELLOW}${DB_NAME}${NC}"
+echo -e "  User:      ${YELLOW}${DB_USER}${NC}"
+echo -e "  Password:  ${YELLOW}${DB_PASSWORD}${NC}"
 echo ""
 echo -e "  Connection String:"
 echo -e "  ${YELLOW}${CONN_STRING}${NC}"
 echo ""
 
-# Verbindungsdaten in Datei speichern
+# Save connection details to file
 CREDS_FILE="$(pwd)/postgres_credentials.txt"
 cat > "$CREDS_FILE" <<CREDS
-# PostgreSQL Verbindungsdaten
-# Erstellt am: $(date)
+# PostgreSQL connection details
+# Created: $(date)
 
 HOST=127.0.0.1
 PORT=${DB_PORT}
@@ -131,10 +131,10 @@ PASSWORD=${DB_PASSWORD}
 
 CONNECTION_STRING=${CONN_STRING}
 
-# psql Befehl:
+# psql command:
 # PGPASSWORD=${DB_PASSWORD} psql -h 127.0.0.1 -U ${DB_USER} -d ${DB_NAME}
 CREDS
 
 chmod 600 "$CREDS_FILE"
-echo -e "  Verbindungsdaten gespeichert in: ${YELLOW}${CREDS_FILE}${NC}"
+echo -e "  Connection details saved to: ${YELLOW}${CREDS_FILE}${NC}"
 echo -e "${GREEN}========================================${NC}"

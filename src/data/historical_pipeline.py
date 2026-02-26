@@ -114,9 +114,11 @@ class HistoricalDataDownloader:
             return pd.DataFrame()
 
         # Combine all chunks
-        combined_df = pd.concat(all_data)
-        combined_df = combined_df[~combined_df.index.duplicated(keep="first")]
-        combined_df.sort_index(inplace=True)
+        combined_df = pd.concat(all_data)  # merge all chunk DataFrames into one
+        combined_df = combined_df[
+            ~combined_df.index.duplicated(keep="first")
+        ]  # drop duplicate timestamps keeping first occurrence
+        combined_df.sort_index(inplace=True)  # ensure chronological order
 
         logger.success(f"Downloaded {len(combined_df)} candles for {symbol}")
 
@@ -222,7 +224,9 @@ class HistoricalDataDownloader:
         # Try to get from database
         df = self.db.get_market_data(symbol, start_date)
 
-        if df.empty or len(df) < days * 20:  # Assume ~20 candles per day
+        if (
+            df.empty or len(df) < days * 20
+        ):  # heuristic: ~20 candles/day on 1h TF; trigger re-download if insufficient
             logger.info(f"Data not in database or incomplete, downloading...")
             df = self.download_symbol(
                 symbol=symbol,
@@ -251,21 +255,23 @@ class HistoricalDataDownloader:
             issues.append("Contains missing values")
 
         # Check for zero volume
-        zero_volume = (df["volume"] == 0).sum()
+        zero_volume = (df["volume"] == 0).sum()  # count bars where no trading occurred
         if zero_volume > len(df) * 0.1:  # >10% zero volume
             issues.append(f"{zero_volume} candles with zero volume")
 
-        # Check OHLC logic
+        # Check OHLC logic: high must be >= max(open, close); low must be <= min(open, close)
         ohlc_issues = (df["high"] < df[["open", "close"]].max(axis=1)).sum() + (
             df["low"] > df[["open", "close"]].min(axis=1)
         ).sum()
         if ohlc_issues > 0:
             issues.append(f"{ohlc_issues} OHLC logic violations")
 
-        # Check for gaps
+        # Check for gaps: compare median bar spacing to expected 1h interval
         if len(df) > 1:
             expected_diff = pd.Timedelta(hours=1)  # Assume 1h data
-            actual_diff = df.index.to_series().diff().median()
+            actual_diff = (
+                df.index.to_series().diff().median()
+            )  # robust gap measure via median (ignores outliers)
 
             if actual_diff > expected_diff * 1.5:
                 issues.append(f"Data gaps detected (median diff: {actual_diff})")
@@ -353,10 +359,14 @@ class DataPipeline:
 
             if not df.empty:
                 # Calculate additional features
-                df["returns"] = df["close"].pct_change()
-                df["volatility"] = df["returns"].rolling(20).std()
-                df["sma_20"] = df["close"].rolling(20).mean()
-                df["sma_50"] = df["close"].rolling(50).mean()
+                df["returns"] = df[
+                    "close"
+                ].pct_change()  # simple period returns: (P_t - P_{t-1}) / P_{t-1}
+                df["volatility"] = (
+                    df["returns"].rolling(20).std()
+                )  # 20-bar rolling realized volatility
+                df["sma_20"] = df["close"].rolling(20).mean()  # short-term trend proxy
+                df["sma_50"] = df["close"].rolling(50).mean()  # medium-term trend proxy
 
                 # Add to data dict
                 data[symbol] = df[

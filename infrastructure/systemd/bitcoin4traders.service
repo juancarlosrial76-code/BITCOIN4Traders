@@ -1,0 +1,28 @@
+[Unit]
+Description=BITCOIN4Traders Master Orchestrator
+Documentation=https://github.com/hp17/BITCOIN4Traders
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hp17
+WorkingDirectory=/home/hp17/Tradingbot/Quantrivo/BITCOIN4Traders
+ExecStart=/usr/bin/python3 /home/hp17/Tradingbot/Quantrivo/BITCOIN4Traders/infrastructure/master.py
+Restart=on-failure
+RestartSec=60
+# Give up after 3 crashes within 10 min (no endless loop)
+StartLimitIntervalSec=600
+StartLimitBurst=3
+
+# Logging -> journalctl -u bitcoin4traders -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bitcoin4traders
+
+# Environment variables
+Environment=PYTHONUNBUFFERED=1
+Environment=HOME=/home/hp17
+
+[Install]
+WantedBy=multi-user.target

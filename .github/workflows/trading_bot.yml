@@ -1,61 +1,73 @@
-name: BITCOIN4Traders - Stündlicher Signal-Check
+name: BITCOIN4Traders - Backup Signal-Check (GitHub Actions)
 
 # ============================================================
-# Cron: Läuft jede Stunde automatisch (GitHub Actions)
-# Aufgabe: Champion laden -> Signal berechnen -> Telegram
-# Redundanz: Schreibt Heartbeat damit Colab weiss ob GH lebt
+# Cron: Runs every hour automatically (GitHub Actions)
+# Task: Load champion -> compute signal -> Telegram
+# Redundancy: Writes heartbeat so Colab knows if GH is alive
+#
+# 3-pillar architecture:
+#   [Linux PC Local Master] --> primary bot, runs permanently
+#   [GitHub Actions]        --> BACKUP on home power outage
+#   [Google Colab]          --> AI lab for GPU training
+#
+# This workflow is the BACKUP bot. The Local Master (Linux PC)
+# is faster, has no time limits and pushes champion updates
+# back into this repo via sync_champion.sh every 6h.
 # ============================================================
 
 on:
   schedule:
-    - cron: "0 * * * *"   # Jede Stunde zur vollen Stunde (UTC)
-  workflow_dispatch:        # Manueller Start über GitHub UI jederzeit möglich
+    - cron: "0 * * * *"   # Every hour on the hour (UTC)
+  workflow_dispatch:        # Manual trigger via GitHub UI at any time
 
 jobs:
   signal_check:
-    name: Signal-Check & Heartbeat
+    name: Backup Signal-Check & Heartbeat
     runs-on: ubuntu-latest
-    timeout-minutes: 15     # Sicherheitslimit - verhindert hängende Jobs
+    timeout-minutes: 15     # Safety limit - prevents hanging jobs
 
     env:
-      # Telegram Credentials (in GitHub Secrets hinterlegen)
+      # Telegram Credentials (store in GitHub Secrets)
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
-      # Binance API (optional - public endpoints funktionieren ohne Keys)
+      # Binance API (optional - public endpoints work without keys)
       BINANCE_API_KEY:    ${{ secrets.BINANCE_API_KEY }}
       BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
-      # GitHub Actions Marker (wird von detect_environment() ausgelesen)
+      # GitHub Actions marker (read by detect_environment())
       GITHUB_ACTIONS: "true"
+      # Role in the 3-pillar architecture
+      NODE_ROLE: "github_backup"
+      LOCAL_MASTER: "false"
 
     steps:
       # ----------------------------------------------------------
-      # 1. Repository auschecken
+      # 1. Check out repository
       # ----------------------------------------------------------
-      - name: Repository auschecken
+      - name: Check out repository
         uses: actions/checkout@v4
 
       # ----------------------------------------------------------
-      # 2. Python einrichten
+      # 2. Set up Python
       # ----------------------------------------------------------
-      - name: Python 3.11 einrichten
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
 
       # ----------------------------------------------------------
-      # 3. Dependencies installieren (nur was für Signal-Check nötig)
+      # 3. Install dependencies (only what is needed for signal check)
       # ----------------------------------------------------------
-      - name: Dependencies installieren
+      - name: Install dependencies
         run: |
           pip install --quiet --upgrade pip
           pip install --quiet \
             numpy pandas ccxt pyarrow numba joblib tqdm loguru
 
       # ----------------------------------------------------------
-      # 4. Champion aus Cache laden (aus vorherigem Workflow-Run)
+      # 4. Load champion from cache (from previous workflow run)
       # ----------------------------------------------------------
-      - name: Champion-Cache laden
+      - name: Load champion cache
         uses: actions/cache@v4
         with:
           path: data/cache/
@@ -64,9 +76,9 @@ jobs:
             champion-cache-
 
       # ----------------------------------------------------------
-      # 5. Signal-Check ausführen (hybrid_main -> GITHUB Pfad)
+      # 5. Run signal check (hybrid_main -> GITHUB path)
       # ----------------------------------------------------------
-      - name: Signal-Check ausführen
+      - name: Run signal check
         run: |
           python3 - <<'EOF'
           import sys
@@ -75,36 +87,36 @@ jobs:
           from darwin_engine import hybrid_main, detect_environment
 
           env = detect_environment()
-          print(f"Umgebung erkannt: {env}")
+          print(f"Environment detected: {env}")
 
           hybrid_main(
               symbol="BTC/USDT",
               timeframe="1h",
-              n_bars=200,           # Nur letzte 200 Bars für schnellen Check
+              n_bars=200,           # Only last 200 bars for fast check
               save_dir="data/cache",
               heartbeat_path="data/cache/heartbeat.txt",
           )
           EOF
 
       # ----------------------------------------------------------
-      # 6. Heartbeat + Champion-Cache zurückspeichern
+      # 6. Save heartbeat + champion cache
       # ----------------------------------------------------------
-      - name: Champion-Cache speichern
+      - name: Save champion cache
         uses: actions/cache/save@v4
-        if: always()   # Auch bei Fehlern speichern
+        if: always()   # Save even on failure
         with:
           path: data/cache/
           key: champion-cache-${{ runner.os }}-${{ github.run_id }}
 
       # ----------------------------------------------------------
-      # 7. Status-Zusammenfassung
+      # 7. Print status summary
       # ----------------------------------------------------------
-      - name: Status ausgeben
+      - name: Print status
         if: always()
         run: |
           echo "========================================"
-          echo "  BITCOIN4Traders Signal-Check beendet"
-          echo "  Zeit: $(date -u '+%Y-%m-%d %H:%M UTC')"
+          echo "  BITCOIN4Traders Signal-Check complete"
+          echo "  Time: $(date -u '+%Y-%m-%d %H:%M UTC')"
           echo "  Run:  ${{ github.run_number }}"
           echo "========================================"
           if [ -f data/cache/heartbeat.txt ]; then

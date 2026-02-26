@@ -43,66 +43,73 @@ logger = logging.getLogger("phase7.engine")
 #  Position Tracker
 # ─────────────────────────────────────────────
 
+
 @dataclass
 class Position:
-    symbol:      str
-    qty:         Decimal = Decimal(0)      # + long, - short
-    avg_cost:    Decimal = Decimal(0)
-    realized_pnl: Decimal = Decimal(0)
+    symbol: str
+    qty: Decimal = Decimal(0)  # + long, - short
+    avg_cost: Decimal = Decimal(0)  # Volume-weighted average entry price
+    realized_pnl: Decimal = Decimal(0)  # Cumulative closed P&L for this symbol
 
     def update_fill(self, side: OrderSide, fill: Fill) -> Decimal:
         """Update position on fill. Returns realized PnL of this fill."""
-        qty  = fill.qty if side == OrderSide.BUY else -fill.qty
+        # Convert fill quantity to signed delta (+buy, -sell)
+        qty = fill.qty if side == OrderSide.BUY else -fill.qty
         cost = fill.price
 
         realized = Decimal(0)
+        # Detect closing/reversing scenario: opposite sign means we are reducing exposure
         if self.qty != 0 and (qty < 0 < self.qty or qty > 0 > self.qty):
             # Closing or reversing trade
-            close_qty = min(abs(qty), abs(self.qty))
-            realized  = close_qty * (cost - self.avg_cost) * (1 if self.qty > 0 else -1)
+            close_qty = min(abs(qty), abs(self.qty))  # Only close what we have
+            realized = close_qty * (cost - self.avg_cost) * (1 if self.qty > 0 else -1)
             self.realized_pnl += realized
 
         # Update position
         new_qty = self.qty + qty
         if new_qty == 0:
-            self.avg_cost = Decimal(0)
+            self.avg_cost = Decimal(0)  # Flat – reset cost basis
         elif (self.qty >= 0 and qty > 0) or (self.qty <= 0 and qty < 0):
             # Adding to position → weighted average cost
             total_cost = self.qty * self.avg_cost + qty * cost
-            self.avg_cost = total_cost / new_qty
+            self.avg_cost = total_cost / new_qty  # New VWAP entry price
         else:
-            # Partial close – avg_cost unchanged for remaining
+            # Partial close – avg_cost unchanged for remaining position
             pass
 
         self.qty = new_qty
         return realized
 
     def unrealized_pnl(self, current_price: Decimal) -> Decimal:
+        """Calculate mark-to-market unrealized P&L."""
         if self.qty == 0 or self.avg_cost == 0:
             return Decimal(0)
-        return self.qty * (current_price - self.avg_cost)
+        return self.qty * (
+            current_price - self.avg_cost
+        )  # Positive for profitable longs
 
 
 # ─────────────────────────────────────────────
 #  Engine Config
 # ─────────────────────────────────────────────
 
+
 @dataclass
 class EngineConfig:
-    symbols:         List[str]
-    api_key:         str
-    api_secret:      str
+    symbols: List[str]
+    api_key: str
+    api_secret: str
 
     # Risk limits
-    max_position_usd:    Decimal = Decimal(10_000)
-    max_order_usd:       Decimal = Decimal(2_000)
-    circuit_breaker_pct: Decimal = Decimal("0.02")   # 2% drawdown → halt
-    daily_loss_limit_usd: Decimal = Decimal(500)
+    max_position_usd: Decimal = Decimal(10_000)  # Maximum notional per position
+    max_order_usd: Decimal = Decimal(2_000)  # Maximum notional per single order
+    circuit_breaker_pct: Decimal = Decimal("0.02")  # 2% drawdown → halt
+    daily_loss_limit_usd: Decimal = Decimal(500)  # Hard stop on daily loss
 
     # Execution
-    use_limit_orders:     bool  = True
-    limit_order_offset_bps: int = 2    # place limit 2 bps inside mid
-    order_timeout_s:      float = 30.0
+    use_limit_orders: bool = True
+    limit_order_offset_bps: int = 2  # Place limit 2 bps inside the mid price
+    order_timeout_s: float = 30.0  # Cancel unfilled limit orders after this delay
 
     # Reconnect
     reconnect_policy: ReconnectPolicy = field(default_factory=ReconnectPolicy)
@@ -112,38 +119,44 @@ class EngineConfig:
 #  Circuit Breaker
 # ─────────────────────────────────────────────
 
+
 class CircuitBreaker:
     def __init__(self, max_drawdown_pct: Decimal, daily_loss_usd: Decimal):
-        self._max_dd       = max_drawdown_pct
-        self._daily_loss   = daily_loss_usd
-        self._peak_equity  = Decimal(0)
-        self._day_start_eq = Decimal(0)
-        self._tripped      = False
-        self._trip_reason  = ""
+        self._max_dd = max_drawdown_pct  # Drawdown fraction that trips the breaker
+        self._daily_loss = daily_loss_usd  # Dollar loss that trips the breaker
+        self._peak_equity = Decimal(0)  # Running maximum equity seen
+        self._day_start_eq = Decimal(0)  # Equity at session start
+        self._tripped = False  # Latching flag – stays True once triggered
+        self._trip_reason = ""
 
     def update_equity(self, equity: Decimal) -> None:
-        self._peak_equity   = max(self._peak_equity, equity)
+        """Track the running peak and set the day-start reference on first call."""
+        self._peak_equity = max(self._peak_equity, equity)
         if self._day_start_eq == 0:
-            self._day_start_eq = equity
+            self._day_start_eq = equity  # Capture starting equity once
 
     def check(self, equity: Decimal) -> bool:
         """Returns True if trading should HALT."""
         if self._tripped:
-            return True
+            return True  # Already tripped – remain halted
 
         if self._peak_equity > 0:
-            dd = (self._peak_equity - equity) / self._peak_equity
+            dd = (self._peak_equity - equity) / self._peak_equity  # Drawdown fraction
             if dd >= self._max_dd:
-                self._tripped    = True
-                self._trip_reason = f"Drawdown {dd*100:.2f}% ≥ limit {self._max_dd*100:.2f}%"
+                self._tripped = True
+                self._trip_reason = (
+                    f"Drawdown {dd * 100:.2f}% ≥ limit {self._max_dd * 100:.2f}%"
+                )
                 logger.critical("🔴 CIRCUIT BREAKER TRIPPED: %s", self._trip_reason)
                 return True
 
         if self._day_start_eq > 0:
-            daily_loss = self._day_start_eq - equity
+            daily_loss = self._day_start_eq - equity  # Positive = loss
             if daily_loss >= self._daily_loss:
-                self._tripped    = True
-                self._trip_reason = f"Daily loss ${daily_loss:.2f} ≥ limit ${self._daily_loss}"
+                self._tripped = True
+                self._trip_reason = (
+                    f"Daily loss ${daily_loss:.2f} ≥ limit ${self._daily_loss}"
+                )
                 logger.critical("🔴 CIRCUIT BREAKER TRIPPED: %s", self._trip_reason)
                 return True
 
@@ -167,6 +180,7 @@ class CircuitBreaker:
 #  Live Execution Engine
 # ─────────────────────────────────────────────
 
+
 class LiveExecutionEngine:
     """
     Main orchestrator for live trading.
@@ -177,22 +191,40 @@ class LiveExecutionEngine:
         # runs until engine.stop() is called or circuit breaker trips
     """
 
-    def __init__(self, config: EngineConfig, agent, feature_engine):
-        self._cfg    = config
-        self._agent  = agent
-        self._feat   = feature_engine
+    def __init__(
+        self, config: EngineConfig, agent, feature_engine, paper_trading: bool = False
+    ):
+        self._cfg = config
+        self._agent = agent
+        self._feat = feature_engine
+        self._paper = paper_trading  # Paper mode sends no real orders
 
+        # Build the WebSocket connector with reconnect policy
         self._connector = BinanceWSConnector(
-            api_key          = config.api_key,
-            api_secret       = config.api_secret,
-            reconnect_policy = config.reconnect_policy,
+            api_key=config.api_key,
+            api_secret=config.api_secret,
+            reconnect_policy=config.reconnect_policy,
+            paper_trading=paper_trading,
         )
-        self._oms = OrderManager(config.api_key, config.api_secret)
 
+        if paper_trading:
+            from ..orders.paper_order_manager import PaperOrderManager
+
+            # Use a simulated order manager with virtual cash balance
+            self._oms = PaperOrderManager(
+                config.api_key,
+                config.api_secret,
+                initial_cash=config.max_position_usd,
+            )
+            logger.info("[PAPER] Paper-trading mode active – no real trades executed.")
+        else:
+            self._oms = OrderManager(config.api_key, config.api_secret)  # Live OMS
+
+        # One Position object per symbol for P&L tracking
         self._positions: Dict[str, Position] = {s: Position(s) for s in config.symbols}
-        self._last_prices: Dict[str, Decimal] = {}
-        self._initial_equity: Optional[Decimal] = None
-        self._cash = Decimal(0)
+        self._last_prices: Dict[str, Decimal] = {}  # Latest mid prices per symbol
+        self._initial_equity: Optional[Decimal] = None  # Locked at first equity read
+        self._cash = Decimal(0)  # Cash balance (live mode)
 
         self._breaker = CircuitBreaker(
             config.circuit_breaker_pct,
@@ -200,30 +232,33 @@ class LiveExecutionEngine:
         )
 
         self._running = False
-        self._tick_count = 0
-        self._order_timeout_tasks: Dict[str, asyncio.Task] = {}
+        self._tick_count = 0  # Total book-ticker events received
+        self._order_timeout_tasks: Dict[
+            str, asyncio.Task
+        ] = {}  # Watchdog tasks keyed by client_order_id
 
     # ── Public API ───────────────────────────
 
     async def start(self) -> None:
         logger.info("═══ PHASE 7 LIVE ENGINE STARTING ═══")
-        await self._oms.start()
+        await self._oms.start()  # Initialize order manager (REST session, etc.)
 
         # Wire callbacks
         self._oms.on_fill(self._on_fill)
         self._oms.on_status_change(self._on_status_change)
 
-        # Register WS handlers
+        # Register WS handlers for each symbol's book-ticker stream
         for symbol in self._cfg.symbols:
             stream = f"{symbol.lower()}@bookTicker"
             self._connector.on(stream, self._on_book_ticker)
 
+        # Route execution reports from user stream to OMS
         self._connector.on("executionReport", self._oms.handle_execution_report)
 
         # Connect
         await self._connector.connect()
 
-        # Subscribe market data streams
+        # Subscribe market data streams for all configured symbols
         streams = [f"{s.lower()}@bookTicker" for s in self._cfg.symbols]
         await self._connector.subscribe(streams)
 
@@ -237,12 +272,14 @@ class LiveExecutionEngine:
         logger.warning("ENGINE STOPPING: %s", reason)
         self._running = False
 
-        # Cancel all open orders
+        # Cancel all open orders before disconnecting
         for symbol in self._cfg.symbols:
             try:
                 canceled = await self._oms.cancel_all(symbol)
                 if canceled:
-                    logger.info("Canceled %d orders for %s on shutdown.", len(canceled), symbol)
+                    logger.info(
+                        "Canceled %d orders for %s on shutdown.", len(canceled), symbol
+                    )
             except Exception as exc:
                 logger.error("cancel_all failed on shutdown for %s: %s", symbol, exc)
 
@@ -259,16 +296,18 @@ class LiveExecutionEngine:
         This loop checks for circuit breaker and watchdog conditions.
         """
         while self._running:
-            await asyncio.sleep(1)
+            await asyncio.sleep(1)  # 1-second heartbeat interval
 
             equity = self._compute_equity()
             if self._initial_equity is None and equity > 0:
+                # Lock the starting equity for drawdown calculations
                 self._initial_equity = equity
                 self._breaker.update_equity(equity)
                 logger.info("Initial equity locked: $%.2f", float(equity))
             elif equity > 0:
                 self._breaker.update_equity(equity)
                 if self._breaker.check(equity):
+                    # Circuit breaker tripped – halt immediately
                     await self.stop(reason=self._breaker.trip_reason)
                     return
 
@@ -280,38 +319,40 @@ class LiveExecutionEngine:
         { "s": "BTCUSDT", "b": "29999.00", "B": "10.000", "a": "30001.00", "A": "5.000" }
         """
         symbol = data["s"]
-        bid    = Decimal(data["b"])
-        ask    = Decimal(data["a"])
-        mid    = (bid + ask) / 2
+        bid = Decimal(data["b"])
+        ask = Decimal(data["a"])
+        mid = (bid + ask) / 2  # Simple mid price for feature computation
 
         self._last_prices[symbol] = mid
         self._tick_count += 1
 
         # Only run agent every N ticks to avoid over-trading
         if self._tick_count % 10 != 0:
-            return
+            return  # Throttle: process only 1 in 10 ticks
 
         if self._breaker.is_tripped:
-            return
+            return  # Do not generate signals when halted
 
         await self._on_tick(symbol, bid, ask, mid)
 
-    async def _on_tick(self, symbol: str, bid: Decimal, ask: Decimal, mid: Decimal) -> None:
+    async def _on_tick(
+        self, symbol: str, bid: Decimal, ask: Decimal, mid: Decimal
+    ) -> None:
         """Full tick processing pipeline."""
         try:
-            # 1. Build feature vector
+            # 1. Build feature vector from raw price
             features = self._feat.transform_single(symbol, float(mid))
             if features is None:
-                return   # Not enough history yet
+                return  # Not enough history yet
 
             # 2. Agent signal: -1 (short), 0 (flat), +1 (long)
             signal = self._agent.predict(features)
 
-            # 3. Risk pre-check
+            # 3. Risk pre-check before submitting
             if not self._pre_trade_risk_check(symbol, signal, mid):
                 return
 
-            # 4. Execute
+            # 4. Execute the signal as an order
             await self._execute_signal(symbol, signal, bid, ask)
 
         except Exception as exc:
@@ -330,73 +371,87 @@ class LiveExecutionEngine:
         current_qty = pos.qty
 
         target_qty = self._signal_to_target_qty(signal, symbol, (bid + ask) / 2)
-        delta_qty  = target_qty - current_qty
+        delta_qty = target_qty - current_qty  # Size adjustment needed
 
         if abs(delta_qty) < Decimal("0.0001"):
-            return   # No meaningful change
+            return  # No meaningful change – skip to avoid noise trades
 
         side = OrderSide.BUY if delta_qty > 0 else OrderSide.SELL
-        qty  = abs(delta_qty)
+        qty = abs(delta_qty)
 
         if self._cfg.use_limit_orders:
-            # Place limit inside the spread
-            offset = (ask - bid) * Decimal(self._cfg.limit_order_offset_bps) / Decimal(10_000)
-            price  = (bid + offset) if side == OrderSide.BUY else (ask - offset)
-            order  = Order(
-                symbol      = symbol,
-                side        = side,
-                type        = OrderType.LIMIT,
-                tif         = TimeInForce.GTC,
-                quantity    = qty,
-                limit_price = price,
+            # Place limit inside the spread to get maker rebate
+            offset = (
+                (ask - bid)
+                * Decimal(self._cfg.limit_order_offset_bps)
+                / Decimal(10_000)
+            )
+            # Buy slightly above bid; sell slightly below ask
+            price = (bid + offset) if side == OrderSide.BUY else (ask - offset)
+            order = Order(
+                symbol=symbol,
+                side=side,
+                type=OrderType.LIMIT,
+                tif=TimeInForce.GTC,
+                quantity=qty,
+                limit_price=price,
             )
         else:
+            # Market order for urgent execution
             order = Order(
-                symbol   = symbol,
-                side     = side,
-                type     = OrderType.MARKET,
-                quantity = qty,
+                symbol=symbol,
+                side=side,
+                type=OrderType.MARKET,
+                quantity=qty,
             )
 
         submitted = await self._oms.submit_order(order)
         logger.info("Signal %+d → %s", signal, submitted)
 
-        # Start timeout watchdog for limit orders
+        # Start timeout watchdog for limit orders (cancel if not filled in time)
         if order.type == OrderType.LIMIT:
             task = asyncio.create_task(
                 self._order_timeout_watchdog(submitted.client_order_id),
-                name=f"timeout_{submitted.client_order_id}"
+                name=f"timeout_{submitted.client_order_id}",
             )
             self._order_timeout_tasks[submitted.client_order_id] = task
 
-    def _signal_to_target_qty(self, signal: int, symbol: str, price: Decimal) -> Decimal:
+    def _signal_to_target_qty(
+        self, signal: int, symbol: str, price: Decimal
+    ) -> Decimal:
         """Convert discrete signal to target position size."""
         if signal == 0 or price == 0:
-            return Decimal(0)
+            return Decimal(0)  # Flat signal → zero position
         max_notional = self._cfg.max_order_usd
-        qty = (max_notional / price).quantize(Decimal("0.001"))
-        return qty if signal > 0 else -qty
+        qty = (max_notional / price).quantize(Decimal("0.001"))  # Round to 3 decimals
+        return qty if signal > 0 else -qty  # Negative for short positions
 
     # ── Risk Checks ──────────────────────────
 
     def _pre_trade_risk_check(self, symbol: str, signal: int, price: Decimal) -> bool:
         if signal == 0:
-            return False
+            return False  # No action needed for flat signal
 
         pos = self._positions[symbol]
-        proposed_notional = abs(self._signal_to_target_qty(signal, symbol, price)) * price
+        proposed_notional = (
+            abs(self._signal_to_target_qty(signal, symbol, price)) * price
+        )
 
         # Check position limit
         if proposed_notional > self._cfg.max_position_usd:
-            logger.warning("Position limit breach for %s: $%.2f > $%.2f",
-                           symbol, proposed_notional, self._cfg.max_position_usd)
+            logger.warning(
+                "Position limit breach for %s: $%.2f > $%.2f",
+                symbol,
+                proposed_notional,
+                self._cfg.max_position_usd,
+            )
             return False
 
-        # Don't stack same direction
-        if (signal > 0 and pos.qty >= proposed_notional / price * Decimal("0.8")):
-            return False
-        if (signal < 0 and pos.qty <= -proposed_notional / price * Decimal("0.8")):
-            return False
+        # Don't stack same direction – require meaningful distance before adding
+        if signal > 0 and pos.qty >= proposed_notional / price * Decimal("0.8"):
+            return False  # Already 80%+ long – skip
+        if signal < 0 and pos.qty <= -proposed_notional / price * Decimal("0.8"):
+            return False  # Already 80%+ short – skip
 
         return True
 
@@ -409,12 +464,17 @@ class LiveExecutionEngine:
         realized = pos.update_fill(order.side, fill)
         logger.info(
             "FILL: %s %s qty=%s @%s | realized_pnl=$%.4f",
-            order.symbol, order.side.value, fill.qty, fill.price, float(realized)
+            order.symbol,
+            order.side.value,
+            fill.qty,
+            fill.price,
+            float(realized),
         )
 
     def _on_status_change(self, order: Order, new_status: OrderStatus) -> None:
         logger.info("Order %s → %s", order.client_order_id, new_status.name)
         if new_status in (OrderStatus.FILLED, OrderStatus.CANCELED):
+            # Cancel watchdog task for terminal orders to avoid spurious cancels
             task = self._order_timeout_tasks.pop(order.client_order_id, None)
             if task and not task.done():
                 task.cancel()
@@ -423,7 +483,7 @@ class LiveExecutionEngine:
 
     async def _order_timeout_watchdog(self, client_order_id: str) -> None:
         """Cancel limit order if not filled within timeout."""
-        await asyncio.sleep(self._cfg.order_timeout_s)
+        await asyncio.sleep(self._cfg.order_timeout_s)  # Wait for fill window
         order = self._oms.get_order(client_order_id)
         if order and not order.is_terminal:
             logger.warning("Order %s timeout – canceling.", client_order_id)
@@ -435,12 +495,29 @@ class LiveExecutionEngine:
     # ── Equity / PnL ────────────────────────
 
     def _compute_equity(self) -> Decimal:
+        # In paper-trading mode: Cash + mark-to-market value of open positions
+        # Cash accounting: BUY → cash decreases, SELL → cash increases (incl. short proceeds)
+        # Correct equity = Cash + (qty * current_price) for all positions
+        # For short positions (qty < 0): qty*px is negative → correctly reduces equity
+        if self._paper:
+            from ..orders.paper_order_manager import PaperOrderManager
+
+            if isinstance(self._oms, PaperOrderManager):
+                cash = self._oms.cash
+                open_position_value = Decimal(0)
+                for symbol, pos in self._positions.items():
+                    if pos.qty != 0:
+                        px = self._last_prices.get(symbol, Decimal(0))
+                        open_position_value += pos.qty * px  # Mark-to-market
+                return cash + open_position_value
+
+        # Live mode: sum unrealized P&L across all positions
         unrealized = Decimal(0)
         for symbol, pos in self._positions.items():
             px = self._last_prices.get(symbol, Decimal(0))
             unrealized += pos.unrealized_pnl(px)
         realized = sum(p.realized_pnl for p in self._positions.values())
-        return self._cash + realized + unrealized
+        return self._cash + realized + unrealized  # Total equity
 
     def _print_session_summary(self) -> None:
         realized = sum(float(p.realized_pnl) for p in self._positions.values())
@@ -449,7 +526,7 @@ class LiveExecutionEngine:
             for s, p in self._positions.items()
         )
         orders = self._oms.get_all_orders()
-        fills  = sum(len(o.fills) for o in orders)
+        fills = sum(len(o.fills) for o in orders)  # Total number of fill events
 
         logger.info(
             "\n╔══════════════════════════════════════╗\n"

@@ -1,24 +1,44 @@
 """
-Realistic Trading Environment - Gymnasium
-==========================================
-Professional trading environment with:
-- Level 2 order book simulation
-- Realistic slippage modeling
-- 0.05% transaction costs
-- Integration with Phase 1 features
+Realistic Trading Environment - Gymnasium Compliant
+=================================================
+Professional trading environment for reinforcement learning with realistic
+market simulation and institutional-grade modeling.
 
-Critical: "If the model loses here, it won't make money live."
+Key Features:
+- Level 2 order book simulation (order book depth visualization)
+- Realistic slippage modeling (volume-based, volatility-based, fixed)
+- Institutional transaction costs (0.05% / 5 basis points)
+- Integration with Phase 1 FeatureEngine for technical indicators
+- Anti-Bias Framework integration for robust backtesting
+
+Critical Design Philosophy:
+"If the model loses in simulation, it won't make money live."
+This environment is designed to be as realistic as possible to minimize
+the simulation-to-reality gap (sim2real transfer).
+
+Usage:
+    from src.environment.realistic_trading_env import RealisticTradingEnv, TradingEnvConfig
+
+    config = TradingEnvConfig(
+        initial_capital=100000,
+        transaction_cost_bps=5.0,  # 5 bps = 0.05%
+        slippage_model="volume_based",
+        use_orderbook=True
+    )
+
+    env = RealisticTradingEnv(price_data, features, config)
 """
 
-import gymnasium as gym
-from gymnasium import spaces
-import numpy as np
-import pandas as pd
-from typing import Dict, Tuple, Optional, List
-from dataclasses import dataclass
-from pathlib import Path
-from loguru import logger
+import gymnasium as gym  # OpenAI Gymnasium for RL environments
+from gymnasium import spaces  # Gymnasium spaces for observation/action definition
+import numpy as np  # Numerical computing for arrays and math
+import pandas as pd  # DataFrame for time series data
+from typing import Dict, Tuple, Optional, List  # Type hints for code clarity
+from dataclasses import dataclass  # Data class for configuration
+from pathlib import Path  # Path handling for file operations
+from loguru import logger  # Structured logging
 
+# Internal imports - Feature engineering and market simulation
 from src.features.feature_engine import FeatureEngine, FeatureConfig
 from src.environment.order_book import OrderBookSimulator, OrderBookConfig
 from src.environment.slippage_model import (
@@ -28,16 +48,17 @@ from src.environment.slippage_model import (
     TransactionCostConfig,
 )
 
-# Anti-Bias Framework integration
+# Anti-Bias Framework integration - Robust backtesting methodology
+# This framework prevents overfitting and data leakage in strategy development
 try:
-    from reward.antibias_rewards import (
+    from src.reward.antibias_rewards import (
         BaseReward,
         SharpeIncrementReward,
         CostAwareReward,
         RegimeAwareReward,
         RegimeState,
     )
-    from costs.antibias_costs import (
+    from src.costs.antibias_costs import (
         TransactionCostEngine,
         CostConfig as AntibiasCostConfig,
         MarketType,
@@ -45,80 +66,195 @@ try:
         OrderType,
     )
 
-    ANTIBIAS_AVAILABLE = True
+    ANTIBIAS_AVAILABLE = True  # Flag to check if Anti-Bias module is available
 except ImportError:
+    # Graceful fallback if Anti-Bias module is not installed
     ANTIBIAS_AVAILABLE = False
 
 
 @dataclass
 class TradingEnvConfig:
-    """Configuration for trading environment."""
+    """
+    Configuration dataclass for the Trading Environment.
 
-    # Capital
-    initial_capital: float = 100000.0
+    This dataclass encapsulates all configurable parameters for the trading
+    environment, making it easy to experiment with different settings without
+    modifying the core code.
 
-    # Transaction costs (institutional standard: 0.05%)
+    Attributes:
+        initial_capital: Starting capital in dollars (default: 100,000)
+        transaction_cost_bps: Transaction cost in basis points (default: 5 bps = 0.05%)
+            - Institutional standard: 1-5 bps for large trades
+            - Retail standard: 10-50 bps
+        slippage_model: Model for slippage calculation
+            - "fixed": Constant slippage regardless of conditions
+            - "volume_based": Slippage scales with trading volume
+            - "volatility_based": Slippage scales with market volatility
+            - "orderbook": Slippage derived from order book depth
+        use_orderbook: Whether to simulate Level 2 order book
+        orderbook_levels: Number of price levels to simulate in order book
+        max_position_size: Maximum position as fraction of capital (1.0 = 100%)
+        min_position_size: Minimum position as fraction of capital (0.01 = 1%)
+        lookback_window: Number of historical bars for feature calculation
+        max_steps: Maximum steps per episode (prevents infinite episodes)
+        max_drawdown: Maximum allowed drawdown before episode termination
+        feature_config: Configuration for FeatureEngine
+        use_antibias_rewards: Use Anti-Bias risk-adjusted rewards
+        reward_type: Type of reward function ("sharpe", "cost_aware", "regime_aware")
+        use_antibias_costs: Use realistic Anti-Bias transaction costs
+
+    Example:
+        config = TradingEnvConfig(
+            initial_capital=100000,
+            transaction_cost_bps=5.0,
+            slippage_model="volume_based",
+            max_position_size=0.5,  # Max 50% of capital
+            max_drawdown=0.15,  # 15% max drawdown
+            use_antibias_rewards=True,
+            reward_type="cost_aware"
+        )
+    """
+
+    # Capital and Money
+    initial_capital: float = 100000.0  # Starting account balance in USD
+
+    # Transaction Costs - Institutional standard is 0.05% (5 bps)
+    # This is critical for realistic simulation - many strategies that look
+    # profitable with 0% costs become losers with realistic costs
     transaction_cost_bps: float = 5.0  # 0.05% = 5 basis points
 
-    # Slippage model
-    slippage_model: str = "volume_based"  # fixed, volume_based, volatility, orderbook
+    # Slippage Model - Price impact from order execution
+    # Slippage is the difference between expected price and executed price
+    # Can significantly impact strategy profitability
+    slippage_model: str = (
+        "volume_based"  # Options: "fixed", "volume_based", "volatility", "orderbook"
+    )
 
-    # Order book
-    use_orderbook: bool = True
-    orderbook_levels: int = 10
+    # Order Book Simulation - Level 2 market depth
+    use_orderbook: bool = True  # Enable/disable order book simulation
+    orderbook_levels: int = 10  # Number of price levels to simulate
 
-    # Position sizing
-    max_position_size: float = 1.0  # Max 100% of capital
-    min_position_size: float = 0.01  # Min 1% of capital
+    # Position Sizing - Risk management at position level
+    max_position_size: float = 1.0  # Max 100% of capital can be invested
+    min_position_size: float = 0.01  # Min 1% of capital (prevents dust positions)
 
-    # Episode
-    lookback_window: int = 50
-    max_steps: int = 5000
+    # Episode Configuration
+    lookback_window: int = 50  # Historical bars needed for feature calculation
+    max_steps: int = 5000  # Maximum steps before episode auto-terminates
 
-    # Risk
-    max_drawdown: float = 0.20  # 20% max drawdown
+    # Risk Management - Drawdown controls
+    max_drawdown: float = 0.20  # 20% max drawdown triggers episode termination
 
-    # Features (Phase 1 integration)
-    feature_config: Optional[FeatureConfig] = None
+    # Features (Phase 1 integration) - Technical indicators
+    feature_config: Optional[FeatureConfig] = None  # Feature engineering config
 
-    # Anti-Bias Framework settings
-    use_antibias_rewards: bool = True  # Use risk-adjusted rewards
-    reward_type: str = "cost_aware"  # "sharpe", "cost_aware", "regime_aware"
-    use_antibias_costs: bool = True  # Use realistic transaction costs
+    # Anti-Bias Framework Settings - Robust backtesting
+    use_antibias_rewards: bool = True  # Use risk-adjusted rewards instead of raw PnL
+    reward_type: str = (
+        "cost_aware"  # Reward function type: "sharpe", "cost_aware", "regime_aware"
+    )
+    use_antibias_costs: bool = True  # Use realistic transaction cost modeling
 
 
 class RealisticTradingEnv(gym.Env):
     """
-    Gym environment for realistic trading simulation.
+    Gymnasium-compatible Trading Environment for RL Agents.
 
-    State Space:
-    ------------
-    - Price features (from Phase 1 FeatureEngine)
-    - Position (long/short/flat)
-    - Portfolio metrics (PnL, drawdown, etc.)
-    - Order book features (spread, depth)
+    This environment simulates realistic cryptocurrency trading with institutional-
+    grade modeling of market microstructure, transaction costs, and risk management.
+
+    State Space (Observation):
+    ---------------------------
+    The observation space consists of multiple components concatenated together:
+
+    1. Price Features (from FeatureEngine):
+        - Technical indicators: RSI, MACD, Bollinger Bands, Moving Averages
+        - Volatility metrics: ATR, Historical Volatility
+        - Momentum indicators: ROC, Stochastic Oscillator
+        - Volume indicators: OBV, VWAP
+        - Custom features: OU Score, Regime indicators
+
+    2. Portfolio State (8 additional features):
+        - Current position: -1 (short), 0 (flat), 1 (long)
+        - Portfolio return: (current_equity - initial_capital) / initial_capital
+        - Cash ratio: cash / total_equity
+        - Position ratio: position_value / total_equity
+        - Current drawdown: (current - peak) / peak
+        - Number of trades: cumulative trade count
+        - Spread (bps): bid-ask spread in basis points
+        - Episode progress: current_step / total_steps
+
+    Total observation dimension: n_features + 8
 
     Action Space:
     -------------
-    Discrete actions:
-    - 0: Sell/Short
-    - 1: Hold/Flat
-    - 2: Buy/Long
+    Discrete actions (3 possible actions):
+        - 0: Sell/Short - Close long or open short position
+        - 1: Hold/Flat - Maintain current position
+        - 2: Buy/Long - Close short or open long position
 
-    Reward:
-    -------
-    Risk-adjusted return:
-    - Portfolio return
-    - Sharpe ratio bonus
-    - Drawdown penalty
-    - Transaction cost penalty
+    This discrete action space is intentional to:
+        1. Simplify learning for the agent
+        2. Reduce action space complexity
+        3. Match common trading semantics
 
-    Key Features:
-    -------------
-    - Realistic transaction costs (0.05%)
-    - Volume-based slippage
-    - Order book simulation
-    - Market impact modeling
+    Reward Function:
+    ----------------
+    The reward function is designed to maximize risk-adjusted returns:
+
+    Components:
+        - Portfolio return: Raw PnL as percentage
+        - Sharpe bonus: Annualized Sharpe ratio contribution
+        - Drawdown penalty: Penalty for reaching drawdown limits
+        - Transaction cost penalty: Cost of trading
+
+    Reward Type Options:
+        - "sharpe": Sharpe ratio-based incremental rewards
+        - "cost_aware": Rewards with cost and drawdown penalties
+        - "regime_aware": Rewards adjusted for market regime
+
+    Key Design Principles:
+    ----------------------
+    1. Realistic Costs: Transaction costs are applied on every trade to prevent
+       overfitting to "cost-free" trading scenarios
+
+    2. Risk Adjustment: Rewards penalize excessive drawdowns and encourage
+       consistent, risk-adjusted returns
+
+    3. Market Microstructure: Order book and slippage modeling capture the
+       real-world difficulty of executing orders
+
+    4. Episode Termination: Episodes end when:
+       - Max steps reached (5000 steps)
+       - Max drawdown exceeded (20%)
+       - Data exhausted (end of price history)
+
+    Example Usage:
+    --------------
+        # Create environment
+        env = RealisticTradingEnv(price_data, features, config)
+
+        # Reset and get initial observation
+        obs, info = env.reset()
+
+        # Run one episode
+        done = False
+        while not done:
+            action = agent.select_action(obs)  # Agent chooses action
+            obs, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
+
+        # episode complete
+
+    Methods:
+    --------
+        reset(): Reset environment to initial state
+        step(action): Execute one trading step
+        _execute_trade(): Process trade with costs
+        _calculate_reward(): Compute reward signal
+        _get_observation(): Construct observation vector
+        _calculate_equity(): Calculate current portfolio value
+        _calculate_drawdown(): Compute current drawdown
     """
 
     metadata = {"render.modes": ["human"]}

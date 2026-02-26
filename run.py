@@ -1,12 +1,12 @@
 """
 PHASE 7 – MAIN ENTRY POINT
 ============================
-Wires alle Komponenten zusammen und startet den Live-Betrieb.
-Liest Config aus config/phase7.yaml (Hydra-kompatibel).
+Wires all components together and starts live operation.
+Reads config from config/phase7.yaml (Hydra-compatible).
 
 Usage:
     python -m phase7.run --config config/phase7.yaml
-    python -m phase7.run --dry_run          # Papier-Trading Modus
+    python -m phase7.run --dry_run          # Paper-trading mode
 """
 
 from __future__ import annotations
@@ -40,17 +40,22 @@ logger = logging.getLogger("phase7.main")
 #  Stub Agent & Feature Engine for standalone test
 # ─────────────────────────────────────────────
 
+
 class StubFeatureEngine:
     """Minimal stub – replace with real Phase 1 FeatureEngine."""
+
     def transform_single(self, symbol: str, price: float):
         import numpy as np
+
         return np.zeros(64, dtype=np.float32)
 
 
 class StubAgent:
     """Minimal stub – replace with real Phase 5 PPOAgent."""
+
     def predict(self, features) -> int:
         import random
+
         return random.choice([-1, 0, 0, 0, 1])
 
 
@@ -58,13 +63,14 @@ class StubAgent:
 #  Config Loader
 # ─────────────────────────────────────────────
 
+
 def load_config(path: str) -> dict:
     with open(path) as f:
         cfg = yaml.safe_load(f)
     # Override with env vars (12-factor app style)
-    cfg.setdefault("api_key",    os.environ.get("BINANCE_API_KEY", ""))
+    cfg.setdefault("api_key", os.environ.get("BINANCE_API_KEY", ""))
     cfg.setdefault("api_secret", os.environ.get("BINANCE_API_SECRET", ""))
-    cfg.setdefault("telegram_token",   os.environ.get("TELEGRAM_BOT_TOKEN", ""))
+    cfg.setdefault("telegram_token", os.environ.get("TELEGRAM_BOT_TOKEN", ""))
     cfg.setdefault("telegram_chat_id", os.environ.get("TELEGRAM_CHAT_ID", ""))
     return cfg
 
@@ -73,19 +79,20 @@ def load_config(path: str) -> dict:
 #  Bootstrap
 # ─────────────────────────────────────────────
 
+
 async def main(config_path: str, dry_run: bool = False) -> None:
     cfg = load_config(config_path)
 
     # ── Logging ─────────────────────────────
     log_level = cfg.get("log_level", "INFO")
     logging.basicConfig(
-        level    = getattr(logging, log_level),
-        format   = "%(asctime)s │ %(levelname)-8s │ %(name)s │ %(message)s",
-        datefmt  = "%Y-%m-%d %H:%M:%S",
-        handlers = [
+        level=getattr(logging, log_level),
+        format="%(asctime)s │ %(levelname)-8s │ %(name)s │ %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        handlers=[
             logging.StreamHandler(sys.stdout),
             logging.FileHandler(cfg.get("log_file", "phase7.log")),
-        ]
+        ],
     )
 
     if dry_run:
@@ -93,24 +100,24 @@ async def main(config_path: str, dry_run: bool = False) -> None:
 
     # ── Engine Config ────────────────────────
     reconnect = ReconnectPolicy(
-        max_attempts   = cfg.get("reconnect_max_attempts", 10),
-        base_delay_s   = cfg.get("reconnect_base_delay", 1.0),
-        max_delay_s    = cfg.get("reconnect_max_delay", 60.0),
-        backoff_factor = cfg.get("reconnect_backoff", 2.0),
+        max_attempts=cfg.get("reconnect_max_attempts", 10),
+        base_delay_s=cfg.get("reconnect_base_delay", 1.0),
+        max_delay_s=cfg.get("reconnect_max_delay", 60.0),
+        backoff_factor=cfg.get("reconnect_backoff", 2.0),
     )
 
     engine_cfg = EngineConfig(
-        symbols               = cfg["symbols"],
-        api_key               = cfg["api_key"]    if not dry_run else "test",
-        api_secret            = cfg["api_secret"] if not dry_run else "test",
-        max_position_usd      = Decimal(str(cfg.get("max_position_usd", 10_000))),
-        max_order_usd         = Decimal(str(cfg.get("max_order_usd", 2_000))),
-        circuit_breaker_pct   = Decimal(str(cfg.get("circuit_breaker_pct", 0.02))),
-        daily_loss_limit_usd  = Decimal(str(cfg.get("daily_loss_limit_usd", 500))),
-        use_limit_orders      = cfg.get("use_limit_orders", True),
-        limit_order_offset_bps = cfg.get("limit_order_offset_bps", 2),
-        order_timeout_s       = cfg.get("order_timeout_s", 30.0),
-        reconnect_policy      = reconnect,
+        symbols=cfg["symbols"],
+        api_key=cfg["api_key"] if not dry_run else "test",
+        api_secret=cfg["api_secret"] if not dry_run else "test",
+        max_position_usd=Decimal(str(cfg.get("max_position_usd", 10_000))),
+        max_order_usd=Decimal(str(cfg.get("max_order_usd", 2_000))),
+        circuit_breaker_pct=Decimal(str(cfg.get("circuit_breaker_pct", 0.02))),
+        daily_loss_limit_usd=Decimal(str(cfg.get("daily_loss_limit_usd", 500))),
+        use_limit_orders=cfg.get("use_limit_orders", True),
+        limit_order_offset_bps=cfg.get("limit_order_offset_bps", 2),
+        order_timeout_s=cfg.get("order_timeout_s", 30.0),
+        reconnect_policy=reconnect,
     )
 
     # ── Monitoring ───────────────────────────
@@ -119,13 +126,13 @@ async def main(config_path: str, dry_run: bool = False) -> None:
         telegram = TelegramNotifier(cfg["telegram_token"], cfg["telegram_chat_id"])
 
     monitor = EngineMonitor(
-        telegram             = telegram,
-        dashboard_interval_s = cfg.get("dashboard_interval_s", 30),
+        telegram=telegram,
+        dashboard_interval_s=cfg.get("dashboard_interval_s", 30),
     )
 
     # ── Agent & Features ─────────────────────
     feature_engine = StubFeatureEngine()
-    agent          = StubAgent()
+    agent = StubAgent()
 
     # Replace stubs with real implementations:
     # from src.agents.ppo_agent import PPOAgent
@@ -164,12 +171,10 @@ async def main(config_path: str, dry_run: bool = False) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Phase 7 – Live Execution Engine")
     parser.add_argument(
-        "--config", default="config/phase7.yaml",
-        help="Path to YAML config file"
+        "--config", default="config/phase7.yaml", help="Path to YAML config file"
     )
     parser.add_argument(
-        "--dry_run", action="store_true",
-        help="Paper-trading mode – no real orders"
+        "--dry_run", action="store_true", help="Paper-trading mode – no real orders"
     )
     args = parser.parse_args()
 

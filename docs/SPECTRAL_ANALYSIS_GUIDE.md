@@ -1,103 +1,103 @@
 # Spectral Analysis & Fourier Transform Guide
 
-## Überblick
+## Overview
 
-**Spectral Analysis** transformiert Zeitreihen in den Frequenzbereich, um verborgene Zyklen, Saisonalitäten und Trends zu entdecken.
+**Spectral Analysis** transforms time series into the frequency domain to discover hidden cycles, seasonalities, and trends.
 
-### Warum Spectral Analysis wichtig ist:
+### Why Spectral Analysis Matters:
 
-1. **Dominante Zyklen entdecken** (z.B. Bitcoin 4-Jahres-Halving-Zyklus)
-2. **Noise entfernen** (Trend von Rauschen trennen)
-3. **Saisonalitäten finden** (Montag-Effekt, Monats-Ende-Effekt)
-4. **Markt-Regime identifizieren** (zyklische vs. trend-basierte Phasen)
+1. **Discover Dominant Cycles** (e.g., Bitcoin 4-year halving cycle)
+2. **Remove Noise** (separate trend from noise)
+3. **Find Seasonalities** (Monday effect, month-end effect)
+4. **Identify Market Regimes** (cyclic vs. trend-based phases)
 
-**Mathematische Grundlage:** Fourier-Transform & Power Spectral Density (PSD)
+**Mathematical Foundation:** Fourier Transform & Power Spectral Density (PSD)
 
 ---
 
-## 1. Grundkonzepte
+## 1. Core Concepts
 
-### 1.1 Fourier-Transform
+### 1.1 Fourier Transform
 
-Transformiert Zeitreihe von Zeit- in Frequenz-Domäne:
+Transforms time series from time domain to frequency domain:
 
 ```
 X(f) = ∫ x(t) * e^(-2πift) dt
 
 Where:
-x(t) = Preis zur Zeit t
-X(f) = Frequenz-Komponente bei Frequenz f
+x(t) = Price at time t
+X(f) = Frequency component at frequency f
 ```
 
 ### 1.2 Power Spectral Density (PSD)
 
-Zeigt die Stärke jeder Frequenz:
+Shows the strength of each frequency:
 
 ```
 PSD(f) = |X(f)|²
 
-Hohe Werte bei f = 0.05 → Dominanter Zyklus bei Periode = 1/0.05 = 20 Tagen
+High values at f = 0.05 → Dominant cycle at period = 1/0.05 = 20 days
 ```
 
-### 1.3 Dominante Zyklen
+### 1.3 Dominant Cycles
 
-Frequenzen mit höchster Power sind die dominierenden Markt-Zyklen.
+Frequencies with highest power are the dominant market cycles.
 
 ---
 
-## 2. Implementationen
+## 2. Implementations
 
-### 2.1 SpectralAnalyzer - Grundlegende Analyse
+### 2.1 SpectralAnalyzer - Basic Analysis
 
 ```python
 from math_tools import SpectralAnalyzer
 
-# Initialisieren
-analyzer = SpectralAnalyzer(sampling_rate=1.0)  # 1.0 für tägliche Daten
+# Initialize
+analyzer = SpectralAnalyzer(sampling_rate=1.0)  # 1.0 for daily data
 
-# FFT berechnen
+# Compute FFT
 freqs, power = analyzer.compute_fft(prices, detrend=True, window='hanning')
 
-# Dominante Zyklen finden
+# Find dominant cycles
 dominant_cycles = analyzer.find_dominant_cycles(
     prices, 
     n_cycles=3,
-    min_period=10,    # Mindestens 10 Tage
-    max_period=500    # Höchstens 500 Tage
+    min_period=10,    # At least 10 days
+    max_period=500    # At most 500 days
 )
 
-print("Dominante Zyklen:")
+print("Dominant Cycles:")
 for cycle in dominant_cycles:
-    print(f"  Periode: {cycle['period']:.1f} Tage")
+    print(f"  Period: {cycle['period']:.1f} days")
     print(f"  Power: {cycle['power']:.2f}")
     print(f"  Amplitude: ${cycle['amplitude']:.2f}")
 ```
 
-**Beispiel Output:**
+**Example Output:**
 ```
-Dominante Zyklen:
-  Periode: 140.0 Tage (20 Wochen)
+Dominant Cycles:
+  Period: 140.0 days (20 weeks)
   Power: 0.85
   Amplitude: $850.00
   
-  Periode: 730.0 Tage (4 Jahre)
+  Period: 730.0 days (4 years)
   Power: 0.72
   Amplitude: $2,400.00
   
-  Periode: 30.0 Tage (1 Monat)
+  Period: 30.0 days (1 month)
   Power: 0.45
   Amplitude: $320.00
 ```
 
 ---
 
-### 2.2 Cycle Composite Indikator
+### 2.2 Cycle Composite Indicator
 
-Kombiniert mehrere Zyklen zu einem Signal:
+Combines multiple cycles into a signal:
 
 ```python
-# Zyklen kombinieren
-cycles = [20, 50, 200]  # 20-Tage, 50-Tage, 200-Tage Zyklen
+# Combine cycles
+cycles = [20, 50, 200]  # 20-day, 50-day, 200-day cycles
 composite = analyzer.cycle_composite(prices, cycles, lookahead=10)
 
 # Trading Signal
@@ -105,9 +105,9 @@ current_value = composite[-1]
 previous_value = composite[-2]
 
 if current_value > previous_value and current_value < 0:
-    signal = 1  # Long (Zyklus-Tief)
+    signal = 1  # Long (cycle low)
 elif current_value < previous_value and current_value > 0:
-    signal = -1  # Short (Zyklus-Hoch)
+    signal = -1  # Short (cycle high)
 else:
     signal = 0  # Neutral
 ```
@@ -116,61 +116,61 @@ else:
 
 ### 2.3 Spectral Filtering
 
-Trend von Noise trennen:
+Separate trend from noise:
 
 ```python
-# Lowpass Filter - Trend extrahieren
+# Lowpass Filter - Extract trend
 trend = analyzer.spectral_filter(prices, filter_type='lowpass', cutoff=0.05)
 
-# Highpass Filter - Zyklen extrahieren
+# Highpass Filter - Extract cycles
 cycles = analyzer.spectral_filter(prices, filter_type='highpass', cutoff=0.1)
 
-# Bandpass Filter - Spezifische Zyklen
+# Bandpass Filter - Specific cycles
 specific_cycles = analyzer.spectral_filter(
     prices, 
     filter_type='bandpass', 
-    cutoff=(0.02, 0.1)  # 10-50 Tage Zyklen
+    cutoff=(0.02, 0.1)  # 10-50 day cycles
 )
 
-# Praktische Anwendung
+# Practical application
 from math_tools import SpectralAnalyzer
 
 analyzer = SpectralAnalyzer()
 
-# Rauschfreien Trend extrahieren
+# Extract noise-free trend
 clean_trend = analyzer.extract_trend(prices, smoothness=0.95)
 
-# Zyklische Komponente extrahien
+# Extract cyclical component
 cyclical = analyzer.extract_cycles(prices, min_period=5, max_period=100)
 ```
 
 ---
 
-### 2.4 Hilbert Transform - Echtzeit-Zyklus-Analyse
+### 2.4 Hilbert Transform - Real-Time Cycle Analysis
 
-Für Echtzeit-Trading ohne Look-Ahead Bias:
+For real-time trading without look-ahead bias:
 
 ```python
 from math_tools import HilbertTransformAnalyzer
 
-# Hilbert Transform für Instantaneous Frequency
+# Hilbert Transform for Instantaneous Frequency
 hilbert = HilbertTransformAnalyzer()
 result = hilbert.compute(prices, window=20)
 
-# Momentane Werte
-amplitude = result['amplitude'][-1]      # Aktuelle Amplitude
-phase = result['phase'][-1]              # Aktuelle Phase
-frequency = result['frequency'][-1]      # Momentane Frequenz
-period = result['current_period']        # Momentane Periode
+# Instantaneous values
+amplitude = result['amplitude'][-1]      # Current amplitude
+phase = result['phase'][-1]            # Current phase
+frequency = result['frequency'][-1]     # Instantaneous frequency
+period = result['current_period']       # Instantaneous period
 
-print(f"Aktueller Zyklus: {period:.1f} Tage")
+print(f"Current Cycle: {period:.1f} days")
 print(f"Amplitude: ${amplitude:.2f}")
 print(f"Phase: {phase:.2f} rad")
 
-# Cycle State für Trading
+# Cycle State for Trading
 cycle_state = hilbert.get_cycle_state(recent_window=20)
-print(f"\nDominante Periode: {cycle_state['dominant_period']:.1f}")
-print(f"Zyklus-Stärke: {cycle_state['cycle_strength']:.2f}")
+print(f"\nDominant Period: {cycle_state['dominant_period']:.1f}")
+print(f"Cycle Strength: {cycle_state['cycle_strength']:.2f}")
 print(f"Amplitude Trend: {cycle_state['amplitude_trend']}")
 ```
 
@@ -178,22 +178,22 @@ print(f"Amplitude Trend: {cycle_state['amplitude_trend']}")
 
 ### 2.5 Adaptive Cycle Indicator
 
-Automatische Anpassung an wechselnde Zyklen:
+Automatic adaptation to changing cycles:
 
 ```python
 from math_tools import AdaptiveCycleIndicator
 
-# Adaptiver Zyklus-Indikator
+# Adaptive Cycle Indicator
 aci = AdaptiveCycleIndicator(lookback=200, adapt_period=50)
 
-# Im Trading-Loop
+# In Trading Loop
 for price in live_prices:
     result = aci.update(price)
     
     signal = result['signal']           # -1, 0, 1
-    cycle_period = result['cycle_period']  # Aktueller Zyklus
-    phase = result['phase']             # Position im Zyklus
-    confidence = result['confidence']   # 0-1
+    cycle_period = result['cycle_period']  # Current cycle
+    phase = result['phase']              # Position in cycle
+    confidence = result['confidence']    # 0-1
     
     if signal == 1 and confidence > 0.6:
         place_buy_order()
@@ -201,38 +201,38 @@ for price in live_prices:
         place_sell_order()
 ```
 
-**Wie es funktioniert:**
-1. Analysiert kontinuierlich die letzten 200 Perioden
-2. Findet den dominanten Zyklus alle 50 Perioden neu
-3. Generiert Signale basierend auf Zyklus-Phase
-4. Kauft am Zyklus-Tief (Phase ~0.9), verkauft am Hoch (Phase ~0.3)
+**How it works:**
+1. Continuously analyzes the last 200 periods
+2. Recalculates dominant cycle every 50 periods
+3. Generates signals based on cycle phase
+4. Buys at cycle low (phase ~0.9), sells at high (phase ~0.3)
 
 ---
 
 ### 2.6 Seasonality Analysis
 
-Saisonale Muster entdecken:
+Discover seasonal patterns:
 
 ```python
 from math_tools import SeasonalityAnalyzer
 import pandas as pd
 
-# Daten mit DatetimeIndex
+# Data with DatetimeIndex
 returns = pd.Series(returns_array, index=pd.to_datetime(dates))
 
 analyzer = SeasonalityAnalyzer()
 
-# Tag-der-Woche Analyse
+# Day-of-week analysis
 dow_stats = analyzer.analyze_day_of_week(returns, returns.index)
-print("Tag-der-Woche Effekte:")
+print("Day-of-Week Effects:")
 for day, stats in dow_stats.items():
     if day not in ['best_day', 'worst_day']:
         print(f"  {day}: {stats['mean_return']:.3f}% (Win Rate: {stats['win_rate']:.1%})")
 
-print(f"\nBester Tag: {dow_stats['best_day']}")
-print(f"Schlechtester Tag: {dow_stats['worst_day']}")
+print(f"\nBest Day: {dow_stats['best_day']}")
+print(f"Worst Day: {dow_stats['worst_day']}")
 
-# Monat-der-Jahr Analyse
+# Month-of-year analysis
 month_stats = analyzer.analyze_month_of_year(returns, returns.index)
 
 # Holiday Effects
@@ -243,17 +243,17 @@ holiday_effects = analyzer.detect_holiday_effects(
 )
 ```
 
-**Typische Ergebnisse für BTC:**
+**Typical Results for BTC:**
 ```
-Tag-der-Woche Effekte:
+Day-of-Week Effects:
   Monday: 0.25% (Win Rate: 54.2%)
   Tuesday: 0.18% (Win Rate: 52.1%)
   Wednesday: -0.05% (Win Rate: 48.9%)
   Thursday: 0.32% (Win Rate: 55.8%)  ← Best day
   Friday: -0.12% (Win Rate: 47.3%)
 
-Bester Tag: Thursday
-Schlechtester Tag: Friday
+Best Day: Thursday
+Worst Day: Friday
 
 Holiday Effects:
   01-01: Pre-holiday +0.45%, Post-holiday +0.82%
@@ -262,11 +262,11 @@ Holiday Effects:
 
 ---
 
-## 3. Praktische Trading-Strategien
+## 3. Practical Trading Strategies
 
 ### 3.1 Crypto Cycle Strategy
 
-Basierend auf Bitcoins 4-Jahres-Halving-Zyklus:
+Based on Bitcoin's 4-year halving cycle:
 
 ```python
 from math_tools import SpectralAnalyzer, compute_dominant_cycle
@@ -275,26 +275,26 @@ class CryptoCycleStrategy:
     def __init__(self):
         self.analyzer = SpectralAnalyzer()
         self.cycle_period = None
-        self.entry_phase = 0.85  # 85% durch Zyklus (Tiefpunkt)
-        self.exit_phase = 0.25   # 25% durch Zyklus (Hochpunkt)
+        self.entry_phase = 0.85  # 85% through cycle (low point)
+        self.exit_phase = 0.25  # 25% through cycle (high point)
     
     def update(self, prices):
-        # Zyklus alle 100 Bars neu berechnen
+        # Recalculate cycle every 100 bars
         if len(prices) % 100 == 0:
             self.cycle_period = compute_dominant_cycle(prices[-500:], min_period=100)
         
         if self.cycle_period is None:
             return 0
         
-        # Position im Zyklus
+        # Position in cycle
         position = len(prices) % int(self.cycle_period)
         phase = position / self.cycle_period
         
-        # Signale
+        # Signals
         if phase > self.entry_phase:
-            return 1  # Long am Zyklus-Tief
+            return 1  # Long at cycle low
         elif phase < self.exit_phase:
-            return -1  # Short/Exit am Zyklus-Hoch
+            return -1  # Short/Exit at cycle high
         
         return 0
 ```
@@ -303,7 +303,7 @@ class CryptoCycleStrategy:
 
 ### 3.2 Spectral Mean Reversion
 
-Kombiniert Spectral Analysis mit Mean-Reversion:
+Combines Spectral Analysis with Mean-Reversion:
 
 ```python
 from math_tools import SpectralAnalyzer, OrnsteinUhlenbeckProcess
@@ -311,20 +311,20 @@ from math_tools import SpectralAnalyzer, OrnsteinUhlenbeckProcess
 def spectral_mean_reversion(prices, lookback=200):
     analyzer = SpectralAnalyzer()
     
-    # 1. Trend extrahieren
+    # 1. Extract trend
     trend = analyzer.extract_trend(prices[-lookback:], smoothness=0.95)
     
-    # 2. Zyklus-Komponente
+    # 2. Cycle component
     cycle = analyzer.extract_cycles(prices[-lookback:], min_period=5, max_period=50)
     
-    # 3. Mean-Reversion auf Zyklus anwenden
+    # 3. Apply Mean-Reversion to cycle
     ou = OrnsteinUhlenbeckProcess()
     score = ou.calculate_score(cycle[-20:])
     
     # 4. Signal
-    if score > 0.8:  # Weit über Trend
-        return -1  # Short (Rückkehr zu Trend erwartet)
-    elif score < -0.8:  # Weit unter Trend
+    if score > 0.8:  # Far above trend
+        return -1  # Short (expect return to trend)
+    elif score < -0.8:  # Far below trend
         return 1   # Long
     
     return 0
@@ -334,7 +334,7 @@ def spectral_mean_reversion(prices, lookback=200):
 
 ### 3.3 Multi-Timeframe Cycle Confirmation
 
-Zyklus-Bestätigung über mehrere Timeframes:
+Cycle confirmation across multiple timeframes:
 
 ```python
 from math_tools import SpectralAnalyzer
@@ -351,21 +351,21 @@ def multi_tf_cycle_signal(prices_daily, prices_weekly, prices_monthly):
     # Monthly cycles  
     monthly_cycles = analyzer.find_dominant_cycles(prices_monthly, n_cycles=1)
     
-    # Überprüfe Konsistenz
+    # Check consistency
     daily_long_cycle = daily_cycles[0]['period'] if daily_cycles else None
     weekly_long_cycle = weekly_cycles[0]['period'] * 5 if weekly_cycles else None  # Convert to days
     
-    # Wenn Daily und Weekly übereinstimmen (±20%), Signal verstärken
+    # If Daily and Weekly agree (±20%), boost signal
     if daily_long_cycle and weekly_long_cycle:
         diff = abs(daily_long_cycle - weekly_long_cycle) / daily_long_cycle
         if diff < 0.2:
-            confidence = 1.5  # Übereinstimmung!
+            confidence = 1.5  # Agreement!
         else:
             confidence = 1.0
     else:
         confidence = 0.5
     
-    # Basissignal
+    # Base signal
     composite_daily = analyzer.cycle_composite(prices_daily, 
                                                [c['period'] for c in daily_cycles[:2]])
     signal = 1 if composite_daily[-1] > 0 else -1
@@ -375,94 +375,94 @@ def multi_tf_cycle_signal(prices_daily, prices_weekly, prices_monthly):
 
 ---
 
-## 4. Vorteile & Limitationen
+## 4. Advantages & Limitations
 
-### ✅ Vorteile:
+### ✅ Advantages:
 
-1. **Objektive Zyklus-Erkennung** (nicht subjektiv wie visuelle Analyse)
-2. **Rauschunterdrückung** (Filterung im Frequenzbereich effektiver)
-3. **Saisonalitäts-Nachweis** (statistisch signifikante Muster)
-4. **Multi-Zyklus Kombination** (verschiedene Zeitrahmen gleichzeitig)
-5. **Adaptive Anpassung** (reagiert auf sich ändernde Marktzyklen)
+1. **Objective Cycle Detection** (not subjective like visual analysis)
+2. **Noise Suppression** (filtering in frequency domain more effective)
+3. **Seasonality Proof** (statistically significant patterns)
+4. **Multi-Cycle Combination** (different timeframes simultaneously)
+5. **Adaptive Adjustment** (responds to changing market cycles)
 
-### ⚠️ Limitationen:
+### ⚠️ Limitations:
 
-1. **Benötigt viel Daten** (mindestens 2x die längste Periode)
-2. **Keine Daytrading-Strategie** (zu viel Noise auf kurzen Zeiträumen)
-3. **Zyklen ändern sich** (müssen regelmäßig neu kalibriert werden)
-4. **Nicht für alle Märkte geeignet** (funktioniert am besten bei klaren Zyklen wie Crypto)
-5. **Spectral Leakage** (Fenster-Funktionen notwendig)
+1. **Needs Lots of Data** (at least 2x the longest period)
+2. **Not a Daytrading Strategy** (too much noise on short timeframes)
+3. **Cycles Change** (must be regularly recalibrated)
+4. **Not Suitable for All Markets** (works best with clear cycles like Crypto)
+5. **Spectral Leakage** (window functions necessary)
 
-### 🎯 Beste Anwendungsfälle:
+### 🎯 Best Use Cases:
 
-- **Swing Trading** (1W - 3M Haltedauer)
-- **Crypto-Trading** (4-Jahres-Halving-Zyklus)
-- **Aktien-Saisonalitäten** (Sell in May, Januar-Effekt)
-- **Volatilitäts-Zyklen** (VIX-Seasonality)
-- **Rohstoff-Zyklen** (Ernte-Zyklen, Wetter)
+- **Swing Trading** (1W - 3M holding period)
+- **Crypto Trading** (4-year halving cycle)
+- **Stock Seasonalities** (Sell in May, January effect)
+- **Volatility Cycles** (VIX-Seasonality)
+- **Commodity Cycles** (harvest cycles, weather)
 
 ---
 
-## 5. Integration mit anderen Modellen
+## 5. Integration with Other Models
 
-### Kombination mit HMM:
+### Combination with HMM:
 
 ```python
 from math_tools import SpectralAnalyzer, HMMRegimeDetector
 
-# Zyklus-basierte Regime-Detektion
+# Cycle-based regime detection
 analyzer = SpectralAnalyzer()
 cycles = analyzer.find_dominant_cycles(prices, n_cycles=1)
 
 if cycles and cycles[0]['period'] > 200:
-    # Lange Zyklen = Trending Regime
+    # Long cycles = Trending Regime
     regime = "trending"
 else:
-    # Kurze Zyklen = Mean-Reversion Regime
+    # Short cycles = Mean-Reversion Regime
     regime = "mean_reverting"
 ```
 
-### Kombination mit Kelly:
+### Combination with Kelly:
 
 ```python
 from math_tools import SpectralAnalyzer, KellyCriterion
 
-# Position Size basierend auf Zyklus-Konfidenz
+# Position Size based on cycle confidence
 analyzer = SpectralAnalyzer()
 dominant_cycle = analyzer.find_dominant_cycles(returns, n_cycles=1)
 
 if dominant_cycle and dominant_cycle[0]['power'] > 0.7:
-    # Starker Zyklus → Normale Position
+    # Strong cycle → Normal position
     kelly = KellyCriterion()
     size = kelly.calculate_position_size(returns)
 else:
-    # Schwacher Zyklus → Reduzierte Position
+    # Weak cycle → Reduced position
     size = 0.5
 ```
 
 ---
 
-## 6. Zusammenfassung
+## 6. Summary
 
-**Spectral Analysis bietet:
+**Spectral Analysis provides:**
 
-✅ **Frequenz-Domänen-Analyse** für Zyklus-Erkennung  
-✅ **Noise-Reduktion** via Filterung  
-✅ **Saisonalitäts-Analyse** (Tag, Monat, Holiday)  
-✅ **Adaptive Zyklus-Indikatoren**  
-✅ **Echtzeit-Zyklus-Tracking** (Hilbert Transform)  
+✅ **Frequency Domain Analysis** for cycle detection  
+✅ **Noise Reduction** via filtering  
+✅ **Seasonality Analysis** (day, month, holiday)  
+✅ **Adaptive Cycle Indicators**  
+✅ **Real-Time Cycle Tracking** (Hilbert Transform)  
 
-**Beste geeignet für:**
+**Best suited for:**
 - Swing Trading (1W-3M)
-- Crypto (Halving-Zyklen)
-- Seasonality-Strategien
-- Trend-Noise Separation
+- Crypto (halving cycles)
+- Seasonality strategies
+- Trend-Noise separation
 
-**Nicht geeignet für:**
+**Not suited for:**
 - Daytrading/Scalping
-- Märkte ohne klare Zyklen
-- Kurze Zeitreihen (< 200 Datenpunkte)
+- Markets without clear cycles
+- Short time series (< 200 data points)
 
 ---
 
-**Das Modul ist jetzt bereit für professionelle Zyklus-basierte Trading-Strategien!** 📊🔄
+**The module is now ready for professional cycle-based trading strategies!** 📊🔄

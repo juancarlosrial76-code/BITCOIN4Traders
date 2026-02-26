@@ -19,11 +19,11 @@ class TestRiskConfig:
     def test_default_config(self):
         """Test default configuration values."""
         config = RiskConfig()
-        assert config.max_drawdown_per_session == 0.02  # 2% default
-        assert config.max_consecutive_losses == 5
-        assert config.max_position_size == 0.25
-        assert config.kelly_fraction == 0.5
-        assert config.enable_circuit_breaker is True
+        assert config.max_drawdown_per_session == 0.02  # 2% daily drawdown limit
+        assert config.max_consecutive_losses == 5  # Stop after 5 losing trades
+        assert config.max_position_size == 0.25  # Max 25% of capital per position
+        assert config.kelly_fraction == 0.5  # Half-Kelly position sizing
+        assert config.enable_circuit_breaker is True  # Circuit breaker on by default
 
     def test_custom_config(self):
         """Test custom configuration values."""
@@ -62,23 +62,23 @@ class TestRiskManager:
         assert risk_manager.initial_capital == 100000
         assert risk_manager.state.current_equity == 100000
         assert risk_manager.state.initial_equity == 100000
-        assert risk_manager.state.peak_equity == 100000
+        assert risk_manager.state.peak_equity == 100000  # Peak starts at initial
         assert risk_manager.state.consecutive_losses == 0
-        assert not risk_manager.state.halt_trading
+        assert not risk_manager.state.halt_trading  # Trading allowed at start
 
     def test_update_state_with_profit(self, risk_manager):
         """Test state update with profitable trade."""
-        risk_manager.update_state(105000, 5000)
+        risk_manager.update_state(105000, 5000)  # Equity increased by $5000
         assert risk_manager.state.current_equity == 105000
-        assert risk_manager.state.peak_equity == 105000
-        assert risk_manager.state.consecutive_losses == 0
+        assert risk_manager.state.peak_equity == 105000  # New peak
+        assert risk_manager.state.consecutive_losses == 0  # Loss streak reset
 
     def test_update_state_with_loss(self, risk_manager):
         """Test state update with losing trade."""
-        risk_manager.update_state(95000, -5000)
+        risk_manager.update_state(95000, -5000)  # Equity dropped by $5000
         assert risk_manager.state.current_equity == 95000
-        assert risk_manager.state.peak_equity == 100000
-        assert risk_manager.state.consecutive_losses == 1
+        assert risk_manager.state.peak_equity == 100000  # Peak unchanged
+        assert risk_manager.state.consecutive_losses == 1  # Loss streak started
 
     def test_consecutive_losses_tracking(self, risk_manager):
         """Test consecutive losses tracking."""
@@ -88,14 +88,14 @@ class TestRiskManager:
         risk_manager.update_state(97000, -1000)
 
         assert risk_manager.state.consecutive_losses == 3
-        assert risk_manager.should_halt_trading()
+        assert risk_manager.should_halt_trading()  # Meets max_consecutive_losses=3
 
     def test_circuit_breaker_drawdown(self, risk_manager):
         """Test circuit breaker triggers on drawdown."""
         # 15% drawdown (exceeds 10% limit)
         risk_manager.update_state(85000, -15000)
 
-        assert risk_manager.state.halt_trading
+        assert risk_manager.state.halt_trading  # Circuit breaker fired
         assert risk_manager.should_halt_trading()
 
     def test_circuit_breaker_no_trigger(self, risk_manager):
@@ -103,7 +103,7 @@ class TestRiskManager:
         # 5% drawdown (within 10% limit)
         risk_manager.update_state(95000, -5000)
 
-        assert not risk_manager.state.halt_trading
+        assert not risk_manager.state.halt_trading  # Still within limits
         assert not risk_manager.should_halt_trading()
 
     def test_reset(self, risk_manager):
@@ -111,10 +111,10 @@ class TestRiskManager:
         risk_manager.update_state(85000, -15000)
         assert risk_manager.state.halt_trading
 
-        risk_manager.reset()
+        risk_manager.reset()  # Reset for new session
         assert risk_manager.state.current_equity == 100000
         assert risk_manager.state.peak_equity == 100000
-        assert not risk_manager.state.halt_trading
+        assert not risk_manager.state.halt_trading  # Trading re-enabled
         assert risk_manager.state.consecutive_losses == 0
 
     def test_get_halt_reason_drawdown(self, risk_manager):
@@ -123,7 +123,7 @@ class TestRiskManager:
         reason = risk_manager.get_halt_reason()
 
         assert reason is not None
-        assert len(reason) > 0
+        assert len(reason) > 0  # Should return a descriptive message
 
     def test_get_halt_reason_consecutive_losses(self, risk_manager):
         """Test halt reason for consecutive losses."""
@@ -144,7 +144,7 @@ class TestRiskManager:
         )
 
         assert approved is True
-        assert size > 0
+        assert size > 0  # A valid size was computed
 
     def test_validate_position_size_rejected(self, risk_manager):
         """Test position size validation - rejected."""
@@ -155,13 +155,13 @@ class TestRiskManager:
             proposed_size=10000, current_capital=85000
         )
 
-        assert approved is False
+        assert approved is False  # Halted = no new positions
         assert size == 0
 
     def test_validate_position_size_kelly_capped(self, risk_manager):
         """Test Kelly-based position sizing is capped."""
         approved, size = risk_manager.validate_position_size(
-            proposed_size=60000,  # 60% of capital
+            proposed_size=60000,  # 60% of capital (exceeds max_position_size=50%)
             current_capital=100000,
             win_probability=0.8,  # High win rate
             win_loss_ratio=3.0,  # Good risk/reward
@@ -199,16 +199,16 @@ class TestKellyCriterion:
         position_size = kelly.calculate_position_size(capital=100000, params=params)
 
         assert position_size > 0
-        assert position_size <= 100000
+        assert position_size <= 100000  # Cannot bet more than total capital
 
     def test_estimate_parameters_with_trades(self, kelly):
         """Test parameter estimation from trade history."""
-        trades = [1000, -500, 1500, -300, 2000, -400]
+        trades = [1000, -500, 1500, -300, 2000, -400]  # Mix of wins and losses
 
         params = kelly.estimate_parameters(trades)
 
         assert isinstance(params, KellyParameters)
-        assert 0 < params.win_probability < 1
+        assert 0 < params.win_probability < 1  # Valid probability
         assert params.win_loss_ratio > 0
         assert params.kelly_fraction is not None
 
@@ -219,14 +219,14 @@ class TestKellyCriterion:
         wins or no losses in the history (graceful fallback). We verify it returns a
         valid KellyParameters object with sensible defaults.
         """
-        trades = [1000]
+        trades = [1000]  # Only one trade — no losses to compute loss ratio
 
         params = kelly.estimate_parameters(trades)
 
         # Implementation returns defaults (not None) when wins or losses are missing
         assert params is not None
         assert isinstance(params, KellyParameters)
-        assert 0 < params.win_probability < 1
+        assert 0 < params.win_probability < 1  # Still a valid probability
 
     def test_dynamic_kelly(self, kelly):
         """Test dynamic Kelly calculation."""
@@ -235,7 +235,7 @@ class TestKellyCriterion:
         )
 
         assert position_size > 0
-        assert position_size <= 100000
+        assert position_size <= 100000  # Cannot exceed available capital
 
 
 class TestRiskMetricsLogger:
@@ -259,13 +259,13 @@ class TestRiskMetricsLogger:
     def test_update_with_trade(self, metrics_logger):
         """Test update with trade result."""
         metrics_logger.update(equity=100000, trade_result=1000)
-        assert len(metrics_logger.trade_history) == 1
+        assert len(metrics_logger.trade_history) == 1  # Trade result recorded
 
     def test_sharpe_ratio_calculation(self, metrics_logger):
         """Test Sharpe ratio calculation."""
         # Add some equity data with positive returns
         for i in range(60):
-            equity = 100000 + i * 100
+            equity = 100000 + i * 100  # Monotonically increasing equity
             metrics_logger.update(equity=equity)
 
         metrics = metrics_logger.get_current_metrics()
@@ -292,7 +292,7 @@ class TestRiskMetricsLogger:
 
         metrics = metrics_logger.get_current_metrics()
 
-        assert "calmar_ratio" in metrics
+        assert "calmar_ratio" in metrics  # Calmar = annualized return / max drawdown
 
     def test_reset(self, metrics_logger):
         """Test reset functionality."""
@@ -300,7 +300,7 @@ class TestRiskMetricsLogger:
         assert len(metrics_logger.equity_history) == 1
 
         metrics_logger.reset()
-        assert len(metrics_logger.equity_history) == 0
+        assert len(metrics_logger.equity_history) == 0  # History cleared
         assert len(metrics_logger.trade_history) == 0
 
 

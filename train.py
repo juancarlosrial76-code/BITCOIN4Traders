@@ -75,20 +75,20 @@ def load_data(args):
             if feature_files:
                 logger.info(f"Loading cached features from {feature_files[0]}")
                 features = pd.read_parquet(feature_files[0])
-                
+
                 # Check for feature mismatch (e.g. we added RSI/MACD but cache is old)
                 # Ideally we check columns, but for now let's just warn or refresh if requested.
                 # If force_refresh is False, we assume cache is good.
                 # BUT, main expects a split dict now, not a tuple.
-                
+
                 logger.success(
                     f"Data loaded from cache: {len(price_data)} candles, {len(features.columns)} features"
                 )
-                
+
                 # We must split the cached data too!
                 # Reuse the splitting logic which we'll define below or duplicate for now.
                 # Let's duplicate strictly for safety in this restricted context edit.
-                
+
                 common = price_data.index.intersection(features.index)
                 price_data = price_data.loc[common]
                 features = features.loc[common]
@@ -99,8 +99,11 @@ def load_data(args):
 
                 return {
                     "train": (price_data.iloc[:train_idx], features.iloc[:train_idx]),
-                    "val": (price_data.iloc[train_idx:val_idx], features.iloc[train_idx:val_idx]),
-                    "test": (price_data.iloc[val_idx:], features.iloc[val_idx:])
+                    "val": (
+                        price_data.iloc[train_idx:val_idx],
+                        features.iloc[train_idx:val_idx],
+                    ),
+                    "test": (price_data.iloc[val_idx:], features.iloc[val_idx:]),
                 }
 
     # Download from exchange using CCXTDataLoader
@@ -178,12 +181,14 @@ def load_data(args):
     val_data = price_data.iloc[train_idx:val_idx]
     test_data = price_data.iloc[val_idx:]
 
-    logger.info(f"Data Split: Train={len(train_data)}, Val={len(val_data)}, Test={len(test_data)}")
+    logger.info(
+        f"Data Split: Train={len(train_data)}, Val={len(val_data)}, Test={len(test_data)}"
+    )
 
     # 1. Fit on TRAIN data only
     logger.info("Fitting FeatureEngine on TRAINING set...")
     train_features = engine.fit_transform(train_data)
-    
+
     # 2. Transform Val and Test using Train statistics
     logger.info("Transforming Validation and Test sets...")
     val_features = engine.transform(val_data)
@@ -192,34 +197,27 @@ def load_data(args):
     # Align indexes after feature engine processing (dropping NaNs etc)
     # The engine returns a new dataframe with potentially fewer rows
     # We need to ensure price_data aligns with features for the environment
-    
-    # Common splitting logic
-    def split_data(price_df, feature_df):
-        # Align indexes first
-        common = price_df.index.intersection(feature_df.index)
-        price_df = price_df.loc[common]
-        feature_df = feature_df.loc[common]
 
-        n = len(price_df)
-        train_idx = int(n * 0.70)
-        val_idx = int(n * 0.85)
+    # BUG-FIX: 'features' was not defined in the non-cache path.
+    # The splits are built directly from the already correctly computed
+    # train_features / val_features / test_features.
 
-        return {
-            "train": (price_df.iloc[:train_idx], feature_df.iloc[:train_idx]),
-            "val": (price_df.iloc[train_idx:val_idx], feature_df.iloc[train_idx:val_idx]),
-            "test": (price_df.iloc[val_idx:], feature_df.iloc[val_idx:])
-        }
+    # Align indexes after FeatureEngine processing
+    common_train = price_data.iloc[:train_idx].index.intersection(train_features.index)
+    common_val = price_data.iloc[train_idx:val_idx].index.intersection(
+        val_features.index
+    )
+    common_test = price_data.iloc[val_idx:].index.intersection(test_features.index)
 
-    splits = split_data(price_data, features)
-
-
-    # Save features if requested (optional)
-    if not train_features.empty:
-        # Saving scaler was handled by engine.fit_transform if save_scaler=True
-        pass
+    splits = {
+        "train": (price_data.loc[common_train], train_features.loc[common_train]),
+        "val": (price_data.loc[common_val], val_features.loc[common_val]),
+        "test": (price_data.loc[common_test], test_features.loc[common_test]),
+    }
 
     logger.success(
-        f"Data prepared: {len(train_features)} train samples"
+        f"Data prepared: Train={len(splits['train'][0])}, "
+        f"Val={len(splits['val'][0])}, Test={len(splits['test'][0])} samples"
     )
 
     return splits
@@ -250,8 +248,10 @@ def create_trainer(env, args):
     logger.info("Creating trainer...")
 
     # Load training config
-    config_path = Path(args.config) if args.config else Path("config/training/adversarial.yaml")
-    
+    config_path = (
+        Path(args.config) if args.config else Path("config/training/adversarial.yaml")
+    )
+
     if config_path.exists():
         logger.info(f"Loading training config from {config_path}")
         with open(config_path, "r") as f:
@@ -333,10 +333,16 @@ def main():
 
     # Training arguments
     parser.add_argument(
-        "--config", type=str, default="config/training/adversarial.yaml", help="Path to training config"
+        "--config",
+        type=str,
+        default="config/training/adversarial.yaml",
+        help="Path to training config",
     )
     parser.add_argument(
-        "--iterations", type=int, default=None, help="Number of training iterations (overrides config)"
+        "--iterations",
+        type=int,
+        default=None,
+        help="Number of training iterations (overrides config)",
     )
     parser.add_argument(
         "--device",

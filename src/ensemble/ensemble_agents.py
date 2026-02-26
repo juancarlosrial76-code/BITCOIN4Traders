@@ -49,12 +49,14 @@ class AgentEnsemble:
 
         # Performance tracking for adaptive weighting
         self.performance_history = {
-            i: deque(maxlen=config.window_size) for i in range(self.n_agents)
+            i: deque(maxlen=config.window_size)
+            for i in range(self.n_agents)  # rolling reward history per agent
         }
         self.weights = (
             config.weights
             if config.weights is not None
-            else np.ones(self.n_agents) / self.n_agents
+            else np.ones(self.n_agents)
+            / self.n_agents  # equal weights by default (uniform ensemble)
         )
 
     def predict(self, state: np.ndarray, deterministic: bool = True) -> np.ndarray:
@@ -84,19 +86,22 @@ class AgentEnsemble:
         votes = []
         for agent in self.agents:
             if hasattr(agent, "select_action"):
+                # check if the agent's select_action supports the deterministic kwarg
                 if "deterministic" in agent.select_action.__code__.co_varnames:
                     action = agent.select_action(state, deterministic=deterministic)
                 else:
                     action = agent.select_action(state)
             else:
-                # Assume PyTorch model
+                # Assume PyTorch model with forward() returning action logits
                 with torch.no_grad():
-                    state_tensor = torch.FloatTensor(state).unsqueeze(0)
+                    state_tensor = torch.FloatTensor(state).unsqueeze(
+                        0
+                    )  # add batch dimension
                     action_probs = agent(state_tensor)
-                    action = action_probs.argmax().item()
+                    action = action_probs.argmax().item()  # greedy action
             votes.append(action)
 
-        # Majority vote
+        # Majority vote: most-voted action wins
         return np.bincount(votes).argmax()
 
     def _weighted_predict(self, state: np.ndarray, deterministic: bool) -> np.ndarray:
@@ -167,27 +172,29 @@ class AgentEnsemble:
             rewards: Dictionary of {agent_idx: reward}
         """
         for idx, reward in rewards.items():
-            self.performance_history[idx].append(reward)
+            self.performance_history[idx].append(reward)  # rolling buffer per agent
 
         # Calculate performance scores
         scores = []
         for i in range(self.n_agents):
             if len(self.performance_history[i]) > 0:
-                # Sharpe-like score
+                # Sharpe-like score: mean return / return std (higher is better)
                 returns = np.array(list(self.performance_history[i]))
                 if np.std(returns) > 0:
-                    score = np.mean(returns) / np.std(returns)
+                    score = np.mean(returns) / np.std(returns)  # risk-adjusted score
                 else:
-                    score = np.mean(returns)
+                    score = np.mean(returns)  # no volatility → use raw mean
             else:
-                score = 0.0
+                score = 0.0  # no history yet → neutral score
             scores.append(score)
 
         scores = np.array(scores)
 
-        # Softmax weighting
-        exp_scores = np.exp(scores / self.config.temperature)
-        self.weights = exp_scores / np.sum(exp_scores)
+        # Softmax weighting: better-performing agents get exponentially higher weight
+        exp_scores = np.exp(
+            scores / self.config.temperature
+        )  # temperature controls sharpness
+        self.weights = exp_scores / np.sum(exp_scores)  # normalise to sum to 1
 
     def evaluate_agents(self, env, n_episodes: int = 10) -> Dict[int, float]:
         """

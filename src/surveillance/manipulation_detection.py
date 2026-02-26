@@ -55,9 +55,9 @@ class OrderBookState:
     asks: List[Tuple[float, float]]
     mid_price: float
     spread: float
-    bid_depth: float
-    ask_depth: float
-    imbalance: float
+    bid_depth: float  # Total bid-side liquidity in USD
+    ask_depth: float  # Total ask-side liquidity in USD
+    imbalance: float  # (bid_depth - ask_depth) / (bid_depth + ask_depth)
 
 
 class SpoofingDetector:
@@ -70,10 +70,14 @@ class SpoofingDetector:
     def __init__(
         self, cancel_threshold_ms: float = 500, size_threshold_pct: float = 0.1
     ):
-        self.cancel_threshold = cancel_threshold_ms
-        self.size_threshold = size_threshold_pct
-        self.order_history = deque(maxlen=10000)
-        self.suspicious_accounts = defaultdict(int)
+        self.cancel_threshold = (
+            cancel_threshold_ms  # Orders alive < this are suspicious
+        )
+        self.size_threshold = (
+            size_threshold_pct  # Orders larger than this fraction trigger checks
+        )
+        self.order_history = deque(maxlen=10000)  # Rolling buffer of recent orders
+        self.suspicious_accounts = defaultdict(int)  # Infraction count per account
         logger.info("SpoofingDetector initialized")
 
     def record_order(
@@ -105,7 +109,7 @@ class SpoofingDetector:
                 order["status"] = "canceled"
                 order["cancel_time"] = timestamp
 
-                # Check for spoofing pattern
+                # Check for spoofing pattern immediately on cancellation
                 self._check_spoofing_pattern(order)
                 break
 
@@ -114,12 +118,14 @@ class SpoofingDetector:
         if "cancel_time" not in order:
             return
 
+        # Time the order was alive in milliseconds
         time_alive = (order["cancel_time"] - order["timestamp"]).total_seconds() * 1000
 
-        # Large order canceled quickly
+        # Large order canceled quickly is a classic spoofing signature
         if time_alive < self.cancel_threshold and order["size"] > self.size_threshold:
             self.suspicious_accounts[order["account"]] += 1
 
+            # Only alert after accumulating enough infractions to avoid false positives
             if self.suspicious_accounts[order["account"]] >= 5:
                 logger.warning(
                     f"SPOOFING DETECTED: Account {order['account']}, "
@@ -142,8 +148,10 @@ class LayeringDetector:
     def __init__(
         self, max_layer_levels: int = 5, cancel_correlation_threshold: float = 0.8
     ):
-        self.max_layers = max_layer_levels
-        self.correlation_threshold = cancel_correlation_threshold
+        self.max_layers = max_layer_levels  # Threshold for suspicious depth
+        self.correlation_threshold = (
+            cancel_correlation_threshold  # Fraction that must cancel together
+        )
         self.level_history = deque(maxlen=1000)
         logger.info("LayeringDetector initialized")
 
@@ -158,19 +166,20 @@ class LayeringDetector:
         layering_events = []
 
         for account, orders in account_orders.items():
-            # Check if account has orders at multiple levels
+            # Count distinct price levels this account occupies
             price_levels = set(order["price"] for order in orders)
 
             if len(price_levels) >= self.max_layers:
-                # Check if all orders are canceled together
+                # Check if a large fraction of orders were canceled together
                 cancel_times = [
                     order.get("cancel_time")
                     for order in orders
                     if "cancel_time" in order
                 ]
 
+                # Enough cancellations to trigger correlation check
                 if len(cancel_times) >= len(orders) * self.correlation_threshold:
-                    # Calculate time correlation
+                    # Calculate time differences between cancellations
                     if len(cancel_times) >= 2:
                         time_diffs = np.diff(
                             [
@@ -179,6 +188,7 @@ class LayeringDetector:
                             ]
                         )
 
+                        # All canceled within 100ms → highly correlated cancellation
                         if np.all(
                             np.abs(time_diffs) < 0.1
                         ):  # All canceled within 100ms
@@ -198,6 +208,7 @@ class LayeringDetector:
             return {
                 "manipulation_type": "layering",
                 "events": layering_events,
+                # More than 2 simultaneous events indicates organized manipulation
                 "severity": "high" if len(layering_events) > 2 else "medium",
             }
 
@@ -212,7 +223,7 @@ class WashTradingDetector:
     """
 
     def __init__(self, time_window_seconds: float = 1.0):
-        self.time_window = time_window_seconds
+        self.time_window = time_window_seconds  # Window for matching buy/sell pairs
         self.trade_history = deque(maxlen=10000)
         self.wash_trade_alerts = []
         logger.info("WashTradingDetector initialized")
@@ -238,12 +249,12 @@ class WashTradingDetector:
             }
         )
 
-        # Check for wash trading
+        # Check for wash trading after every new trade
         self._detect_wash_trades()
 
     def _detect_wash_trades(self):
         """Detect if same account is buying from itself."""
-        recent_trades = list(self.trade_history)[-100:]
+        recent_trades = list(self.trade_history)[-100:]  # Only scan recent window
 
         for i, trade1 in enumerate(recent_trades):
             for trade2 in recent_trades[i + 1 :]:
@@ -257,7 +268,7 @@ class WashTradingDetector:
                         trade1["buyer"] == trade2["seller"]
                         and trade1["seller"] == trade2["buyer"]
                     ):
-                        # Wash trade detected
+                        # Wash trade detected – same two accounts trading back and forth
                         alert = {
                             "type": "wash_trading",
                             "accounts": [trade1["buyer"], trade1["seller"]],
@@ -285,8 +296,12 @@ class QuoteStuffingDetector:
     def __init__(
         self, orders_per_second_threshold: int = 100, far_from_best_pct: float = 0.02
     ):
-        self.orders_threshold = orders_per_second_threshold
-        self.far_threshold = far_from_best_pct
+        self.orders_threshold = (
+            orders_per_second_threshold  # Alert when rate exceeds this
+        )
+        self.far_threshold = (
+            far_from_best_pct  # Orders this far from mid are suspicious
+        )
         self.order_times = deque(maxlen=1000)
         logger.info("QuoteStuffingDetector initialized")
 
@@ -294,14 +309,15 @@ class QuoteStuffingDetector:
         self, price: float, best_bid: float, best_ask: float, timestamp: datetime
     ):
         """Record order placement."""
-        # Check if order is far from best price
+        # Calculate how far the order is from the current mid price
         mid = (best_bid + best_ask) / 2
         distance_from_mid = abs(price - mid) / mid
 
+        # Only track orders placed far from the best prices (off-market orders)
         if distance_from_mid > self.far_threshold:
             self.order_times.append(timestamp)
 
-            # Check rate in last second
+            # Check rate of far-from-best orders in the last 1 second
             recent_orders = [
                 t for t in self.order_times if (timestamp - t).total_seconds() <= 1.0
             ]
@@ -311,7 +327,7 @@ class QuoteStuffingDetector:
                     f"QUOTE STUFFING DETECTED: "
                     f"{len(recent_orders)} far orders in 1 second"
                 )
-                return True
+                return True  # Signal to caller that stuffing was detected
 
         return False
 
@@ -328,7 +344,7 @@ class OrderBookAnalyzer:
     """
 
     def __init__(self):
-        self.book_history = deque(maxlen=1000)
+        self.book_history = deque(maxlen=1000)  # Rolling history of book snapshots
         self.imbalance_history = []
         logger.info("OrderBookAnalyzer initialized")
 
@@ -342,14 +358,14 @@ class OrderBookAnalyzer:
 
         indicators = {
             "timestamp": order_book.timestamp,
-            "manipulation_probability": 0.0,
+            "manipulation_probability": 0.0,  # Aggregated probability [0, 1]
             "toxicity_score": 0.0,
             "liquidity_stress": 0.0,
             "flash_crash_risk": 0.0,
             "alerts": [],
         }
 
-        # 1. Check order book imbalance
+        # 1. Check order book imbalance (large imbalance suggests directional pressure)
         imbalance = order_book.imbalance
         self.imbalance_history.append(imbalance)
 
@@ -357,9 +373,11 @@ class OrderBookAnalyzer:
             indicators["alerts"].append(
                 {"type": "extreme_imbalance", "severity": "high", "value": imbalance}
             )
-            indicators["manipulation_probability"] += 0.3
+            indicators["manipulation_probability"] += (
+                0.3  # Raise manipulation probability
+            )
 
-        # 2. Check spread anomaly
+        # 2. Check spread anomaly (wide spread suggests thin liquidity or manipulation)
         spread_pct = order_book.spread / order_book.mid_price
         if spread_pct > 0.01:  # > 1% spread
             indicators["alerts"].append(
@@ -367,11 +385,12 @@ class OrderBookAnalyzer:
             )
             indicators["liquidity_stress"] += 0.4
 
-        # 3. Check for flash crash pattern
+        # 3. Check for flash crash pattern (rapid price decline in recent samples)
         if len(self.book_history) >= 10:
             recent_books = list(self.book_history)[-10:]
             mid_prices = [b.mid_price for b in recent_books]
 
+            # Calculate percentage change over last 10 samples
             price_change = (mid_prices[-1] - mid_prices[0]) / mid_prices[0]
 
             if price_change < -0.05:  # 5% drop in 10 samples
@@ -385,10 +404,11 @@ class OrderBookAnalyzer:
                 indicators["flash_crash_risk"] = 0.9
                 indicators["manipulation_probability"] += 0.5
 
-        # 4. Detect sudden liquidity removal
+        # 4. Detect sudden liquidity removal (spoofing aftermath signature)
         if len(self.book_history) >= 2:
             prev_book = self.book_history[-2]
 
+            # Calculate fractional change in bid and ask depth
             bid_depth_change = (
                 order_book.bid_depth - prev_book.bid_depth
             ) / prev_book.bid_depth
@@ -409,7 +429,7 @@ class OrderBookAnalyzer:
                 )
                 indicators["liquidity_stress"] += 0.5
 
-        # Calculate overall manipulation probability
+        # Clamp probability to [0, 1]
         indicators["manipulation_probability"] = min(
             1.0, indicators["manipulation_probability"]
         )
@@ -420,13 +440,13 @@ class OrderBookAnalyzer:
     def _calculate_toxicity_score(self) -> float:
         """Calculate order book toxicity score (VPIN-like)."""
         if len(self.imbalance_history) < 20:
-            return 0.0
+            return 0.0  # Not enough history to estimate toxicity
 
-        # High toxicity when imbalance changes frequently
+        # High toxicity when imbalance changes frequently (informed traders switching direction)
         imbalances = np.array(self.imbalance_history[-20:])
-        volatility = np.std(np.diff(imbalances))
+        volatility = np.std(np.diff(imbalances))  # Variance in imbalance changes
 
-        return min(1.0, volatility * 5)
+        return min(1.0, volatility * 5)  # Scale to [0, 1]
 
 
 class ManipulationProtectionSystem:
@@ -457,10 +477,10 @@ class ManipulationProtectionSystem:
 
         Returns protection recommendations.
         """
-        # Analyze order book
+        # Analyze order book with all detectors
         analysis = self.book_analyzer.analyze_book(order_book)
 
-        # Update protection level
+        # Update protection level based on manipulation probability
         if analysis["manipulation_probability"] > 0.7:
             self.protection_level = "critical"
         elif analysis["manipulation_probability"] > 0.4:
@@ -468,7 +488,7 @@ class ManipulationProtectionSystem:
         else:
             self.protection_level = "normal"
 
-        # Generate protection recommendations
+        # Generate protection recommendations based on analysis
         recommendations = self._generate_recommendations(analysis)
 
         return {
@@ -482,10 +502,12 @@ class ManipulationProtectionSystem:
         recommendations = []
 
         if analysis["manipulation_probability"] > 0.7:
+            # Critical – stop all activity
             recommendations.extend(
                 ["HALT_TRADING", "CLOSE_ALL_POSITIONS", "SWITCH_TO_PASSIVE_MODE"]
             )
         elif analysis["manipulation_probability"] > 0.4:
+            # Elevated – reduce risk
             recommendations.extend(
                 [
                     "REDUCE_POSITION_SIZE_50%",
@@ -494,6 +516,7 @@ class ManipulationProtectionSystem:
                 ]
             )
         elif analysis["liquidity_stress"] > 0.6:
+            # Thin liquidity – be cautious
             recommendations.extend(["REDUCE_POSITION_SIZE_25%", "AVOID_MARKET_ORDERS"])
 
         if analysis["flash_crash_risk"] > 0.8:
@@ -511,15 +534,15 @@ class ManipulationProtectionSystem:
         """
         analysis = self.book_analyzer.analyze_book(order_book)
 
-        # Critical manipulation - don't trade
+        # Critical manipulation – don't trade
         if analysis["manipulation_probability"] > 0.8:
             return False, f"CRITICAL_MANIPULATION_DETECTED: {analysis['alerts']}"
 
-        # High toxicity - reduce size
+        # High toxicity – reduce size below threshold
         if analysis["toxicity_score"] > 0.7 and size > 0.1:
             return False, f"HIGH_TOXICITY: Reduce size below 0.1 (current: {size})"
 
-        # Flash crash risk - avoid market orders
+        # Flash crash risk – market orders are dangerous
         if analysis["flash_crash_risk"] > 0.8 and side == "market":
             return False, "FLASH_CRASH_RISK: Use limit orders only"
 
@@ -540,7 +563,7 @@ class ShutAndRunProtocol:
     def __init__(self):
         self.active = False
         self.triggered_at = None
-        self.closure_history = []
+        self.closure_history = []  # Log of all past shut-and-run events
         logger.info("ShutAndRunProtocol initialized")
 
     def trigger(
@@ -557,7 +580,7 @@ class ShutAndRunProtocol:
         logger.critical(f"🚨 SHUT AND RUN TRIGGERED: {reason}")
         logger.critical("Executing emergency position closure...")
 
-        # Generate closure plan
+        # Build the closure plan with per-position details
         closure_plan = {
             "timestamp": self.triggered_at,
             "reason": reason,
@@ -571,7 +594,7 @@ class ShutAndRunProtocol:
                 current_price = current_prices.get(symbol, 0)
                 position_value = abs(size) * current_price
 
-                # Estimate slippage (higher for larger positions)
+                # Estimate emergency slippage (higher for larger positions)
                 slippage = min(0.02, abs(size) * 0.001)  # Max 2%
 
                 closure_plan["positions_to_close"].append(
@@ -581,7 +604,7 @@ class ShutAndRunProtocol:
                         "current_price": current_price,
                         "value": position_value,
                         "slippage_estimate": slippage,
-                        "action": "sell" if size > 0 else "buy",
+                        "action": "sell" if size > 0 else "buy",  # Close direction
                     }
                 )
 
@@ -608,7 +631,7 @@ class ShutAndRunProtocol:
 
         for pos in closure_plan["positions_to_close"]:
             try:
-                # Execute close order
+                # Execute close order via the provided execution engine
                 logger.warning(
                     f"Closing {pos['symbol']}: {pos['size']} @ {pos['current_price']}"
                 )
@@ -621,7 +644,7 @@ class ShutAndRunProtocol:
             except Exception as e:
                 results["errors"].append({"symbol": pos["symbol"], "error": str(e)})
 
-        self.active = False
+        self.active = False  # Reset active flag after closure
 
         logger.success(
             f"Shut and Run complete. Closed {len(results['positions_closed'])} positions"
@@ -652,6 +675,7 @@ def detect_market_manipulation(order_book_data: pd.DataFrame) -> pd.DataFrame:
     results = []
 
     for idx, row in order_book_data.iterrows():
+        # Build a structured book state from each row of the historical data
         book_state = OrderBookState(
             timestamp=row["timestamp"],
             bids=[(row["bid_price"], row["bid_size"])],

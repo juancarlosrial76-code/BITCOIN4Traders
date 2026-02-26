@@ -13,6 +13,7 @@ Adversary doesn't just add noise - it learns to create realistic
 but difficult scenarios that expose Trader weaknesses.
 """
 
+import gc
 import numpy as np
 import torch
 from typing import Dict, Tuple, Optional
@@ -22,7 +23,26 @@ from loguru import logger
 import json
 from datetime import datetime
 
+try:
+    import yaml
+
+    _YAML_OK = True
+except ImportError:
+    _YAML_OK = False
+
 from agents.ppo_agent import PPOAgent, PPOConfig
+
+
+def _load_mem_cfg() -> dict:
+    """Laedt memory_management.yaml (graceful fallback)."""
+    try:
+        cfg_path = Path("config/memory_management.yaml")
+        if cfg_path.exists() and _YAML_OK:
+            with open(cfg_path) as f:
+                return yaml.safe_load(f) or {}
+    except Exception:
+        pass
+    return {}
 
 
 @dataclass
@@ -105,7 +125,21 @@ class AdversarialTrainer:
         self.iteration = 0
         self.total_steps = 0
 
-        # Metrics history
+        # Memory-Konfiguration laden
+        _mem = _load_mem_cfg()
+        self._max_history = _mem.get("history", {}).get("max_entries", 200)
+        self._clear_adv_buf = _mem.get("adversary_buffer", {}).get(
+            "clear_after_train", True
+        )
+        self._cuda_every = _mem.get("cuda", {}).get(
+            "empty_cache_every_n_iterations", 10
+        )
+        self._ipython_every = _mem.get("ipython", {}).get(
+            "reset_every_n_iterations", 50
+        )
+        self._reset_out = _mem.get("ipython", {}).get("reset_output_cache", True)
+
+        # Metrics history (begrenzt auf max_history Eintraege - kein unbegrenztes Wachstum)
         self.history = {
             "trader_rewards": [],
             "trader_returns": [],
@@ -115,7 +149,7 @@ class AdversarialTrainer:
             "episodes": [],
         }
 
-        # Adversary state tracking
+        # Adversary state tracking (werden nach jedem collect_trajectories geloescht)
         self.adversary_states = []
         self.adversary_actions = []
         self.adversary_log_probs = []
@@ -187,6 +221,7 @@ class AdversarialTrainer:
 
             # Adversary modifies environment (if active)
             adversary_reward = 0.0
+            challenge_info: dict = {}  # default: no challenge applied
             if (
                 use_adversary
                 and self.iteration >= self.config.adversary_start_iteration
@@ -219,21 +254,25 @@ class AdversarialTrainer:
             next_obs, reward, terminated, truncated, info = self.env.step(action)
             done = terminated or truncated
 
-            # Compute adversary reward: negative of trader reward + challenge bonus
+            # Compute adversary reward: adversary wins when trader loses
             if (
                 use_adversary
                 and self.iteration >= self.config.adversary_start_iteration
             ):
-                # Base reward: trader performs poorly (negative reward is good for adversary)
+                # Base reward: adversary gains 50% of trader's loss (zero-sum component)
                 adversary_reward = -reward * 0.5
 
                 # Additional reward for increasing volatility/difficulty
                 if "volatility_increase" in challenge_info:
-                    adversary_reward += challenge_info["volatility_increase"] * 0.1
+                    adversary_reward += (
+                        challenge_info["volatility_increase"] * 0.1
+                    )  # Reward adversary for injecting harder noise
 
-                # Bonus if trader loses money
+                # Extra bonus if trader loses money (encourages adversary to find weaknesses)
                 if reward < 0:
-                    adversary_reward += abs(reward) * 0.3
+                    adversary_reward += (
+                        abs(reward) * 0.3
+                    )  # 30% of trader loss as adversary bonus
 
                 self.adversary_rewards.append(adversary_reward)
                 self.adversary_dones.append(done)
@@ -342,35 +381,44 @@ class AdversarialTrainer:
         strength = self.config.adversary_strength
 
         if adv_action == 0:
-            # Increase volatility: add noise to features
-            noise = np.random.randn(len(obs)) * strength * 0.5
+            # Action 0: Add Gaussian noise to all features (simulates volatile/noisy market)
+            noise = (
+                np.random.randn(len(obs)) * strength * 0.5
+            )  # Scale noise by adversary strength
             modified_obs += noise
             challenge_info["type"] = "volatility_increase"
-            challenge_info["volatility_increase"] = np.mean(np.abs(noise))
+            challenge_info["volatility_increase"] = np.mean(
+                np.abs(noise)
+            )  # Track average noise magnitude
 
         elif adv_action == 1:
-            # Add trend bias: shift price-related features
-            # Find features that might be price/return related (usually first few)
-            n_features = min(5, len(obs) // 2)
-            bias = np.random.randn() * strength
+            # Action 1: Inject systematic bias into price-related features (simulates misleading trends)
+            n_features = min(
+                5, len(obs) // 2
+            )  # Target first 5 features (likely price/return signals)
+            bias = np.random.randn() * strength  # Random directional bias
             modified_obs[:n_features] += bias
             challenge_info["type"] = "trend_bias"
             challenge_info["bias_magnitude"] = abs(bias)
 
         elif adv_action == 2:
-            # Invert signals: flip signs of some features
-            n_invert = max(1, int(len(obs) * strength * 0.3))
-            invert_indices = np.random.choice(len(obs), n_invert, replace=False)
-            modified_obs[invert_indices] *= -1
+            # Action 2: Flip signs of random features (simulates confusing/inverted signals)
+            n_invert = max(
+                1, int(len(obs) * strength * 0.3)
+            )  # Number of features to invert
+            invert_indices = np.random.choice(
+                len(obs), n_invert, replace=False
+            )  # Random feature subset
+            modified_obs[invert_indices] *= -1  # Flip sign to confuse the trader
             challenge_info["type"] = "signal_inversion"
             challenge_info["n_inverted"] = n_invert
 
         else:  # adv_action == 3
-            # No modification
+            # Action 3: No modification (adversary chooses to observe without interfering)
             challenge_info["type"] = "none"
             challenge_info["volatility_increase"] = 0.0
 
-        # Clip to reasonable bounds
+        # Clip modified observation to prevent extreme values that could destabilize training
         modified_obs = np.clip(modified_obs, -10.0, 10.0)
 
         return modified_obs, challenge_info
@@ -427,11 +475,12 @@ class AdversarialTrainer:
         n_successful = sum(1 for r in self.adversary_rewards if r > 0)
         success_rate = n_successful / n_challenges if n_challenges > 0 else 0.0
 
-        # Store history
+        # Store history (begrenzt - kein unbegrenztes Wachstum)
         self.history["adversary_rewards"].append(np.mean(self.adversary_rewards))
         self.history["adversary_success"].append(success_rate)
+        self._trim_history()
 
-        return {
+        result = {
             "adversary_loss": stats.get("actor_loss", 0.0),
             "adversary_critic_loss": stats.get("critic_loss", 0.0),
             "adversary_entropy": stats.get("entropy", 0.0),
@@ -439,6 +488,20 @@ class AdversarialTrainer:
             "adversary_episodes": len(self.adversary_rewards),
             "mean_adversary_reward": np.mean(self.adversary_rewards),
         }
+
+        # RAM freigeben: Adversary-Puffer loeschen (konfigurierbar)
+        if self._clear_adv_buf:
+            self.adversary_states.clear()
+            self.adversary_actions.clear()
+            self.adversary_log_probs.clear()
+            self.adversary_values.clear()
+            self.adversary_rewards.clear()
+            self.adversary_dones.clear()
+            if hasattr(self, "adversary_hiddens"):
+                self.adversary_hiddens.clear()
+            gc.collect()
+
+        return result
 
     def train(self):
         """
@@ -488,10 +551,28 @@ class AdversarialTrainer:
                 mean_ret = traj_metrics.get("mean_return", 0)
                 self._save_checkpoint(iteration, mean_ret)
 
-            # Store history
+            # Store history (begrenzt auf max_history)
             self.history["trader_rewards"].append(traj_metrics["mean_reward"])
             self.history["trader_returns"].append(traj_metrics["mean_return"])
             self.history["episodes"].append(len(traj_metrics["episode_rewards"]))
+            self._trim_history()
+
+            # ── RAM + GPU-Speicher freigeben ──────────────────────────────
+            if iteration % self._cuda_every == 0:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                gc.collect()
+
+            # ── IPython Output-Cache leeren (Colab) ───────────────────────
+            if self._reset_out and iteration % self._ipython_every == 0:
+                try:
+                    from IPython import get_ipython
+
+                    ip = get_ipython()
+                    if ip is not None:
+                        ip.run_line_magic("reset_selective", "-f _i")
+                except Exception:
+                    pass
 
         logger.success("Training complete!")
         self._save_final_checkpoint()
@@ -559,6 +640,20 @@ class AdversarialTrainer:
 
         return metrics
 
+    def _trim_history(self):
+        """
+        Begrenzt alle history-Listen auf self._max_history Eintraege.
+        Verhindert unbegrenztes RAM-Wachstum ueber 500+ Iterationen.
+        0 = kein Limit (fuer lokale Maschinen).
+        """
+        if self._max_history <= 0:
+            return
+        for key in self.history:
+            lst = self.history[key]
+            if len(lst) > self._max_history:
+                # Behalte nur die letzten max_history Eintraege
+                self.history[key] = lst[-self._max_history :]
+
     def _log_iteration(
         self,
         iteration: int,
@@ -587,7 +682,7 @@ class AdversarialTrainer:
                 f"  Success: {adversary_stats.get('adversary_success_rate', 0) * 100:.1f}%"
             )
 
-    def _save_checkpoint(self, iteration: int, mean_return: float = None):
+    def _save_checkpoint(self, iteration: int, mean_return: Optional[float] = None):
         """Save training checkpoint only if it's better than previous best."""
         # Track best return
         if not hasattr(self, "_best_return"):

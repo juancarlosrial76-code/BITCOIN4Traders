@@ -15,9 +15,9 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-MAX_RUNTIME = 8 * 60 * 60  # 8 Stunden
-CHECK_INTERVAL = 300  # Alle 5 Minuten
-NO_PROGRESS_LIMIT = 12  # 1 Stunde (12 x 5 Min)
+MAX_RUNTIME = 8 * 60 * 60  # 8 hours
+CHECK_INTERVAL = 300  # Every 5 minutes
+NO_PROGRESS_LIMIT = 12  # 1 hour (12 x 5 min)
 
 LOG_FILE = Path("logs/training/auto_training.log")
 ERROR_FILE = Path("logs/training/auto_errors.log")

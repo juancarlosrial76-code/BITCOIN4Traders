@@ -4,8 +4,9 @@
 
 Differences from auto_train.py:
 - Longer runtime (12h vs 8h)
-- Targets the tr2win/complete_trading_system working directory
+- Targets the BITCOIN4Traders working directory (Local Master)
 - Runs fix_common_errors() at startup and after each failure
+- Designed for Linux-PC Local Master node (no time limits)
 """
 
 import subprocess
@@ -16,14 +17,16 @@ from datetime import datetime
 from pathlib import Path
 import signal
 
-MAX_RUNTIME = 12 * 60 * 60  # 12 Stunden
-CHECK_INTERVAL = 300  # Alle 5 Minuten
-LOG_FILE = Path("logs/training/12h_auto.log")
-ERROR_FILE = Path("logs/training/12h_errors.log")
+MAX_RUNTIME = 12 * 60 * 60  # 12 hours
+CHECK_INTERVAL = 300  # Every 5 minutes
 
-# Target working directory for the tr2win system
-WORK_DIR = Path("/home/hp17/Tradingbot/tr2win/complete_trading_system")
+# Automatically determine the directory of this file as WORK_DIR
+# This makes the script work regardless of the calling directory
+WORK_DIR = Path(__file__).resolve().parent
 os.chdir(WORK_DIR)
+
+LOG_FILE = WORK_DIR / "logs/training/12h_auto.log"
+ERROR_FILE = WORK_DIR / "logs/training/12h_errors.log"
 
 
 def log(msg):

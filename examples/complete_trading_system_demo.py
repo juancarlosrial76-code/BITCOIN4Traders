@@ -9,7 +9,7 @@ Demonstrates all components working together:
 """
 
 import sys
-sys.path.insert(0, '/home/hp17/Tradingbot/BITCOIN4Traders')
+sys.path.insert(0, '/home/hp17/Tradingbot/BITCOIN4Traders')  # Add project root to path
 
 from src.data.database import init_database, DatabaseManager
 from src.data.historical_pipeline import download_historical_data, update_market_data
@@ -23,13 +23,13 @@ print("=" * 60)
 
 # Step 1: Initialize Database
 print("\n1. Initializing Database...")
-db = init_database()
+db = init_database()  # Creates tables if they don't exist
 print("✓ Database connected and tables created")
 
 # Step 2: Connect to Exchange (Testnet)
 print("\n2. Connecting to Binance Testnet...")
 try:
-    connector = create_binance_connector(testnet=True)
+    connector = create_binance_connector(testnet=True)  # Use testnet to avoid real trades
     print("✓ Connected to Binance Testnet")
     
     # Get account balance
@@ -53,14 +53,14 @@ print("  download_historical_data(['BTCUSDT', 'ETHUSDT'], days=365)")
 # Step 4: Simulate a Trade
 print("\n4. Simulating Trade Execution...")
 trade_data = {
-    'trade_id': f'DEMO_{datetime.now().strftime(\"%Y%m%d_%H%M%S\")}',
+    'trade_id': f'DEMO_{datetime.now().strftime(\"%Y%m%d_%H%M%S\")}',  # Unique ID with timestamp
     'symbol': 'BTCUSDT',
     'side': 'BUY',
     'order_type': 'MARKET',
     'quantity': 0.01,
     'price': 50000.0,
-    'total_value': 500.0,
-    'fee': 0.5,
+    'total_value': 500.0,  # quantity * price
+    'fee': 0.5,            # 0.1% taker fee
     'exchange': 'BINANCE'
 }
 
@@ -74,7 +74,7 @@ print(f"✓ Found {len(trades)} trades for BTCUSDT")
 
 if len(trades) > 0:
     print("\n  Recent trades:")
-    for _, trade in trades.head(3).iterrows():
+    for _, trade in trades.head(3).iterrows():  # Show up to 3 most recent
         print(f"    {trade['side']} {trade['quantity']} {trade['symbol']} @ ${trade['price']:,.2f}")
 
 # Step 6: System Summary

@@ -96,8 +96,10 @@ class KellyCriterion:
         q = 1 - p
         b = win_loss_ratio
 
-        # Kelly formula
-        kelly_f = (p * b - q) / b
+        # Kelly formula: f* = (p*b - q) / b = p - q/b
+        kelly_f = (
+            p * b - q
+        ) / b  # Positive = positive expected value; negative = avoid this bet
 
         return float(kelly_f)
 
@@ -261,7 +263,8 @@ class KellyCriterion:
         b = win_loss_ratio
         f = kelly_fraction
 
-        # Geometric growth rate
+        # Expected log-growth rate: G(f) = p*ln(1+f*b) + q*ln(1-f)
+        # Maximizing this is equivalent to the Kelly criterion
         g = p * np.log(1 + f * b) + q * np.log(1 - f)
 
         return float(g)
@@ -291,12 +294,12 @@ class KellyCriterion:
         b = win_loss_ratio
 
         if p * b <= q:
-            # Negative expectancy → certain ruin
+            # Negative expectancy (EV ≤ 0) → certain ruin long-term
             return 1.0
 
-        # Simplified risk of ruin formula
+        # Simplified risk of ruin: R = ((q/p)/b)^(1/DD)
         risk = ((q / p) / b) ** (1 / target_drawdown)
-        risk = min(risk, 1.0)
+        risk = min(risk, 1.0)  # Cap at 100%
 
         return float(risk)
 

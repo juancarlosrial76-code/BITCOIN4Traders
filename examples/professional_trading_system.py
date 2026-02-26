@@ -13,7 +13,7 @@ Used by: Hedge funds, prop trading firms, quantitative funds
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))  # Add project root to path
 
 import numpy as np
 import pandas as pd
@@ -55,28 +55,30 @@ dates = pd.date_range("2023-01-01", periods=n_samples, freq="h")
 returns = []
 regime = "normal"
 for i in range(n_samples):
-    # Regime switching
+    # Regime switching every 500 bars
     if i % 500 == 0:
         regime = np.random.choice(["normal", "trending", "volatile"])
 
     if regime == "normal":
-        ret = np.random.randn() * 0.01
+        ret = np.random.randn() * 0.01  # ~1% daily vol
     elif regime == "trending":
-        ret = np.random.randn() * 0.01 + 0.0005
+        ret = np.random.randn() * 0.01 + 0.0005  # Slight drift
     else:  # volatile
-        ret = np.random.randn() * 0.03
+        ret = np.random.randn() * 0.03  # ~3% daily vol (crisis)
 
     returns.append(ret)
 
-prices = 50000 * np.exp(np.cumsum(returns))
-volume = np.random.lognormal(10, 1, n_samples)
+prices = 50000 * np.exp(np.cumsum(returns))  # Log-normal price path
+volume = np.random.lognormal(10, 1, n_samples)  # Lognormal volume
 
 # Create DataFrame
 df = pd.DataFrame(
     {
         "open": prices * (1 + np.random.randn(n_samples) * 0.001),
-        "high": prices * (1 + abs(np.random.randn(n_samples) * 0.002)),
-        "low": prices * (1 - abs(np.random.randn(n_samples) * 0.002)),
+        "high": prices
+        * (1 + abs(np.random.randn(n_samples) * 0.002)),  # High > open/close
+        "low": prices
+        * (1 - abs(np.random.randn(n_samples) * 0.002)),  # Low < open/close
         "close": prices,
         "volume": volume,
     },
@@ -90,7 +92,7 @@ print("=" * 80)
 # Initialize multi-timeframe analyzer
 mtf = MultiTimeframeAnalyzer(timeframes=[Timeframe.H1, Timeframe.H4, Timeframe.D1])
 
-# Create synthetic multi-timeframe data
+# Create synthetic multi-timeframe data by resampling
 hourly_data = df.copy()
 four_hour_data = (
     df.resample("4h")
@@ -113,7 +115,7 @@ mtf_data = {
     Timeframe.D1: daily_data,
 }
 
-# Analyze trend alignment
+# Analyze trend alignment across timeframes
 alignment = mtf.calculate_trend_alignment(mtf_data)
 print(f"   Trend Alignment: {alignment['alignment']:.1%}")
 print(
@@ -124,7 +126,7 @@ print(
     f"   Timeframes in Agreement: {alignment['bull_count']} bullish, {alignment['bear_count']} bearish"
 )
 
-# Get entry signal
+# Get entry signal from multi-timeframe analysis
 entry_direction, entry_confidence = mtf.get_entry_signal(alignment)
 if entry_direction != 0:
     print(f"\n   🎯 ENTRY SIGNAL: {'LONG' if entry_direction > 0 else 'SHORT'}")
@@ -132,7 +134,7 @@ if entry_direction != 0:
 else:
     print(f"\n   ⚠️  NO CLEAR SIGNAL - Wait for better alignment")
 
-# Calculate confluence zones
+# Calculate confluence zones (support/resistance)
 zones = mtf.calculate_confluence_zones(mtf_data)
 print(f"\n   📊 Support/Resistance Zones:")
 for i, zone in enumerate(zones[:3], 1):
@@ -144,7 +146,7 @@ print("\n" + "=" * 80)
 print("2. MARKET STRUCTURE ANALYSIS")
 print("=" * 80)
 
-# Analyze market structure
+# Analyze market structure (higher highs/lows, trend type)
 structure_analyzer = MarketStructureAnalyzer()
 structure = structure_analyzer.detect_structure(df)
 
@@ -161,7 +163,7 @@ if breakout:
     print(f"      Price: ${breakout['price']:,.2f}")
     print(f"      Strength: {breakout['strength']:.2%}")
 
-# Calculate Fibonacci levels
+# Calculate Fibonacci levels (key retracement levels)
 fib_levels = structure_analyzer.calculate_fibonacci_levels(df)
 if fib_levels:
     print(f"\n   📐 Fibonacci Levels:")
@@ -175,7 +177,7 @@ print("\n" + "=" * 80)
 print("3. MARKET MICROSTRUCTURE ANALYSIS")
 print("=" * 80)
 
-# Create microstructure features
+# Create microstructure features (e.g., VPIN, trade imbalance)
 ms_features = create_microstructure_features(df)
 
 # Calculate VPIN-like metric (simplified)
@@ -185,11 +187,11 @@ ms_analyzer = MicrostructureAnalyzer(bucket_size=50)
 recent = df.iloc[-100:]
 price_changes = recent["close"].diff().dropna().values
 volumes = recent["volume"].iloc[1:].values
-signed_volumes = np.sign(price_changes) * volumes
+signed_volumes = np.sign(price_changes) * volumes  # Buy/sell volume estimate
 
 # Calculate liquidity metrics
 avg_spread = (recent["high"] - recent["low"]).mean() / recent["close"].mean()
-liquidity_score = 1.0 - min(1.0, avg_spread * 100)
+liquidity_score = 1.0 - min(1.0, avg_spread * 100)  # Normalize to [0, 1]
 
 print(f"   Average Spread: {avg_spread:.4%}")
 print(f"   Liquidity Score: {liquidity_score:.1%}")
@@ -202,7 +204,7 @@ print("\n" + "=" * 80)
 print("4. MATHEMATICAL MODEL SIGNALS")
 print("=" * 80)
 
-# Hurst Exponent
+# Hurst Exponent — measures market memory
 hurst = HurstExponent()
 hurst_value = hurst.calculate(df["close"].values, method="dfa")
 regime = hurst.get_regime(hurst_value)
@@ -210,9 +212,9 @@ regime = hurst.get_regime(hurst_value)
 print(f"   Hurst Exponent: {hurst_value:.3f}")
 print(f"   Market Regime: {regime.replace('_', ' ').title()}")
 
-# GARCH Volatility
+# GARCH Volatility — measures and forecasts volatility
 garch = GARCHModel()
-garch.fit(df["close"].pct_change().dropna().values[-500:])
+garch.fit(df["close"].pct_change().dropna().values[-500:])  # Use last 500 bars
 vol_forecast = garch.forecast(steps=5)
 current_vol = garch.get_conditional_volatility()[-1]
 
@@ -220,7 +222,7 @@ print(f"\n   GARCH Volatility Forecast:")
 print(f"      Current: {current_vol:.2%}")
 print(f"      5-Step Forecast: {vol_forecast[-1]:.2%}")
 
-# Kalman Filter Trend
+# Kalman Filter Trend — smooth price to estimate fair value
 kf = KalmanFilter1D()
 filtered_prices = kf.filter_series(df["close"].values)
 trend_deviation = (df["close"].iloc[-1] - filtered_prices[-1]) / filtered_prices[-1]
@@ -230,7 +232,7 @@ print(f"      Filtered Price: ${filtered_prices[-1]:,.2f}")
 print(f"      Deviation: {trend_deviation:.4%}")
 print(f"      {'Price above trend' if trend_deviation > 0 else 'Price below trend'}")
 
-# Spectral Analysis
+# Spectral Analysis — find dominant price cycles
 spectral = SpectralAnalyzer()
 spectral.compute_fft(df["close"].values)
 dominant_cycles = spectral.find_dominant_cycles(df["close"].values, n_cycles=3)
@@ -245,10 +247,10 @@ print("=" * 80)
 
 # Initialize portfolio risk manager
 risk_config = PortfolioRiskConfig(
-    max_portfolio_var=0.02,
-    max_drawdown_pct=0.15,
-    risk_budget_method="risk_parity",
-    target_volatility=0.15,
+    max_portfolio_var=0.02,  # 2% daily VaR limit
+    max_drawdown_pct=0.15,  # 15% max drawdown
+    risk_budget_method="risk_parity",  # Equal risk contribution
+    target_volatility=0.15,  # 15% annualized vol target
 )
 
 risk_manager = PortfolioRiskManager(risk_config)
@@ -256,7 +258,7 @@ risk_manager = PortfolioRiskManager(risk_config)
 # Simulate portfolio with BTC and hedging asset
 btc_returns = df["close"].pct_change().dropna()
 
-# Create synthetic hedging asset (slightly negatively correlated)
+# Create synthetic hedging asset (slightly negatively correlated with BTC)
 hedge_returns = -0.3 * btc_returns + np.random.randn(len(btc_returns)) * 0.01
 
 returns_df = pd.DataFrame({"BTC": btc_returns, "HEDGE": hedge_returns}).dropna()
@@ -271,13 +273,13 @@ print(f"   Portfolio VaR (95%, 1-day): {portfolio_var['portfolio_var']:.2%}")
 print(f"   Portfolio Volatility: {portfolio_var['portfolio_volatility']:.2%}")
 print(f"   Diversification Ratio: {portfolio_var['diversification_ratio']:.2f}")
 
-# Calculate risk contributions
+# Calculate risk contributions per asset
 risk_contributions = risk_manager.calculate_risk_contribution(returns_df)
 print(f"\n   Risk Contributions:")
 for asset, contribution in risk_contributions.items():
     print(f"      {asset}: {contribution:.2%}")
 
-# Calculate dynamic position sizes
+# Calculate dynamic position sizes (risk parity)
 optimal_sizes = risk_manager.calculate_dynamic_position_sizes(
     returns_df, capital=100000
 )
@@ -285,7 +287,7 @@ print(f"\n   Optimal Position Sizes (Risk Parity):")
 for asset, size in optimal_sizes.items():
     print(f"      {asset}: ${size:,.2f}")
 
-# Run stress test
+# Run stress test (historical scenarios)
 print(f"\n   📊 Stress Test Results:")
 stress_engine = StressTestEngine()
 stress_results = stress_engine.run_stress_test(returns_df, portfolio_var["weights"])
@@ -310,21 +312,21 @@ signals = {
     "liquidity_score": liquidity_score,
 }
 
-# Calculate composite score
+# Calculate composite score (weighted combination of all signals)
 composite_score = 0
-composite_score += entry_direction * entry_confidence * 0.3  # MTF weight
+composite_score += entry_direction * entry_confidence * 0.3  # MTF weight 30%
 composite_score += (
     1
     if structure["type"] in ["uptrend", "expansion"]
     else -1
     if structure["type"] in ["downtrend", "contraction"]
     else 0
-) * 0.25
-composite_score += hurst_value * 0.2  # Hurst
+) * 0.25  # Structure weight 25%
+composite_score += hurst_value * 0.2  # Hurst weight 20%
 composite_score += (
     -1 if trend_deviation > 0.005 else 1 if trend_deviation < -0.005 else 0
-) * 0.15  # Mean reversion
-composite_score += (liquidity_score - 0.5) * 0.1  # Liquidity
+) * 0.15  # Mean reversion weight 15%
+composite_score += (liquidity_score - 0.5) * 0.1  # Liquidity weight 10%
 
 print(f"   Composite Signal Score: {composite_score:.3f}")
 

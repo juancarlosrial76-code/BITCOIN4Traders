@@ -21,17 +21,23 @@ class MockEnv:
     """Mock environment for testing."""
 
     def __init__(self, obs_dim=20, n_actions=7):
-        self.observation_space = type("obs", (), {"shape": (obs_dim,)})()
-        self.action_space = type("act", (), {"n": n_actions})()
+        self.observation_space = type(
+            "obs", (), {"shape": (obs_dim,)}
+        )()  # Minimal object with shape attribute
+        self.action_space = type(
+            "act", (), {"n": n_actions}
+        )()  # Minimal object with n attribute
         self.obs_dim = obs_dim
 
     def reset(self, seed=None, options=None):
-        return np.random.randn(self.obs_dim).astype(np.float32), {}
+        return np.random.randn(self.obs_dim).astype(
+            np.float32
+        ), {}  # Random obs + empty info dict
 
     def step(self, action):
         obs = np.random.randn(self.obs_dim).astype(np.float32)
-        reward = np.random.randn()
-        terminated = np.random.rand() < 0.05
+        reward = np.random.randn()  # Random scalar reward
+        terminated = np.random.rand() < 0.05  # 5% chance of episode end
         truncated = False
         info = {"return": reward * 10}
         return obs, reward, terminated, truncated, info
@@ -79,7 +85,7 @@ class TestPPOAgent:
         assert agent.config is not None
         assert agent.actor is not None
         assert agent.critic is not None
-        assert len(agent.states) == 0
+        assert len(agent.states) == 0  # Buffer starts empty
 
     def test_select_action(self, agent):
         """Test action selection."""
@@ -87,7 +93,7 @@ class TestPPOAgent:
         action, log_prob, value, hidden = agent.select_action(state)
 
         assert isinstance(action, (int, np.integer))
-        assert 0 <= action < 7
+        assert 0 <= action < 7  # Action must be in valid range
         assert isinstance(log_prob, (float, np.floating))
         assert isinstance(value, (float, np.floating))
 
@@ -101,13 +107,15 @@ class TestPPOAgent:
             action, _, _, _ = agent.select_action(state, deterministic=True)
             actions.append(action)
 
-        # All actions should be the same
+        # All actions should be the same (argmax is deterministic)
         assert all(a == actions[0] for a in actions)
 
     def test_store_transition(self, agent):
         """Test transition storage."""
         state = np.random.randn(20).astype(np.float32)
-        agent.store_transition(state, 1, 1.0, -0.5, 0.5, False)
+        agent.store_transition(
+            state, 1, 1.0, -0.5, 0.5, False
+        )  # (s, a, r, log_p, v, done)
 
         assert len(agent.states) == 1
         assert len(agent.actions) == 1
@@ -118,9 +126,11 @@ class TestPPOAgent:
         # Add some transitions
         for i in range(10):
             state = np.random.randn(20).astype(np.float32)
-            agent.store_transition(state, 1, np.random.randn(), -0.5, 0.5, i == 9)
+            agent.store_transition(
+                state, 1, np.random.randn(), -0.5, 0.5, i == 9
+            )  # Last step is done
 
-        next_value = 0.0
+        next_value = 0.0  # Bootstrap value for non-terminal
         advantages, returns = agent.compute_gae(next_value)
 
         assert len(advantages) == 10
@@ -134,9 +144,11 @@ class TestPPOAgent:
             state = np.random.randn(20).astype(np.float32)
             action, log_prob, value, hidden = agent.select_action(state)
             reward = np.random.randn()
-            agent.store_transition(state, action, reward, log_prob, value, i % 20 == 19)
+            agent.store_transition(
+                state, action, reward, log_prob, value, i % 20 == 19
+            )  # Done every 20 steps
 
-        stats = agent.train(next_value=0.0)
+        stats = agent.train(next_value=0.0)  # Train on collected buffer
 
         assert "actor_loss" in stats
         assert "critic_loss" in stats
@@ -154,7 +166,7 @@ class TestPPOAgent:
 
         agent.train(next_value=0.0)
 
-        # Buffer should be cleared
+        # Buffer should be cleared after training to avoid stale data
         assert len(agent.states) == 0
 
 
@@ -172,7 +184,7 @@ class TestAdversarialConfig:
 
         assert config.n_iterations == 500
         assert config.steps_per_iteration == 2048
-        assert config.adversary_start_iteration == 100
+        assert config.adversary_start_iteration == 100  # Adversary starts after warmup
         assert config.adversary_strength == 0.1
 
     def test_custom_config(self):
@@ -238,13 +250,13 @@ class TestAdversarialTrainer:
         assert "episode_rewards" in metrics
         assert "mean_reward" in metrics
         assert "next_value" in metrics
-        assert len(trainer.adversary_states) == 0  # No adversary data
+        assert len(trainer.adversary_states) == 0  # No adversary data collected
 
     def test_collect_trajectories_with_adversary(self, trainer):
         """Test trajectory collection with active adversary."""
         trainer.iteration = (
             trainer.config.adversary_start_iteration
-        )  # Activate adversary
+        )  # Activate adversary by setting iteration
 
         metrics = trainer.collect_trajectories(n_steps=50, use_adversary=True)
 
@@ -292,7 +304,7 @@ class TestAdversarialTrainer:
 
             assert isinstance(modified, np.ndarray)
             assert modified.shape == obs.shape
-            assert "type" in info
+            assert "type" in info  # Info must describe which modification was applied
 
             if action != 3:  # Not "none"
                 assert not np.allclose(modified, original_obs), (
@@ -307,7 +319,7 @@ class TestAdversarialTrainer:
 
         assert info["type"] == "volatility_increase"
         assert "volatility_increase" in info
-        assert info["volatility_increase"] > 0
+        assert info["volatility_increase"] > 0  # Must apply a positive noise scaling
 
     def test_adversary_trend_bias(self, trainer):
         """Test trend bias modification."""
@@ -316,7 +328,7 @@ class TestAdversarialTrainer:
         modified, info = trainer._apply_adversary_modification(obs, 1, {})
 
         assert info["type"] == "trend_bias"
-        assert "bias_magnitude" in info
+        assert "bias_magnitude" in info  # Describes direction/magnitude of bias applied
 
     def test_adversary_signal_inversion(self, trainer):
         """Test signal inversion modification."""
@@ -326,7 +338,7 @@ class TestAdversarialTrainer:
 
         assert info["type"] == "signal_inversion"
         assert "n_inverted" in info
-        assert info["n_inverted"] > 0
+        assert info["n_inverted"] > 0  # At least one feature was inverted
 
     def test_adversary_no_modification(self, trainer):
         """Test no modification action."""
@@ -336,7 +348,7 @@ class TestAdversarialTrainer:
         modified, info = trainer._apply_adversary_modification(obs, 3, {})
 
         assert info["type"] == "none"
-        assert np.allclose(modified, original_obs)
+        assert np.allclose(modified, original_obs)  # Observation unchanged
 
 
 class TestAdversarialTrainingLoop:
@@ -359,7 +371,7 @@ class TestAdversarialTrainingLoop:
             steps_per_iteration=64,
             trader_config=trader_config,
             adversary_config=adversary_config,
-            adversary_start_iteration=0,
+            adversary_start_iteration=0,  # Start adversary from first iteration
             adversary_strength=0.1,
         )
 
@@ -374,7 +386,7 @@ class TestAdversarialTrainingLoop:
             metrics.get("adversary_next_value", 0.0)
         )
 
-        # Verify training occurred
+        # Verify training occurred (non-zero losses)
         assert trader_stats["actor_loss"] != 0
         assert adversary_stats["adversary_loss"] != 0
 
@@ -400,14 +412,14 @@ class TestAdversarialTrainingLoop:
         success_rates = []
 
         for i in range(3):
-            trainer.iteration = i
+            trainer.iteration = i  # Manually advance iteration counter
             metrics = trainer.collect_trajectories(50, use_adversary=True)
             adv_stats = trainer.train_adversary(
                 metrics.get("adversary_next_value", 0.0)
             )
             success_rates.append(adv_stats["adversary_success_rate"])
 
-        # Success rates should exist and be valid probabilities
+        # Success rates should exist and be valid probabilities [0, 1]
         assert all(0 <= rate <= 1 for rate in success_rates)
 
 

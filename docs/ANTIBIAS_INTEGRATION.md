@@ -1,69 +1,69 @@
 # ANTI-BIAS FRAMEWORK – Integration Guide
 
-## Übersicht
+## Overview
 
-Das Anti-Bias Framework wurde erfolgreich in `BITCOIN4Traders` integriert. Es umfasst vier Hauptmodule:
+The Anti-Bias Framework has been successfully integrated into `BITCOIN4Traders`. It consists of four main modules:
 
-1. **Walk-Forward CV** (`src/validation/antibias_walkforward.py`)
-2. **Transaction Costs** (`src/costs/antibias_costs.py`)
+1. **Walk-Forward CV** (`src/validation/antib.py`)
+2. **Transaction Costs**ias_walkforward (`src/costs/antibias_costs.py`)
 3. **Reward Functions** (`src/reward/antibias_rewards.py`)
 4. **Validator** (`src/evaluation/antibias_validator.py`)
 
 ## Integration Status
 
-### ✅ Vollständig integriert:
+### ✅ Fully Integrated:
 
 - **src/validation/antibias_walkforward.py** – Purged Walk-Forward CV, PurgedScaler, LeakDetector
-- **src/costs/antibias_costs.py** – Realistische Transaktionskosten (Spot/Futures)
-- **src/reward/antibias_rewards.py** – Risikobereinigte Reward-Funktionen
-- **src/evaluation/antibias_validator.py** – Statistische Validierung (CPCV, Permutation, DSR)
+- **src/costs/antibias_costs.py** – Realistic transaction costs (Spot/Futures)
+- **src/reward/antibias_rewards.py** – Risk-adjusted reward functions
+- **src/evaluation/antibias_validator.py** – Statistical validation (CPCV, Permutation, DSR)
 
-### ✅ In bestehende Systeme integriert:
+### ✅ Integrated into Existing Systems:
 
 1. **realistic_trading_env.py**
-   - Neue Reward-Funktionen (SharpeIncrement, CostAware, RegimeAware)
-   - Anti-Bias Cost Engine optional verfügbar
-   - Konfiguration über `TradingEnvConfig`
+   - New reward functions (SharpeIncrement, CostAware, RegimeAware)
+   - Anti-Bias Cost Engine optionally available
+   - Configuration via `TradingEnvConfig`
 
 2. **performance_calculator.py**
-   - `validate_with_antibias()` Methode hinzugefügt
-   - Vollständiger ValidationReport verfügbar
+   - Added `validate_with_antibias()` method
+   - Full ValidationReport available
 
 3. **walkforward_engine.py**
-   - `create_purged_splits()` Methode für Purged CV
+   - Added `create_purged_splits()` method for Purged CV
 
-## Verwendung
+## Usage
 
 ### 1. Purged Walk-Forward CV
 
 ```python
 from src.validation.antibias_walkforward import PurgedWalkForwardCV, WalkForwardConfig
 
-# Konfiguration
+# Configuration
 cv = PurgedWalkForwardCV(WalkForwardConfig(
     n_splits=5,
-    feature_lookback=100,  # Max. Feature-Window
-    embargo_pct=0.01,      # 1% Embargo
-    holdout_pct=0.15,      # 15% Holdout
+    feature_lookback=100,  # Max feature window
+    embargo_pct=0.01,      # 1% embargo
+    holdout_pct=0.15,      # 15% holdout
     purge=True,
 ))
 
-# Splits erstellen
+# Create splits
 folds, holdout_idx = cv.split(n_samples=len(df))
 
 for fold in folds:
     X_train = X[fold.train_idx]
     X_test = X[fold.test_idx]
     
-    # KRITISCH: Scaler nur auf Train fitten!
+    # CRITICAL: Fit scaler only on Train!
     scaler = PurgedScaler("zscore")
     X_train_sc = scaler.fit_transform(X_train)
-    X_test_sc = scaler.transform(X_test)  # NUR transform!
+    X_test_sc = scaler.transform(X_test)  # ONLY transform!
     
     # Training...
 ```
 
-### 2. Realistische Transaktionskosten
+### 2. Realistic Transaction Costs
 
 ```python
 from src.costs.antibias_costs import (
@@ -71,7 +71,7 @@ from src.costs.antibias_costs import (
     MarketType, Timeframe, OrderType
 )
 
-# Engine erstellen
+# Create engine
 engine = TransactionCostEngine(CostConfig(
     market_type=MarketType.FUTURES,
     timeframe=Timeframe.H1,
@@ -79,7 +79,7 @@ engine = TransactionCostEngine(CostConfig(
     holding_bars=4,
 ))
 
-# Kosten berechnen
+# Calculate costs
 cost = engine.total_cost(
     price=30_000,
     quantity=0.1,
@@ -101,31 +101,31 @@ from src.reward.antibias_rewards import (
     RegimeState,
 )
 
-# Option 1: Sharpe-basierter Reward
+# Option 1: Sharpe-based Reward
 reward_fn = SharpeIncrementReward(window=50)
 
-# Option 2: Kosten-bewusster Reward (empfohlen)
+# Option 2: Cost-aware Reward (recommended)
 reward_fn = CostAwareReward(
-    lambda_cost=2.0,    # Churning-Strafe
-    lambda_draw=5.0,    # Drawdown-Strafe
-    cost_rate=0.001,    # 0.1% pro Trade
+    lambda_cost=2.0,    # Churning penalty
+    lambda_draw=5.0,    # Drawdown penalty
+    cost_rate=0.001,    # 0.1% per trade
 )
 
-# Option 3: Regime-bewusster Reward (beste für Multi-TF)
+# Option 3: Regime-aware Reward (best for multi-TF)
 reward_fn = RegimeAwareReward(
     lambda_cost=2.0,
     lambda_draw=3.0,
-    lambda_regime=0.5,  # Regime-Kongruenz-Bonus
+    lambda_regime=0.5,  # Regime congruence bonus
 )
 
-# Regime setzen (für RegimeAwareReward)
+# Set regime (for RegimeAwareReward)
 reward_fn.set_regime(RegimeState(
     regime=2,           # 0=Bear, 1=Neutral, 2=Bull
     vol_regime=0,       # 0=Low, 1=High
     trend_strength=0.7,
 ))
 
-# Reward berechnen
+# Calculate reward
 reward = reward_fn.compute(
     pnl=50.0,
     position=1.0,
@@ -135,22 +135,22 @@ reward = reward_fn.compute(
 )
 ```
 
-### 4. Statistische Validierung
+### 4. Statistical Validation
 
 ```python
 from src.evaluation.antibias_validator import BacktestValidator
 
-# Validator erstellen
+# Create validator
 validator = BacktestValidator(
     n_cpcv_splits=6,
     n_permutations=1000,
-    n_trials_tested=20,  # Für DSR
+    n_trials_tested=20,  # For DSR
 )
 
-# Validierung durchführen
+# Run validation
 report = validator.validate(returns_array, positions_array)
 
-# Ergebnis
+# Result
 print(report)
 # ════════════════════════════════════════════════════════════
 #   BACKTEST VALIDATION REPORT
@@ -162,40 +162,40 @@ print(report)
 #   [4] Deflated Sharpe:  DSR=0.89 ✅ ACCEPTABLE
 #   [5] Min. Track Record: 312 bars @ 1h = 13 days
 
-# Check vor Live-Trading
-assert report.passes_all, "System besteht Validierung nicht!"
+# Check before live trading
+assert report.passes_all, "System failed validation!"
 ```
 
-### 5. Integration in Trading Environment
+### 5. Integration into Trading Environment
 
 ```python
 from src.environment.realistic_trading_env import TradingEnvConfig
 
-# Environment mit Anti-Bias Features
+# Environment with Anti-Bias features
 config = TradingEnvConfig(
     initial_capital=100000,
     transaction_cost_bps=5.0,
     
     # Anti-Bias Settings
     use_antibias_rewards=True,
-    reward_type="cost_aware",  # oder "sharpe", "regime_aware"
+    reward_type="cost_aware",  # or "sharpe", "regime_aware"
     use_antibias_costs=True,
 )
 
 env = RealisticTradingEnv(price_data, features, config)
 ```
 
-### 6. Performance Calculator mit Validierung
+### 6. Performance Calculator with Validation
 
 ```python
 from src.backtesting.performance_calculator import PerformanceCalculator
 
 calc = PerformanceCalculator()
 
-# Standard-Metriken berechnen
+# Calculate standard metrics
 metrics = calc.calculate_from_equity_curve(equity_series)
 
-# Anti-Bias Validierung
+# Anti-Bias validation
 report = calc.validate_with_antibias(
     returns=returns_array,
     positions=positions_array,
@@ -207,12 +207,12 @@ if report:
     calc.print_validation_report(report)
 ```
 
-## Break-Even Analyse
+## Break-Even Analysis
 
 ```python
 from src.costs.antibias_costs import BreakEvenAnalyzer
 
-# Zeigt realistisch wie schwer Profitabilität ist
+# Shows realistically how hard profitability is
 print(BreakEvenAnalyzer.analyze_all_scenarios())
 
 # ════════════════════════════════════════════════════════════════════════
@@ -231,14 +231,14 @@ print(BreakEvenAnalyzer.analyze_all_scenarios())
 
 ## Tests
 
-Tests ausführen:
+Run tests:
 
 ```bash
-cd /home/hp17/Tradingbot/BITCOIN4Traders
+cd /home/hp17/Tradingbot/Quantrivo/BITCOIN4Traders
 python -m pytest tests/test_antibias_integration.py -v
 ```
 
-## Checkliste vor Go-Live
+## Checklist Before Go-Live
 
 ```python
 from src.evaluation.antibias_validator import BacktestValidator
@@ -246,7 +246,7 @@ from src.evaluation.antibias_validator import BacktestValidator
 # 1. CPCV Stability > 70%
 # 2. Permutation Test p < 0.05
 # 3. Deflated Sharpe > 0.64
-# 4. Min Track Record erreicht
+# 4. Min Track Record reached
 
 validator = BacktestValidator(
     n_cpcv_splits=6,
@@ -256,19 +256,19 @@ validator = BacktestValidator(
 
 report = validator.validate(returns, positions)
 
-assert report.passes_all, "❌ NICHT live deployen!"
-print("✅ System bereit für Live-Trading")
+assert report.passes_all, "❌ DO NOT deploy live!"
+print("✅ System ready for live trading")
 ```
 
-## Wichtigste Regeln
+## Most Important Rules
 
-1. **PurgedScaler**: Immer nur auf Train fitten, nie auf Test/Holdout
-2. **Walk-Forward**: Mindestens 15% Holdout, nie anfassen
-3. **Kosten**: Realistisch modellieren (0.08-0.12% Round-Trip auf 1h)
-4. **Validierung**: Alle 4 Tests müssen passen vor Live-Trading
-5. **Reward**: Sharpe oder CostAware verwenden, nie naiver Return
+1. **PurgedScaler**: Always fit only on Train, never on Test/Holdout
+2. **Walk-Forward**: At least 15% Holdout, never touch
+3. **Costs**: Model realistically (0.08-0.12% round-trip on 1h)
+4. **Validation**: All 4 tests must pass before live trading
+5. **Reward**: Use Sharpe or CostAware, never naive return
 
-## Dateistruktur
+## File Structure
 
 ```
 BITCOIN4Traders/
@@ -286,17 +286,17 @@ BITCOIN4Traders/
 │   │   ├── __init__.py
 │   │   └── antibias_validator.py      ← CPCV + Permutation + DSR
 │   ├── environment/
-│   │   └── realistic_trading_env.py   ← Integriert Anti-Bias Rewards
+│   │   └── realistic_trading_env.py   ← Integrated Anti-Bias Rewards
 │   └── backtesting/
-│       ├── walkforward_engine.py      ← Purged CV Methoden
-│       └── performance_calculator.py  ← Anti-Bias Validierung
+│       ├── walkforward_engine.py      ← Purged CV methods
+│       └── performance_calculator.py  ← Anti-Bias validation
 └── tests/
     └── test_antibias_integration.py   ← Integration Tests
 ```
 
 ## Support
 
-Bei Fragen oder Problemen mit der Integration:
-- Tests laufen lassen: `pytest tests/test_antibias_integration.py -v`
-- Logging aktivieren: `logging.getLogger("antibias").setLevel(logging.DEBUG)`
-- Projektpfad: `/home/hp17/Tradingbot/BITCOIN4Traders`
+For questions or issues with integration:
+- Run tests: `pytest tests/test_antibias_integration.py -v`
+- Enable logging: `logging.getLogger("antibias").setLevel(logging.DEBUG)`
+- Project path: `/home/hp17/Tradingbot/Quantrivo/BITCOIN4Traders`

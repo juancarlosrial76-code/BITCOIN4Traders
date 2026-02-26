@@ -1,18 +1,67 @@
 """
 Hurst Exponent for Trend Analysis
-==================================
+=================================
 Measures long-term memory and persistence in time series.
 
-Mathematical Interpretation:
-- H = 0.5: Random walk (Brownian motion)
-- H > 0.5: Trending/persistent (trend following works)
-- H < 0.5: Mean-reverting/anti-persistent (mean reversion works)
+Mathematical Foundation:
+------------------------
+The Hurst exponent (H) characterizes the "memory" of a time series:
+how much past values influence future values.
+
+Rescaled Range (R/S) Analysis:
+    For a time series X of length N:
+    1. Divide into n subseries of length m = N/n
+    2. For each subseries:
+       - Calculate mean: μ = (1/m)ΣX_i
+       - Calculate cumulative deviation: Y_k = Σ(X_i - μ)
+       - Range: R = max(Y) - min(Y)
+       - Standard deviation: S = std(X)
+    3. R/S = (1/S)ΣR for all subseries
+
+    Hurst discovered: (R/S) ~ n^H
+
+    Taking logs: log(R/S) = H·log(n) + constant
+
+    Slope of log-log plot = H
+
+Detrended Fluctuation Analysis (DFA):
+    More robust to non-stationarities than R/S
+
+    1. Create profile: Y(i) = Σ(X_k - mean(X))
+    2. Divide into windows of size n
+    3. Fit linear trend in each window
+    4. Calculate fluctuation: F(n) = sqrt(mean((Y - Y_fit)²))
+
+    F(n) ~ n^α where α = Hurst exponent
+
+Fractional Brownian Motion:
+    X(t) = (1/Γ(H+½))∫(t-s)^{H-½}_+ dW(s) - (t-s)^{H-½}_- dW(s)
+
+    where H is the Hurst exponent:
+    - H = 0.5: Standard Brownian motion (no memory)
+    - H > 0.5: Trending (persistent) - "Joseph effect"
+    - H < 0.5: Mean-reverting (anti-persistent) - "Noah effect"
+
+Statistical Interpretation:
+    Variance scaling: Var(X(t+τ) - X(t)) ~ τ^{2H}
+    Correlation: ρ(τ) ~ 2^{2H-1} - 1
 
 Used for:
 - Trend vs. mean-reversion detection
 - Strategy selection (trend vs. MR)
 - Market regime identification
 - Trading horizon optimization
+- Time frame analysis
+
+References:
+- Hurst, H.E. (1951) "Long-term storage capacity of reservoirs"
+- Mandelbrot, B.B. & Wallis, J.R. (1969) "Computer experiments with fractional Gaussian noises"
+- Peters, E.E. (1994) "Fractal Market Analysis"
+
+Dependencies:
+- numpy: Numerical computations
+- pandas: Time series handling
+- scipy: Statistical functions
 """
 
 import numpy as np
@@ -32,6 +81,104 @@ class HurstExponent:
     - H < 0.5: Mean-reverting (anti-persistent)
     - H = 0.5: Random walk (no memory)
     - H > 0.5: Trending (persistent)
+
+    Mathematical Background:
+    -----------------------
+    The Hurst exponent measures long-range dependence in time series:
+
+    R/S Analysis (Classic Method):
+        (R/S)_n ~ n^H
+
+        where:
+            R: Range of cumulative deviations from mean
+            S: Standard deviation
+            n: Subseries length
+
+        On log-log plot: log(R/S) = H·log(n) + c
+
+    Detrended Fluctuation Analysis (DFA):
+        F(n) ~ n^α
+
+        where:
+            F(n): Fluctuation function
+            n: Box size
+            α: DFA exponent (≈ H for fractional Gaussian noise)
+
+        More robust to trends and non-stationarities
+
+    Variance Method:
+        Var(X)_n ~ n^{-β}
+
+        where β = 2 - 2H
+
+    Parameter Interpretation:
+    ----------------------
+    H < 0.4:  Strong mean reversion
+              Past negative returns → future positive (and vice versa)
+              Strategies: Mean reversion, pairs trading, contrarian
+
+    H = 0.5:  Random walk (Brownian motion)
+              No predictable pattern
+              Strategies: Passive, or use higher timeframes
+
+    H > 0.6:  Strong trend
+              Past positive returns → future positive (momentum)
+              Strategies: Trend following, breakout trading
+
+    Parameters:
+    -----------
+    max_lag : int
+        Maximum lag for calculations (default: 100).
+        Should be less than len(data)/4 for R/S analysis.
+        Larger values = more accurate but requires more data.
+
+    Methods:
+    --------
+    rescaled_range(ts)
+        Calculate using R/S analysis
+
+    detrended_fluctuation_analysis(ts)
+        Calculate using DFA (recommended)
+
+    variance_method(ts)
+        Calculate using aggregated variance
+
+    calculate(ts, method)
+        Calculate using specified method
+
+    get_regime(hurst)
+        Interpret Hurst value
+
+    get_trading_recommendation(hurst)
+        Get strategy recommendations
+
+    Returns:
+    --------
+    Hurst exponent: float in range (0, 1)
+
+    Practical Interpretation:
+        - H ≈ 0.5: Random walk (hard to profit)
+        - H ≈ 0.6: Mild trend following
+        - H ≈ 0.7: Strong trend
+        - H ≈ 0.4: Mild mean reversion
+        - H ≈ 0.3: Strong mean reversion
+
+    Example:
+    -------
+    >>> import pandas as pd
+    >>> import numpy as np
+    >>>
+    >>> # Generate trending data (H > 0.5)
+    >>> np.random.seed(42)
+    >>> trend = np.cumsum(np.random.randn(1000))
+    >>>
+    >>> # Calculate Hurst
+    >>> calc = HurstExponent(max_lag=100)
+    >>> H = calc.detrended_fluctuation_analysis(trend)
+    >>>
+    >>> print(f"Hurst: {H:.4f}")
+    >>> print(f"Regime: {calc.get_regime(H)}")
+    >>> print(f"Strategy: {calc.get_trading_recommendation(H)['strategy']}")
     """
 
     def __init__(self, max_lag: int = 100):
@@ -62,12 +209,13 @@ class HurstExponent:
             Hurst exponent
         """
         lags = range(2, min(self.max_lag, len(ts) // 4))
+        # τ(lag) = std of lagged differences; for fractional Brownian motion: τ ~ lag^H
         tau = [np.sqrt(np.std(np.subtract(ts[lag:], ts[:-lag]))) for lag in lags]
 
-        # Linear regression on log-log plot
+        # Fit log(tau) = H * log(lag) + const on log-log plot
         poly = np.polyfit(np.log(lags), np.log(tau), 1)
 
-        return poly[0] * 2.0  # Hurst exponent
+        return poly[0] * 2.0  # Hurst exponent: slope * 2 due to sqrt in tau definition
 
     def detrended_fluctuation_analysis(self, ts: np.ndarray) -> float:
         """
@@ -81,7 +229,7 @@ class HurstExponent:
         Returns:
             Hurst exponent
         """
-        # Create profile (cumulative sum of deviations from mean)
+        # Create profile: cumulative sum of mean-centered series (integrated noise)
         profile = np.cumsum(ts - np.mean(ts))
 
         # Try different window sizes
@@ -102,10 +250,12 @@ class HurstExponent:
                 slope, intercept, _, _, _ = stats.linregress(x, window)
                 trend = slope * x + intercept
 
-                # Calculate fluctuation (RMS of detrended series)
+                # Calculate fluctuation: RMS of residuals after local linear detrending
                 fluct += np.mean((window - trend) ** 2)
 
-            flucts.append(np.sqrt(fluct / n_windows))
+            flucts.append(
+                np.sqrt(fluct / n_windows)
+            )  # F(lag) = sqrt of mean squared fluctuation
 
         # Linear fit on log-log scale
         poly = np.polyfit(np.log(list(lags)), np.log(flucts), 1)
