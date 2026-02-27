@@ -1,20 +1,61 @@
 """
 Causal Inference Engine for Trading
-====================================
-SUPERHUMAN feature: Understanding cause-effect, not just correlation.
+===================================
+SUPERHUMAN feature: Understanding cause-effect relationships, not just correlations.
 
-Most AI systems find correlations. This finds CAUSAL relationships:
-- What actually causes price movements?
-- Which news events have lasting impact vs noise?
-- How do interventions (trades) affect the market?
+This module implements cutting-edge causal inference technology that enables
+the trading system to understand WHY markets move, not just WHAT is moving.
 
-Uses:
+KEY CAPABILITIES:
+---------------
+1. CAUSAL DISCOVERY
+   - Automatically discovers causal relationships from observational data
+   - Uses PC Algorithm for structure learning
+   - Identifies true drivers vs spurious correlations
+
+2. CAUSAL EFFECT ESTIMATION
+   - Backdoor adjustment for confounding control
+   - Instrumental variables for endogenous treatments
+   - Difference-in-differences for policy analysis
+
+3. COUNTERFACTUAL REASONING
+   - "What would have happened if..."
+   - Trade regret analysis
+   - A/B testing for strategy evaluation
+
+ADVANTAGES OVER CORRELATION:
+--------------------------
+- Avoids spurious signals that lead to overfitting
+- Identifies actionable relationships that persist
+- Provides interpretable causal graphs
+- Enables robust decision-making under distribution shift
+
+TECHNICAL FOUNDATION:
+--------------------
 - DoWhy framework principles
-- Causal discovery algorithms
+- Causal discovery algorithms (PC Algorithm)
 - Counterfactual reasoning
 - Instrumental variables
 
-2040 Status: AI that understands "why", not just "what"
+Usage:
+    from src.causal.causal_inference import (
+        find_causal_drivers,
+        estimate_causal_effect,
+        analyze_trade_counterfactuals,
+        CausalTradingStrategy
+    )
+
+    # Discover what actually drives returns
+    drivers = find_causal_drivers(data, target="returns")
+
+    # Estimate causal effect
+    effect = estimate_causal_effect(data, "volume", "returns", method="backdoor")
+
+    # Counterfactual analysis
+    regrets = analyze_trade_counterfactuals(trades, prices)
+
+Author: BITCOIN4Traders Team
+License: Proprietary - Internal Use Only
 """
 
 import numpy as np
@@ -33,7 +74,32 @@ from loguru import logger
 
 @dataclass
 class CausalEffect:
-    """Represents a causal effect estimate."""
+    """
+    Represents a causal effect estimate with statistical properties.
+
+    Encapsulates the result of causal analysis including the estimated
+    effect size, confidence intervals, and validity assumptions.
+
+    Attributes:
+        treatment: Name of the treatment (cause) variable
+        outcome: Name of the outcome (effect) variable
+        effect_size: Estimated causal effect magnitude
+        p_value: Statistical significance (lower = more significant)
+        confidence_interval: 95% CI as (lower, upper) tuple
+        method: Estimation method used ('backdoor', 'iv', 'did', etc.)
+        valid_instruments: List of valid instrumental variables (for IV)
+        assumptions: Dictionary of key assumptions for validity
+
+    Example:
+        >>> effect = CausalEffect(
+        ...     treatment="volume",
+        ...     outcome="returns",
+        ...     effect_size=0.002,
+        ...     p_value=0.01,
+        ...     confidence_interval=(0.0005, 0.0035),
+        ...     method="backdoor_adjustment"
+        ... )
+    """
 
     treatment: str
     outcome: str
@@ -47,27 +113,64 @@ class CausalEffect:
 
 class CausalDiscovery:
     """
-    Discovers causal relationships from observational data.
+    Causal discovery from observational data.
 
-    Unlike correlation analysis, this finds the actual data-generating
-    process: which variables cause which others.
+    Implements the PC (Peter-Clark) Algorithm for discovering causal
+    structure from purely observational data. Unlike correlation
+    analysis, this finds the actual data-generating process.
 
-    2040 Innovation: Automated causal graph discovery
+    PC ALGORITHM:
+    -----------
+    1. SKELETON DISCOVERY
+       - Start with fully connected graph
+       - Remove edges between conditionally independent variables
+       - Iteratively increase conditioning set size
+
+    2. EDGE ORIENTATION
+       - Detect v-structures (X -> Z <- Y where X and Y not adjacent)
+       - Orient edges based on dependencies
+       - Avoid creating cycles
+
+    LIMITATIONS:
+    -----------
+    - Assumes no hidden confounders (causal sufficiency)
+    - Can only orient edges up to Markov equivalence class
+    - Requires sufficient sample size
+
+    Example:
+        >>> discovery = CausalDiscovery(alpha=0.05)
+        >>> graph = discovery.pc_algorithm(data)
+        >>> drivers = discovery.get_causal_parents("returns")
     """
 
     def __init__(self, alpha: float = 0.05):
+        """
+        Initialize causal discovery.
+
+        Args:
+            alpha: Significance level for conditional independence tests
+        """
         self.alpha = alpha
         self.causal_graph = nx.DiGraph()
         logger.info("CausalDiscovery initialized")
 
     def pc_algorithm(self, data: pd.DataFrame, max_cond_vars: int = 3) -> nx.DiGraph:
         """
-        PC Algorithm for causal discovery.
+        Execute PC Algorithm for causal structure discovery.
 
-        1. Skeleton discovery: Find conditional independencies
-        2. Orientation: Determine causal directions
+        Discovers the causal skeleton and orients edges to create
+        a causal DAG (Directed Acyclic Graph).
 
-        Returns causal DAG (Directed Acyclic Graph).
+        Args:
+            data: DataFrame with variables as columns
+            max_cond_vars: Maximum conditioning set size to test
+
+        Returns:
+            NetworkX DiGraph representing causal structure
+
+        Example:
+            >>> df = pd.DataFrame({'volume': [...], 'returns': [...], 'volatility': [...]})
+            >>> graph = pc_algorithm(df)
         """
         variables = data.columns.tolist()
         n = len(data)
@@ -119,16 +222,26 @@ class CausalDiscovery:
         self, data: pd.DataFrame, x: str, y: str, cond_set: List[str]
     ) -> bool:
         """
-        Test if X ⟂ Y | Z (conditional independence).
+        Test conditional independence X ⟂ Y | Z.
 
-        Uses partial correlation test.
+        Uses partial correlation to test whether X and Y are
+        independent given a set of conditioning variables.
+
+        Args:
+            data: DataFrame containing variables
+            x: First variable name
+            y: Second variable name
+            cond_set: List of conditioning variable names
+
+        Returns:
+            True if conditionally independent (p > alpha), False otherwise
         """
         if len(cond_set) == 0:
             # Unconditional test
             corr, p_value = stats.pearsonr(data[x], data[y])
             return p_value > self.alpha
 
-        # Partial correlation
+        # Partial correlation via regression
         try:
             from sklearn.linear_model import LinearRegression
 
@@ -154,7 +267,19 @@ class CausalDiscovery:
             return False
 
     def _orient_edges(self, graph: nx.Graph, data: pd.DataFrame) -> nx.DiGraph:
-        """Orient edges based on v-structures."""
+        """
+        Orient edges based on v-structure detection.
+
+        Finds patterns of the form X - Z - Y where X and Y are not
+        adjacent, suggesting Z is a collider (X -> Z <- Y).
+
+        Args:
+            graph: Undirected skeleton graph
+            data: DataFrame for additional checks
+
+        Returns:
+            Oriented DAG
+        """
         dag = nx.DiGraph()
         dag.add_nodes_from(graph.nodes())
 
@@ -184,13 +309,29 @@ class CausalDiscovery:
         return dag
 
     def get_causal_parents(self, variable: str) -> List[str]:
-        """Get direct causes of a variable."""
+        """
+        Get direct causes of a variable.
+
+        Args:
+            variable: Target variable name
+
+        Returns:
+            List of variable names that directly cause the target
+        """
         if variable in self.causal_graph:
             return list(self.causal_graph.predecessors(variable))
         return []
 
     def get_causal_children(self, variable: str) -> List[str]:
-        """Get direct effects of a variable."""
+        """
+        Get direct effects of a variable.
+
+        Args:
+            variable: Source variable name
+
+        Returns:
+            List of variable names directly caused by this variable
+        """
         if variable in self.causal_graph:
             return list(self.causal_graph.successors(variable))
         return []
@@ -198,12 +339,37 @@ class CausalDiscovery:
 
 class CausalEffectEstimator:
     """
-    Estimates causal effects using various methods.
+    Estimates causal effects using various identification strategies.
 
-    Answers: "What would happen if we intervened on X?"
+    Provides multiple methods for estimating the causal effect of
+    a treatment on an outcome, each with different assumptions.
+
+    METHODS:
+    -------
+    1. BACKDOOR ADJUSTMENT
+       - Controls for confounding variables
+       - Requires causal sufficiency
+       - Computes P(Y|do(X)) = Σ_z P(Y|X,Z) P(Z)
+
+    2. INSTRUMENTAL VARIABLES
+       - Uses exogenous variation (instruments)
+       - Handles endogenous treatments
+       - Two-stage least squares estimation
+
+    3. DIFFERENCE-IN-DIFFERENCES
+       - Compares treatment vs control groups
+       - Before vs after intervention
+       - Requires parallel trends assumption
+
+    Example:
+        >>> estimator = CausalEffectEstimator()
+        >>> effect = estimator.backdoor_adjustment(
+        ...     data, treatment="volume", outcome="returns", confounders=["volatility"]
+        ... )
     """
 
     def __init__(self):
+        """Initialize the causal effect estimator."""
         self.estimates = []
         logger.info("CausalEffectEstimator initialized")
 
@@ -213,9 +379,23 @@ class CausalEffectEstimator:
         """
         Estimate causal effect using backdoor adjustment.
 
+        Computes the causal effect by adjusting for all confounding
+        variables (backdoor paths) using stratification.
+
+        MATHEMATICAL FORMULATION:
+        ------------------------
         P(Y|do(X)) = Σ_z P(Y|X,Z) P(Z)
 
-        Controls for confounding variables.
+        where Z is the set of confounding variables.
+
+        Args:
+            data: DataFrame containing treatment, outcome, and confounders
+            treatment: Name of treatment variable (binary or continuous)
+            outcome: Name of outcome variable
+            confounder_names: List of confounder variable names
+
+        Returns:
+            CausalEffect object with estimate and statistics
         """
         # Stratify by confounders
         unique_strata = data[confounders].drop_duplicates()
@@ -280,11 +460,28 @@ class CausalEffectEstimator:
         """
         Estimate causal effect using instrumental variables.
 
-        Useful when treatment is endogenous (correlated with error).
+        Uses two-stage least squares (2SLS) to estimate causal effect
+        when the treatment is endogenous (correlated with unobservables).
 
-        Two-stage least squares (2SLS):
-        1. X_hat = α + βZ
-        2. Y = γ + δX_hat
+        INSTRUMENT REQUIREMENTS:
+        ----------------------
+        1. RELEVANCE: Instrument correlates with treatment (first-stage F > 10)
+        2. EXCLUSION: Instrument affects outcome only through treatment
+        3. INDEPENDENCE: Instrument is exogenous
+
+        TWO-STAGE LEAST SQUARES:
+        -----------------------
+        Stage 1: X_hat = α + βZ (predict treatment from instrument)
+        Stage 2: Y = γ + δX_hat (predict outcome from predicted treatment)
+
+        Args:
+            data: DataFrame containing all variables
+            treatment: Endogenous treatment variable
+            outcome: Outcome variable
+            instrument: Instrumental variable
+
+        Returns:
+            CausalEffect with 2SLS estimate
         """
         # Stage 1: Predict treatment from instrument
         Z = data[[instrument]].values  # instrument as column vector
@@ -348,11 +545,27 @@ class CausalEffectEstimator:
         group_var: str,
     ) -> CausalEffect:
         """
-        Difference-in-differences estimator.
+        Estimate causal effect using difference-in-differences.
 
-        Compares treatment vs control groups before and after intervention.
+        Compares the change in outcomes for treatment group vs control
+        group, before vs after intervention.
 
+        DIFFERENCE-IN-DIFFERENCES:
+        -------------------------
         Effect = (Y_treat_post - Y_treat_pre) - (Y_control_post - Y_control_pre)
+
+        This method controls for time-invariant confounders and common
+        time trends, making it robust to omitted variable bias.
+
+        Args:
+            data: DataFrame with treatment, outcome, time, and group variables
+            treatment: Treatment indicator variable name
+            outcome: Outcome variable name
+            time_var: Time period variable (0=pre, 1=post)
+            group_var: Group variable (1=treatment, 0=control)
+
+        Returns:
+            CausalEffect with DiD estimate
         """
         # Split by group and time
         treat_pre = data[(data[group_var] == 1) & (data[time_var] == 0)][outcome].mean()
@@ -382,15 +595,32 @@ class CausalEffectEstimator:
 
 class CounterfactualReasoning:
     """
-    Counterfactual reasoning: "What if I had done X instead of Y?"
+    Counterfactual reasoning engine for trading decisions.
 
-    Essential for:
-    - Evaluating trade decisions
-    - Learning from mistakes
-    - A/B testing strategies
+    Enables the system to answer "what if" questions about trading
+    decisions, essential for learning from past trades and strategy
+    evaluation.
+
+    CAPABILITIES:
+    -----------
+    1. COUNTERFACTUAL ESTIMATION
+       - "What would have happened with different action?"
+
+    2. REGRET ANALYSIS
+       - Quantify opportunity cost of decisions
+       - Compare actual vs optimal outcomes
+
+    3. STRATEGY A/B TESTING
+       - Compare performance of different strategies
+       - Virtual experiments with historical data
+
+    Example:
+        >>> reasoner = CounterfactualReasoning()
+        >>> regrets = reasoner.analyze_trade_regret(trades, prices)
     """
 
     def __init__(self):
+        """Initialize the counterfactual reasoner."""
         self.history = []
         logger.info("CounterfactualReasoning initialized")
 
@@ -405,7 +635,19 @@ class CounterfactualReasoning:
         Estimate what would have happened with different action.
 
         Args:
-            model: Function that predicts outcome given action
+            actual_outcome: Real outcome from actual action
+            actual_action: Action that was taken
+            counterfactual_action: Alternative action to evaluate
+            model: Function predicting outcome given action
+
+        Returns:
+            Dictionary containing:
+                - actual_outcome: Observed outcome
+                - actual_action: What was done
+                - counterfactual_outcome: Predicted outcome for alternative
+                - counterfactual_action: Alternative considered
+                - regret: Difference (counterfactual - actual)
+                - optimal: Whether counterfactual was better
         """
         counterfactual_outcome = model(counterfactual_action)
 
@@ -429,10 +671,28 @@ class CounterfactualReasoning:
         """
         Analyze regret for past trades.
 
-        For each trade, calculate what would have happened if we:
-        - Held longer
-        - Exited earlier
-        - Did opposite trade
+        For each historical trade, calculates what would have happened
+        with alternative actions:
+        1. Holding longer before exit
+        2. Taking the opposite position
+
+        Args:
+            trade_history: DataFrame with columns:
+                - entry_time, exit_time: Timestamps
+                - entry_price, exit_price: Prices
+                - side: 'buy' or 'sell'
+                - size: Position size
+                - pnl: Realized P&L
+            price_data: DataFrame with 'close' prices indexed by time
+            holding_period: How many periods to check for hold-longer
+
+        Returns:
+            DataFrame with regret analysis:
+                - trade_id: Trade identifier
+                - actual_pnl: Realized P&L
+                - regret_hold_longer: P&L if held longer
+                - regret_opposite: P&L if opposite action taken
+                - optimal_decision: Best action in hindsight
         """
         regrets = []
 
@@ -482,7 +742,18 @@ class CounterfactualReasoning:
     def _calculate_pnl(
         self, entry: float, exit: float, side: str, size: float
     ) -> float:
-        """Calculate P&L for a trade."""
+        """
+        Calculate P&L for a trade.
+
+        Args:
+            entry: Entry price
+            exit: Exit price
+            side: 'buy' (long) or 'sell' (short)
+            size: Position size
+
+        Returns:
+            Realized P&L
+        """
         if side == "buy":
             return (exit - entry) * size
         else:
@@ -493,10 +764,32 @@ class CausalTradingStrategy:
     """
     Trading strategy based on causal inference.
 
-    Instead of predicting correlations, trades on actual causal relationships.
+    Instead of predicting correlations (which can be spurious),
+    this strategy trades on actual causal relationships discovered
+    from the data.
+
+    WORKFLOW:
+    --------
+    1. Discover causal structure from historical data
+    2. Identify true drivers of returns
+    3. Estimate causal effects
+    4. Generate signals from causal predictors only
+
+    ADVANTAGES:
+    ----------
+    - More robust to market regime changes
+    - Less prone to overfitting
+    - Interpretable signal sources
+    - Better generalization
+
+    Example:
+        >>> strategy = CausalTradingStrategy()
+        >>> drivers = strategy.discover_drivers(data, target="returns")
+        >>> signal = strategy.generate_signal(data)
     """
 
     def __init__(self):
+        """Initialize the causal trading strategy."""
         self.discovery = CausalDiscovery()
         self.estimator = CausalEffectEstimator()
         self.counterfactual = CounterfactualReasoning()
@@ -507,9 +800,17 @@ class CausalTradingStrategy:
         self, data: pd.DataFrame, target: str = "returns"
     ) -> List[str]:
         """
-        Discover what actually drives target variable.
+        Discover what actually drives the target variable.
 
-        Returns list of true causal drivers (not just correlated).
+        Uses causal discovery to find true causal drivers, not just
+        correlated variables.
+
+        Args:
+            data: Historical market data
+            target: Target variable name (e.g., 'returns')
+
+        Returns:
+            List of causal driver variable names
         """
         # Build causal graph
         self.causal_graph = self.discovery.pc_algorithm(data)
@@ -528,6 +829,19 @@ class CausalTradingStrategy:
         Estimate causal impact of our trade on market.
 
         Answers: "If I place this order, what will happen to price?"
+
+        Uses instrumental variables where the trading signal serves
+        as an instrument for order flow.
+
+        Args:
+            market_data: DataFrame with order_flow, trading_signal, price_change
+            trade_size: Proposed order size
+
+        Returns:
+            Dictionary containing:
+                - expected_impact: Predicted price impact
+                - confidence_interval: 95% CI for impact
+                - method: Estimation method used
         """
         # Use instrumental variables (our trade is endogenous)
         # Instrument: Trading signal (affects trade but not directly price)
@@ -551,6 +865,19 @@ class CausalTradingStrategy:
     def generate_signal(self, data: pd.DataFrame) -> Dict:
         """
         Generate trading signal based on causal relationships.
+
+        Uses discovered causal structure to generate predictions
+        using only true causal predictors.
+
+        Args:
+            data: Current market data
+
+        Returns:
+            Dictionary containing:
+                - signal: Trading signal (-1, 0, 1)
+                - confidence: Signal strength
+                - predictors: List of causal predictors used
+                - causal: Always True for this strategy
         """
         # Discover causal structure
         if self.causal_graph is None:
@@ -578,7 +905,18 @@ class CausalTradingStrategy:
 
 # Production functions
 def find_causal_drivers(data: pd.DataFrame, target: str) -> List[str]:
-    """Find what actually causes target variable."""
+    """
+    Discover causal drivers of a target variable.
+
+    Convenience function for causal discovery.
+
+    Args:
+        data: DataFrame with variables
+        target: Target variable name
+
+    Returns:
+        List of causal driver variable names
+    """
     discovery = CausalDiscovery()
     graph = discovery.pc_algorithm(data)
     return discovery.get_causal_parents(target)
@@ -591,7 +929,21 @@ def estimate_causal_effect(
     method: str = "backdoor",
     confounders: List[str] = None,
 ) -> CausalEffect:
-    """Estimate causal effect of treatment on outcome."""
+    """
+    Estimate causal effect of treatment on outcome.
+
+    Convenience function for causal effect estimation.
+
+    Args:
+        data: DataFrame containing variables
+        treatment: Treatment variable name
+        outcome: Outcome variable name
+        method: Estimation method ('backdoor', 'iv')
+        confounders: List of confounders (for backdoor) or instruments (for IV)
+
+    Returns:
+        CausalEffect with estimate and statistics
+    """
     estimator = CausalEffectEstimator()
 
     if method == "backdoor":
@@ -609,6 +961,17 @@ def estimate_causal_effect(
 def analyze_trade_counterfactuals(
     trade_history: pd.DataFrame, price_data: pd.DataFrame
 ) -> pd.DataFrame:
-    """Analyze what would have happened with different trade decisions."""
+    """
+    Analyze what would have happened with different trade decisions.
+
+    Convenience function for counterfactual analysis.
+
+    Args:
+        trade_history: DataFrame of executed trades
+        price_data: DataFrame of historical prices
+
+    Returns:
+        DataFrame with regret analysis
+    """
     reasoner = CounterfactualReasoning()
     return reasoner.analyze_trade_regret(trade_history, price_data)

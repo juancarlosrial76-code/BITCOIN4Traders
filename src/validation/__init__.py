@@ -1,6 +1,6 @@
 """Validation module with Anti-Bias Framework."""
 
-from validation.antibias_walkforward import (
+from src.validation.antibias_walkforward import (
     WalkForwardConfig,
     FoldSplit,
     PurgedWalkForwardCV,

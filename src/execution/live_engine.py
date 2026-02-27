@@ -1,16 +1,55 @@
 """
-PHASE 7 – LIVE EXECUTION ENGINE
-================================
-Orchestrates:
-  1. BinanceWSConnector  – market data + user stream
-  2. OrderManager        – order lifecycle
-  3. RL Agent            – signal generation (from Phase 5)
-  4. Risk Layer          – position limits, circuit breaker (Phase 4)
-  5. Monitoring          – P&L tracking, alerting
+Live Execution Engine (Phase 7)
+============================
+Production-ready orchestration layer for RL-based trading on Binance.
 
-Flow per tick:
-  WS tick  →  FeatureEngine.transform()  →  Agent.predict()
-           →  Risk checks  →  OMS.submit()  →  Fill handlers
+This module provides the main execution engine that coordinates all components
+of the live trading system including market data ingestion, signal generation,
+risk management, order execution, and monitoring.
+
+Architecture:
+  1. BinanceWSConnector: Market data + user data stream WebSocket
+  2. OrderManager: Order lifecycle management
+  3. RL Agent: Signal generation (from Phase 5 training)
+  4. Risk Layer: Position limits, circuit breaker (Phase 4)
+  5. Monitor: P&L tracking, alerting (Phase 7)
+
+Execution Flow per Tick:
+  1. WS tick received → FeatureEngine.transform()
+  2. Agent.predict(features) → signal (-1/0/+1)
+  3. Risk pre-check → validate position
+  4. OMS.submit_order() → exchange
+  5. Fill handlers → update positions & P&L
+  6. Monitor callbacks → update metrics
+
+Key Components:
+  - LiveExecutionEngine: Main orchestrator
+  - CircuitBreaker: Automatic trading halt on losses
+  - Position: Per-symbol position tracking with P&L
+  - EngineConfig: Configuration for all engine parameters
+
+Usage:
+    from src.execution.live_engine import LiveExecutionEngine, EngineConfig
+    from src.connectors.binance_ws_connector import ReconnectPolicy
+
+    config = EngineConfig(
+        symbols=['BTCUSDT', 'ETHUSDT'],
+        api_key='your_key',
+        api_secret='your_secret',
+        max_position_usd=Decimal('10000'),
+        circuit_breaker_pct=Decimal('0.02'),
+        daily_loss_limit_usd=Decimal('500')
+    )
+
+    engine = LiveExecutionEngine(
+        config=config,
+        agent=trained_agent,
+        feature_engine=feature_engine,
+        paper_trading=True
+    )
+
+    await engine.start()
+    # Runs until stopped or circuit breaker trips
 """
 
 from __future__ import annotations
@@ -46,6 +85,31 @@ logger = logging.getLogger("phase7.engine")
 
 @dataclass
 class Position:
+    """
+    Represents a trading position for a single symbol.
+
+    Tracks position quantity, average cost basis, and calculates both
+    realized and unrealized P&L.
+
+    Attributes:
+        symbol: Trading pair symbol (e.g., 'BTCUSDT')
+        qty: Position quantity (positive = long, negative = short)
+        avg_cost: Volume-weighted average entry price
+        realized_pnl: Cumulative realized P&L from closed trades
+
+    P&L Calculation:
+        - Unrealized P&L = qty × (current_price - avg_cost)
+        - Realized P&L = sum of all closed trade P&Ls
+
+    Example:
+        pos = Position('BTCUSDT')
+        pos.qty = Decimal('0.5')
+        pos.avg_cost = Decimal('40000')
+
+        # Calculate unrealized P&L
+        unreal = pos.unrealized_pnl(Decimal('45000'))  # = 0.5 × 5000 = 2500
+    """
+
     symbol: str
     qty: Decimal = Decimal(0)  # + long, - short
     avg_cost: Decimal = Decimal(0)  # Volume-weighted average entry price
@@ -96,6 +160,38 @@ class Position:
 
 @dataclass
 class EngineConfig:
+    """
+    Configuration for LiveExecutionEngine.
+
+    Defines all parameters for the live trading engine including
+    risk limits, execution parameters, and reconnection behavior.
+
+    Risk Limits:
+        - max_position_usd: Maximum notional per position (default $10,000)
+        - max_order_usd: Maximum notional per single order (default $2,000)
+        - circuit_breaker_pct: Drawdown percentage to trigger halt (default 2%)
+        - daily_loss_limit_usd: Dollar loss to trigger halt (default $500)
+
+    Execution Settings:
+        - use_limit_orders: Use limit orders vs market orders (default True)
+        - limit_order_offset_bps: Limit price offset in basis points (default 2)
+        - order_timeout_s: Cancel unfilled limit orders after seconds (default 30)
+
+    Example:
+        config = EngineConfig(
+            symbols=['BTCUSDT', 'ETHUSDT'],
+            api_key='mvxxx',
+            api_secret='abc123',
+            max_position_usd=Decimal('50000'),
+            max_order_usd=Decimal('10000'),
+            circuit_breaker_pct=Decimal('0.05'),  # 5% drawdown
+            daily_loss_limit_usd=Decimal('1000'),   # $1000 daily loss
+            use_limit_orders=True,
+            limit_order_offset_bps=5,
+            reconnect_policy=ReconnectPolicy(max_attempts=10)
+        )
+    """
+
     symbols: List[str]
     api_key: str
     api_secret: str
@@ -121,6 +217,39 @@ class EngineConfig:
 
 
 class CircuitBreaker:
+    """
+    Trading circuit breaker for automatic risk control.
+
+    Automatically halts trading when predefined loss thresholds are exceeded,
+    preventing further losses during adverse market conditions.
+
+    Trigger Conditions:
+        - Drawdown exceeds max_drawdown_pct from peak equity
+        - Daily loss exceeds daily_loss_usd from session start
+
+    Behavior:
+        - Once tripped, remains latched until manually reset
+        - Provides reason for trip via trip_reason property
+        - Designed for manual reset by operator
+
+    Example:
+        breaker = CircuitBreaker(
+            max_drawdown_pct=Decimal('0.02'),  # 2% drawdown
+            daily_loss_usd=Decimal('500')      # $500 daily loss
+        )
+
+        # Update with current equity
+        breaker.update_equity(Decimal('10000'))
+
+        # Check if should halt
+        equity = Decimal('9500')  # 5% drawdown
+        if breaker.check(equity):
+            print(f"STOP TRADING: {breaker.trip_reason}")
+
+        # Reset for new session
+        breaker.reset()
+    """
+
     def __init__(self, max_drawdown_pct: Decimal, daily_loss_usd: Decimal):
         self._max_dd = max_drawdown_pct  # Drawdown fraction that trips the breaker
         self._daily_loss = daily_loss_usd  # Dollar loss that trips the breaker
@@ -183,12 +312,56 @@ class CircuitBreaker:
 
 class LiveExecutionEngine:
     """
-    Main orchestrator for live trading.
+    Main orchestrator for live RL-based trading on Binance.
 
-    Usage:
-        engine = LiveExecutionEngine(config, agent, feature_engine)
+    Coordinates all components of the live trading system, managing the
+    complete lifecycle from market data ingestion to order execution
+    with comprehensive risk controls.
+
+    Key Responsibilities:
+        - WebSocket connection management
+        - Market data processing and feature transformation
+        - Signal generation from RL agent
+        - Pre-trade risk validation
+        - Order submission and tracking
+        - Position and P&L management
+        - Circuit breaker monitoring
+        - Session reporting
+
+    Trading Modes:
+        - Live Trading: Real orders sent to Binance
+        - Paper Trading: Simulated orders with virtual cash
+
+    Event-Driven Architecture:
+        - Book ticker updates trigger signal generation
+        - Agent signals converted to orders
+        - Order fills update positions
+        - Circuit breaker checked on each tick
+
+    Example:
+        # Initialize
+        config = EngineConfig(
+            symbols=['BTCUSDT'],
+            api_key='key',
+            api_secret='secret'
+        )
+
+        engine = LiveExecutionEngine(
+            config=config,
+            agent=trained_agent,
+            feature_engine=features,
+            paper_trading=True
+        )
+
+        # Start trading
         await engine.start()
-        # runs until engine.stop() is called or circuit breaker trips
+
+        # Runs until:
+        # - await engine.stop() called
+        # - Circuit breaker trips
+        # - Unhandled exception
+
+        # Session summary automatically printed on stop
     """
 
     def __init__(

@@ -1,14 +1,64 @@
 """
 Historical Data Pipeline
 ========================
-Download and store historical market data from exchanges.
+
+Comprehensive pipeline for downloading and managing historical market data
+from cryptocurrency exchanges. This module handles bulk data acquisition,
+database storage, and incremental updates.
 
 Features:
-- Download years of historical data
-- Store in PostgreSQL
-- Automatic updates
-- Multiple timeframes
-- Data validation
+---------
+1. BULK DOWNLOAD: Fetch years of historical data efficiently
+2. DATABASE STORAGE: Store data in PostgreSQL for persistent access
+3. INCREMENTAL UPDATES: Refresh only new data since last download
+4. MULTIPLE TIMEFRAMES: Support for 1m, 5m, 15m, 1h, 4h, 1d intervals
+5. DATA VALIDATION: Comprehensive quality checks before storage
+6. ERROR HANDLING: Robust retry logic for network failures
+
+Architecture:
+-------------
+The pipeline consists of two main classes:
+
+1. HistoricalDataDownloader:
+   - Downloads data from exchange APIs
+   - Handles rate limiting and pagination
+   - Validates data quality
+   - Stores in database
+
+2. DataPipeline:
+   - High-level orchestration
+   - Combines download, storage, and retrieval
+   - Provides training data interface
+
+Data Flow:
+----------
+Exchange API → Downloader → Validator → Database
+                                            ↓
+                        Training/Backtesting ← Pipeline
+
+Supported Exchanges:
+-------------------
+- Binance (spot and futures)
+- Other CCXT-compatible exchanges
+
+Usage:
+------
+# Download historical data
+downloader = HistoricalDataDownloader()
+df = downloader.download_symbol("BTCUSDT", timeframe="1h")
+
+# Initialize database with historical data
+pipeline = DataPipeline()
+pipeline.initialize_market_data(["BTCUSDT", "ETHUSDT"], days=365)
+
+# Update with latest data
+pipeline.update_market_data(["BTCUSDT"])
+
+# Get training data
+data = pipeline.get_training_data(["BTCUSDT"], lookback=100)
+
+Author: BITCOIN4Traders Team
+Version: 1.0.0
 """
 
 import pandas as pd
@@ -25,9 +75,48 @@ from src.data.database import DatabaseManager, MarketData
 
 class HistoricalDataDownloader:
     """
-    Download historical market data from exchanges.
+    Download historical market data from cryptocurrency exchanges.
 
-    Supports Binance spot and futures markets.
+    This class provides comprehensive functionality for downloading large
+    volumes of historical OHLCV data. It handles:
+
+    1. PAGINATION: Exchanges limit candles per request (Binance: 1000)
+       This class automatically fetches sequential batches until complete
+
+    2. RATE LIMITING: Respects exchange API limits to avoid bans
+
+    3. ERROR RECOVERY: Retries failed requests with exponential backoff
+
+    4. DATABASE STORAGE: Optionally saves to PostgreSQL
+
+    5. DATA VALIDATION: Checks quality before storing
+
+    Attributes:
+        connector: Exchange connector (default: BinanceConnector)
+        db: Database manager (default: DatabaseManager)
+
+    Usage:
+        # Initialize downloader
+        downloader = HistoricalDataDownloader()
+
+        # Download single symbol
+        df = downloader.download_symbol(
+            symbol="BTCUSDT",
+            timeframe="1h",
+            start_date=datetime(2023, 1, 1),
+            end_date=datetime.now(),
+            save_to_db=True
+        )
+
+        # Download multiple symbols
+        results = downloader.download_multiple_symbols(
+            symbols=["BTCUSDT", "ETHUSDT"],
+            timeframe="1h",
+            days=365
+        )
+
+        # Update with latest data
+        downloader.update_database(["BTCUSDT"], ["1h", "4h"])
     """
 
     def __init__(self, connector: BinanceConnector = None, db: DatabaseManager = None):
@@ -51,17 +140,54 @@ class HistoricalDataDownloader:
         save_to_db: bool = True,
     ) -> pd.DataFrame:
         """
-        Download historical data for a symbol.
+        Download historical data for a single symbol.
 
-        Args:
-            symbol: Trading pair (e.g., 'BTCUSDT')
-            timeframe: Candle timeframe ('1m', '5m', '1h', '4h', '1d')
-            start_date: Start date (default: 1 year ago)
-            end_date: End date (default: now)
-            save_to_db: Save to database
+        This method fetches OHLCV (Open-High-Low-Close-Volume) candle data
+        from the exchange. It handles pagination automatically - for large
+        date ranges, it will make multiple API requests.
+
+        The Download Process:
+        ---------------------
+        1. Initialize date range (default: 1 year to now)
+        2. Request first batch of candles (max 1000 per request)
+        3. Filter results to requested date range
+        4. Move start time to last received candle + 1 hour
+        5. Repeat until all data is downloaded
+        6. Combine all batches into single DataFrame
+        7. Remove duplicates and sort chronologically
+        8. Optionally save to database
+
+        Parameters:
+        -----------
+        symbol : str
+            Trading pair identifier (e.g., 'BTCUSDT', 'ETHUSDT')
+            Note: Use exchange format (no slash), not CCXT format
+        timeframe : str
+            Candle interval: '1m', '5m', '15m', '30m', '1h', '4h', '1d'
+        start_date : datetime, optional
+            Start date for download. Default: 1 year ago
+        end_date : datetime, optional
+            End date for download. Default: current time
+        save_to_db : bool
+            Whether to save downloaded data to database (default: True)
 
         Returns:
+        --------
+        df : pd.DataFrame
             DataFrame with OHLCV data
+            Columns: open, high, low, close, volume
+            Index: DatetimeIndex
+
+        Example:
+            >>> downloader = HistoricalDataDownloader()
+            >>> df = downloader.download_symbol(
+            ...     symbol="BTCUSDT",
+            ...     timeframe="1h",
+            ...     start_date=datetime(2022, 1, 1),
+            ...     end_date=datetime(2023, 1, 1),
+            ...     save_to_db=True
+            ... )
+            >>> print(f"Downloaded {len(df)} candles")
         """
         if start_date is None:
             start_date = datetime.now() - timedelta(days=365)
@@ -286,13 +412,42 @@ class HistoricalDataDownloader:
 
 class DataPipeline:
     """
-    Complete data pipeline for trading system.
+    Complete data pipeline for the trading system.
 
-    Handles:
-    - Historical data download
-    - Real-time data feeds
-    - Database storage
-    - Data validation
+    This high-level class orchestrates the entire data flow:
+    1. INITIALIZATION: Download and store historical data
+    2. UPDATES: Refresh with latest market data
+    3. RETRIEVAL: Provide data for training and backtesting
+
+    The pipeline manages:
+    - Historical data download and storage
+    - Real-time data feeds (via database)
+    - Data validation and quality checks
+    - Feature computation for training
+
+    Attributes:
+        downloader: HistoricalDataDownloader instance
+        db: DatabaseManager instance
+
+    Usage:
+        # Initialize pipeline
+        pipeline = DataPipeline()
+
+        # Download historical data for training
+        pipeline.initialize_market_data(
+            symbols=["BTCUSDT", "ETHUSDT"],
+            timeframes=["1h", "4h"],
+            days=365
+        )
+
+        # Get data for model training
+        training_data = pipeline.get_training_data(
+            symbols=["BTCUSDT"],
+            lookback=100  # bars
+        )
+
+        # Update with latest data
+        pipeline.update_market_data(["BTCUSDT"])
     """
 
     def __init__(self):

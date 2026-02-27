@@ -1,13 +1,66 @@
 """
-PHASE 7 – ORDER MANAGEMENT SYSTEM (OMS)
-=========================================
+Order Management System (OMS) - Phase 7
+========================================
+Comprehensive order management system for Binance exchange integration.
+
+This module provides a production-ready Order Management System that handles
+the complete order lifecycle including order submission, tracking, cancellation,
+and reconciliation with exchange execution reports. It integrates with Binance
+REST API for order operations and WebSocket for real-time execution updates.
+
 Responsibilities:
-  - Maintain canonical order state (lifecycle FSM)
-  - Submit / cancel / amend orders via Binance REST
-  - Reconcile REST state with WebSocket execution reports
-  - Track fills, partial fills, slippage vs. expected price
-  - Thread-safe order book with event callbacks
-  - Full audit log per order
+    - Maintain canonical order state with lifecycle Finite State Machine (FSM)
+    - Submit, cancel, and amend orders via Binance REST API
+    - Reconcile REST API state with WebSocket execution reports
+    - Track fills, partial fills, and calculate slippage vs expected price
+    - Thread-safe order book management with event callbacks
+    - Full audit logging for every order state transition
+
+Key Features:
+    - Order lifecycle management with valid state transitions
+    - Support for MARKET, LIMIT, LIMIT_MAKER, and STOP_LOSS_LIMIT order types
+    - Good Till Cancel (GTC), Immediate Or Cancel (IOC), Fill Or Kill (FOK) time-in-force
+    - Slippage calculation in basis points for order performance analysis
+    - Comprehensive audit trail for regulatory compliance and debugging
+    - Automatic rate limiting with retry logic
+
+Architecture:
+    OrderManager <-> Binance REST API (order operations)
+    OrderManager <-> BinanceWSConnector (real-time execution reports)
+    OrderManager <-> Callbacks (fill/status notifications)
+
+Usage:
+    from src.orders.order_manager import OrderManager, Order, OrderSide, OrderType
+
+    # Initialize order manager with API credentials
+    om = OrderManager(api_key="your_key", api_secret="your_secret")
+    await om.start()
+
+    # Create and submit an order
+    order = Order(
+        symbol="BTCUSDT",
+        side=OrderSide.BUY,
+        type=OrderType.LIMIT,
+        quantity=Decimal("0.001"),
+        limit_price=Decimal("50000"),
+    )
+    await om.submit_order(order)
+
+    # Register for fill notifications
+    def on_fill(order, fill):
+        print(f"Filled: {fill.qty} @ {fill.price}")
+    om.on_fill(on_fill)
+
+Dependencies:
+    - aiohttp: Async HTTP client for REST API calls
+    - PyJWT: JWT authentication (if needed)
+    - loguru: Structured logging
+
+Note:
+    This is a production component. All order state transitions are validated
+    against a finite state machine to ensure consistency. The system maintains
+    dual mapping between client_order_id and exchange_order_id for reliable
+    correlation of local and exchange order records.
 """
 
 from __future__ import annotations
@@ -41,6 +94,28 @@ logger = logging.getLogger("phase7.oms")
 
 
 class OrderStatus(Enum):
+    """
+    Order lifecycle states following the Binance order status model.
+
+    Represents the complete lifecycle of an order from creation to terminal state.
+    Not all transitions are valid - see the _TRANSITIONS dictionary for allowed moves.
+
+    States:
+        PENDING_NEW: Order created locally but not yet submitted to exchange
+        NEW: Order acknowledgment received from exchange, awaiting fill
+        PARTIALLY_FILLED: Order has been partially executed
+        FILLED: Order completely filled (terminal state)
+        PENDING_CANCEL: Cancel request submitted, awaiting confirmation
+        CANCELED: Order successfully cancelled (terminal state)
+        REJECTED: Order rejected by exchange (terminal state)
+        EXPIRED: Order expired without being filled (terminal state)
+
+    Example:
+        >>> status = OrderStatus.NEW
+        >>> print(status.name)
+        NEW
+    """
+
     PENDING_NEW = auto()  # Created locally, not yet sent
     NEW = auto()  # ACK received from exchange
     PARTIALLY_FILLED = auto()
@@ -100,6 +175,31 @@ class TimeInForce(Enum):
 
 @dataclass
 class Fill:
+    """
+    Represents a single trade fill for an order.
+
+    A fill is a partial or complete execution of an order. Orders can have
+    multiple fills (especially for large orders or illiquid markets).
+
+    Attributes:
+        price: Execution price in quote currency (e.g., USDT for BTC/USDT)
+        qty: Executed quantity in base currency (e.g., BTC)
+        commission: Trading fee charged by exchange
+        commission_asset: Asset in which commission is denominated
+        trade_id: Unique exchange-assigned trade identifier
+        timestamp_ms: Trade execution timestamp in milliseconds (Unix epoch)
+
+    Example:
+        >>> fill = Fill(
+        ...     price=Decimal("50000.00"),
+        ...     qty=Decimal("0.001"),
+        ...     commission=Decimal("0.05"),
+        ...     commission_asset="USDT",
+        ...     trade_id=123456789,
+        ...     timestamp_ms=1699900000000
+        ... )
+    """
+
     price: Decimal
     qty: Decimal
     commission: Decimal
@@ -110,6 +210,59 @@ class Fill:
 
 @dataclass
 class Order:
+    """
+    Complete order representation with state management and audit trail.
+
+    This is the core data structure for order management. It maintains all order
+    information including identity, instrument details, sizing, state, fills,
+    and a complete audit trail of all state transitions.
+
+    Identity Attributes:
+        client_order_id: Locally-generated unique identifier (format: p7_[12_hex_chars])
+        exchange_order_id: Exchange-assigned order ID (populated after submission)
+
+    Instrument Attributes:
+        symbol: Trading pair symbol (e.g., "BTCUSDT", "ETHUSDT")
+        side: Order direction (BUY or SELL)
+        type: Order type (MARKET, LIMIT, LIMIT_MAKER, STOP_LOSS_LIMIT)
+        tif: Time-in-force policy (GTC, IOC, FOK)
+
+    Sizing Attributes:
+        quantity: Order size in base currency
+        limit_price: Limit price for LIMIT orders (None for MARKET)
+        stop_price: Stop price for STOP_LOSS_LIMIT orders (None otherwise)
+
+    State Attributes:
+        status: Current OrderStatus in the lifecycle FSM
+        filled_qty: Total accumulated filled quantity
+        avg_fill_price: Volume-weighted average price across all fills
+        cumulative_quote: Total value in quote currency (price * qty sum)
+
+    Metadata Attributes:
+        created_at_ms: Order creation timestamp (milliseconds)
+        updated_at_ms: Last state change timestamp (milliseconds)
+        error_msg: Error message if order was rejected or failed
+
+    Audit Attributes:
+        audit: List of (timestamp_ms, description) tuples recording all transitions
+
+    Computed Properties:
+        remaining_qty: Quantity still to be filled (quantity - filled_qty)
+        is_terminal: True if order is in a terminal state (FILLED/CANCELED/REJECTED/EXPIRED)
+        slippage_bps: Slippage vs limit price in basis points (for limit orders only)
+
+    Example:
+        >>> order = Order(
+        ...     symbol="BTCUSDT",
+        ...     side=OrderSide.BUY,
+        ...     type=OrderType.LIMIT,
+        ...     quantity=Decimal("0.001"),
+        ...     limit_price=Decimal("50000"),
+        ... )
+        >>> print(order.client_order_id)
+        p7_a1b2c3d4e5f6
+    """
+
     # Identity
     client_order_id: str = field(default_factory=lambda: f"p7_{uuid4().hex[:12]}")
     exchange_order_id: Optional[int] = None
@@ -216,8 +369,78 @@ class Order:
 
 class OrderManager:
     """
-    Central OMS: submit, track, cancel orders.
-    Integrates with BinanceWSConnector user-data events.
+    Central Order Management System for Binance exchange integration.
+
+    This class provides the complete order management functionality including:
+    - Order submission, tracking, and cancellation
+    - Integration with Binance REST API for order operations
+    - WebSocket event handling for real-time execution updates
+    - Thread-safe order book with concurrent access support
+    - Event callbacks for fill and status change notifications
+
+    The OrderManager maintains the canonical state of all orders and coordinates
+    between REST API responses and WebSocket execution reports to ensure order
+    state remains consistent and up-to-date.
+
+    Attributes:
+        _api_key: Binance API key for authentication
+        _api_secret: Binance API secret for request signing
+        _session: aiohttp ClientSession for REST API calls
+        _orders: Dict mapping client_order_id -> Order objects
+        _exchange_id_map: Dict mapping exchange_order_id -> client_order_id
+        _on_fill_cbs: List of callbacks invoked on each fill
+        _on_status_cbs: List of callbacks invoked on status changes
+
+    Architecture:
+        The OrderManager operates as the central hub for all order operations:
+
+        1. Order Submission:
+           Client -> OrderManager -> Binance REST API -> OrderManager -> Client
+
+        2. Order Updates via WebSocket:
+           Binance WS -> OrderManager.handle_execution_report() -> Update Order State -> Callbacks
+
+        3. Order Cancellation:
+           Client -> OrderManager -> Binance REST API -> OrderManager -> Client
+
+    Thread Safety:
+        All order book operations are protected by an asyncio.Lock to ensure
+        thread-safe concurrent access from multiple coroutines.
+
+    Example:
+        >>> import asyncio
+        >>> from decimal import Decimal
+        >>>
+        >>> async def trading_example():
+        ...     om = OrderManager(api_key="key", api_secret="secret")
+        ...     await om.start()
+        ...
+        ...     # Register callbacks
+        ...     def on_fill(order, fill):
+        ...         print(f"Filled {fill.qty} @ {fill.price}")
+        ...     om.on_fill(on_fill)
+        ...
+        ...     # Submit order
+        ...     order = Order(
+        ...         symbol="BTCUSDT",
+        ...         side=OrderSide.BUY,
+        ...         type=OrderType.LIMIT,
+        ...         quantity=Decimal("0.001"),
+        ...         limit_price=Decimal("45000"),
+        ...     )
+        ...     await om.submit_order(order)
+        ...
+        ...     # Check order status
+        ...     print(f"Order status: {order.status}")
+        ...
+        ...     await om.stop()
+        ...
+        >>> asyncio.run(trading_example())
+
+    Note:
+        The OrderManager requires valid Binance API credentials with trading
+        permissions. For testing, use PaperOrderManager which simulates order
+        execution without connecting to the real exchange.
     """
 
     _REST_BASE = "https://api.binance.com"

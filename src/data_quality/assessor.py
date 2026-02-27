@@ -1,25 +1,79 @@
 """
 Data Quality Assessment and Comparison Module
 ==============================================
+Comprehensive data quality evaluation for financial market data sources.
 
-Comprehensive data quality evaluation for financial data sources.
+This module provides professional-grade data quality assessment for trading
+systems. It evaluates multiple dimensions of data quality and provides
+actionable recommendations for improvement.
 
-Features:
-- Data completeness scoring
-- Outlier detection and analysis
-- Statistical distribution analysis
-- Missing data pattern detection
-- Data freshness assessment
-- Cross-source comparison
-- Quality scoring (0-100)
-- Automated quality reports
+Quality Dimensions:
+    1. Completeness: Missing values analysis and pattern detection
+       - Percentage of missing data
+       - Pattern: random, clustered, or systematic
 
-Supports:
-- Yahoo Finance
-- Binance (CCXT)
-- Alpha Vantage
-- Quandl
-- Local CSV files
+    2. Consistency: Data integrity and temporal continuity
+       - Duplicate row detection
+       - Timestamp gap analysis
+       - Gap distribution patterns
+
+    3. Accuracy: Data correctness and outlier detection
+       - IQR-based outlier detection
+       - Price anomaly detection (e.g., close outside high/low)
+       - Severity classification (low/medium/high)
+
+    4. Statistical Properties: Return distribution analysis
+       - Skewness and kurtosis measurement
+       - Jarque-Bera normality test
+       - Anomaly indication
+
+    5. Freshness: Data currency and update frequency
+       - Age calculation from last timestamp
+       - Update frequency detection
+       - Real-time vs delayed classification
+
+Quality Scoring:
+    - Overall score: Weighted average (0-100)
+    - Grade: A (90+), B (80+), C (70+), D (60+), F (<60)
+    - Recommendations: Prioritized action items
+
+Supported Data Sources:
+    - Yahoo Finance
+    - Binance (via CCXT)
+    - Alpha Vantage
+    - Quandl
+    - Local CSV/Parquet files
+    - Any DataFrame with OHLCV structure
+
+Usage:
+    from src.data_quality.assessor import DataQualityAssessor, assess_data_quality
+
+    # Quick assessment
+    metrics = assess_data_quality(df, source_name="Binance")
+    print(f"Quality Score: {metrics.overall_score}/100 (Grade: {metrics.quality_grade})")
+
+    # Detailed assessment
+    assessor = DataQualityAssessor(df, source_name="MySource")
+    metrics = assessor.assess()
+    assessor.print_report()
+
+    # Compare multiple sources
+    from src.data_quality.assessor import DataSourceComparator
+    comparator = DataSourceComparator()
+    comparator.add_source("Binance", df_binance)
+    comparator.add_source("Yahoo", df_yahoo)
+    comparator.print_comparison_report()
+    best_source, reasoning = comparator.recommend_best_source()
+
+Dependencies:
+    - pandas: Data manipulation
+    - numpy: Numerical operations
+    - scipy: Statistical tests (skew, kurtosis, jarque_bera)
+
+Warning:
+    This module performs statistical analysis that may indicate potential
+    data issues but should not be the sole basis for data rejection.
+    Always verify with domain expertise.
 """
 
 import pandas as pd
@@ -112,10 +166,61 @@ class DataQualityMetrics:
 
 class DataQualityAssessor:
     """
-    Assesses the quality of financial data.
+    Comprehensive data quality assessment for financial time series data.
 
-    Provides comprehensive quality metrics and recommendations
-    for improving data reliability in trading systems.
+    This class performs multi-dimensional quality analysis on financial datasets,
+    particularly OHLCV (Open, High, Low, Close, Volume) market data. It provides
+    quantitative metrics and actionable recommendations for data improvement.
+
+    Attributes:
+        df: Input DataFrame with financial data
+        source_name: Identifier for the data source (for reporting)
+        metrics: DataQualityMetrics after assessment
+
+    Quality Dimensions:
+        - Completeness (25%): Missing value analysis
+        - Consistency (20%): Duplicate and gap detection
+        - Accuracy (25%): Outlier and anomaly detection
+        - Statistical (15%): Return distribution properties
+        - Freshness (15%): Data age and update frequency
+
+    Assessment Process:
+        1. Validate DataFrame structure (timestamp column)
+        2. Run completeness assessment
+        3. Run consistency assessment
+        4. Run accuracy assessment (outliers, anomalies)
+        5. Run statistical assessment (returns distribution)
+        6. Run freshness assessment (timestamp age)
+        7. Calculate weighted overall score
+        8. Generate recommendations
+
+    Example:
+        >>> # Assess data quality
+        >>> assessor = DataQualityAssessor(df, source_name="Binance_BTCUSDT")
+        >>> metrics = assessor.assess()
+        >>>
+        >>> # Print formatted report
+        >>> assessor.print_report()
+        ======================================
+          DATA QUALITY REPORT: Binance_BTCUSDT
+        ======================================
+
+          OVERALL QUALITY SCORE: 95.0/100 (Grade: A)
+        ...
+
+        >>> # Get quality badge for documentation
+        >>> badge = assessor.get_quality_badge()
+        >>> print(badge)
+        🟢 Excellent
+
+    Input Data Format:
+        Expected columns: timestamp, open, high, low, close, volume
+        Alternative: date instead of timestamp
+        Index: DatetimeIndex preferred
+
+    Note:
+        Missing OHLCV columns will result in lower accuracy and statistical scores.
+        The assessor attempts to work with whatever columns are available.
     """
 
     def __init__(self, df: pd.DataFrame, source_name: str = "unknown"):
@@ -198,8 +303,21 @@ class DataQualityAssessor:
         return self.metrics
 
     def _assess_completeness(self) -> Dict:
-        """Assess data completeness."""
-        # Calculate missing values percentage
+        """
+        Assess data completeness - measure missing values and their patterns.
+
+        Scoring Methodology:
+            - Score starts at 100
+            - Each 1% of missing data reduces score by 5 points
+            - Minimum score is 0
+
+        Pattern Detection:
+            - none: No missing data
+            - random: <1% scattered randomly
+            - clustered: 1-10% with few transitions (contiguous gaps)
+            - systematic: >10% likely systematic issue
+        """
+        # Calculate percentage of missing values across all cells
         missing_counts = self.df.isnull().sum()
         total_cells = len(self.df) * len(
             self.df.columns
@@ -230,7 +348,18 @@ class DataQualityAssessor:
         return {"score": score, "missing_pct": missing_pct, "pattern": pattern}
 
     def _assess_consistency(self) -> Dict:
-        """Assess data consistency."""
+        """
+        Assess data consistency - duplicates and temporal gaps.
+
+        Checks for:
+        - Duplicate rows that may indicate data errors
+        - Timestamp gaps that may indicate missing market data
+
+        Scoring:
+        - Starts at 100
+        - -30 points max for duplicates
+        - -40 points max for timestamp gaps
+        """
         # Check for duplicates
         duplicates = self.df.duplicated().sum()
         duplicates_pct = (duplicates / len(self.df)) * 100
@@ -280,7 +409,23 @@ class DataQualityAssessor:
         }
 
     def _assess_accuracy(self) -> Dict:
-        """Assess data accuracy using outlier detection."""
+        """
+        Assess data accuracy using outlier detection and anomaly checks.
+
+        Uses two methods:
+        1. IQR (Interquartile Range) method for outlier detection
+        2. OHLC consistency checks (prices must follow logical constraints)
+
+        Scoring:
+        - Starts at 100
+        - -10 points per 1% outliers
+        - -2 points per anomaly
+
+        Severity:
+        - low: <1% outliers
+        - medium: 1-5% outliers
+        - high: >5% outliers
+        """
         outliers_pct = 0
         severity = "low"
         anomalies = 0
@@ -291,6 +436,7 @@ class DataQualityAssessor:
 
         if available_cols:
             # Use IQR method for outlier detection
+            # IQR = Q3 - Q1; outliers are beyond 1.5 * IQR from quartiles
             for col in available_cols:
                 Q1 = self.df[col].quantile(0.25)
                 Q3 = self.df[col].quantile(0.75)
@@ -304,6 +450,7 @@ class DataQualityAssessor:
                 outliers_pct = max(outliers_pct, (outliers / len(self.df)) * 100)
 
             # Check for price anomalies (e.g., close outside high/low)
+            # Valid OHLC data must satisfy: low <= open,close <= high
             if all(col in self.df.columns for col in ["open", "high", "low", "close"]):
                 anomalies += (self.df["close"] > self.df["high"]).sum()
                 anomalies += (self.df["close"] < self.df["low"]).sum()

@@ -1,11 +1,52 @@
 """
-PHASE 7 – MONITORING & ALERTING
-=================================
-Real-time monitoring with:
-  - Telegram bot alerts (fills, errors, circuit breaker)
-  - Prometheus metrics exposition (for Grafana dashboards)
-  - Rolling P&L console dashboard
-  - Structured JSON log enrichment
+Real-Time Monitoring & Alerting System (Phase 7)
+==============================================
+Professional monitoring infrastructure for live trading operations.
+
+This module provides comprehensive monitoring and alerting capabilities including
+real-time metrics, Telegram notifications, and Prometheus-compatible exposition.
+
+Features:
+  - Telegram Alerts: Real-time notifications for fills, errors, circuit breakers
+  - Prometheus Metrics: /metrics endpoint for Grafana integration
+  - Rolling Dashboard: Console-based real-time P&L display
+  - Structured Logging: JSON log enrichment for analysis
+
+Alert Types:
+  - INFO: General information (bot started, etc.)
+  - WARNING: Non-critical issues (high latency, reconnecting)
+  - CRITICAL: Important events (circuit breaker triggered)
+  - FILL: Order execution confirmation
+  - ERROR: Failed operations
+
+Usage:
+    from src.monitoring.monitor import EngineMonitor, TelegramNotifier, AlertLevel
+
+    # Setup Telegram (optional)
+    telegram = TelegramNotifier(bot_token='xxx', chat_id='yyy')
+
+    # Create monitor
+    monitor = EngineMonitor(
+        telegram=telegram,
+        metrics_port=9090,
+        dashboard_interval_s=30,
+        paper_trading=True
+    )
+
+    # Start monitoring
+    await monitor.start()
+
+    # Record events
+    monitor.on_tick()
+    monitor.on_fill(qty=Decimal('0.001'), price=Decimal('45000'), pnl=Decimal('10'))
+    monitor.on_order_submitted()
+
+    # Alert manually
+    monitor.alert(AlertLevel.WARNING, "High latency detected")
+
+    # Get metrics
+    metrics = monitor.metrics
+    print(f"Total fills: {metrics.total_fills}")
 """
 
 from __future__ import annotations
@@ -43,8 +84,34 @@ class AlertLevel:
 
 class TelegramNotifier:
     """
-    Sends alerts to a Telegram chat.
-    Queues messages and sends asynchronously to avoid blocking the engine.
+    Asynchronous Telegram notification service.
+
+    Provides non-blocking Telegram message delivery with queuing and
+    rate limiting to avoid API throttling.
+
+    Features:
+        - Async message queue for non-blocking operation
+        - Bounded queue prevents memory bloat
+        - Automatic rate limiting (~30 msg/s)
+        - Markdown formatting support
+
+    Attributes:
+        bot_token: Telegram Bot API token
+        chat_id: Target chat ID for messages
+
+    Example:
+        telegram = TelegramNotifier(
+            bot_token='123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11',
+            chat_id='123456789'
+        )
+
+        await telegram.start()
+
+        # Send alerts (non-blocking)
+        telegram.send('ℹ️', 'Bot started successfully')
+        telegram.send('🚨', 'Circuit breaker triggered!')
+
+        await telegram.stop()
     """
 
     _API = "https://api.telegram.org/bot{token}/sendMessage"
@@ -115,6 +182,30 @@ class TelegramNotifier:
 
 @dataclass
 class EngineMetrics:
+    """
+    Trading engine performance and health metrics.
+
+    Collects comprehensive statistics about trading operations including
+    order counts, P&L, and system health indicators.
+
+    Attributes:
+        ticks_processed: Total market data ticks received
+        orders_submitted: Total orders sent to exchange
+        orders_filled: Orders that received at least partial fill
+        orders_canceled: Orders cancelled by user or system
+        orders_rejected: Orders rejected by exchange
+        total_fills: Total number of individual fills across all orders
+        realized_pnl_usd: Cumulative realized P&L in USD
+        unrealized_pnl_usd: Current unrealized P&L in USD
+        circuit_breaker_trips: Number of times circuit breaker was triggered
+        ws_reconnect_count: Number of WebSocket reconnection events
+        last_updated: Unix timestamp of last update
+
+    Note:
+        - Prometheus format available via to_prometheus() method
+        - Dict format available via to_dict() method
+    """
+
     ticks_processed: int = 0
     orders_submitted: int = 0
     orders_filled: int = 0
@@ -148,8 +239,49 @@ class EngineMetrics:
 
 class EngineMonitor:
     """
-    Central monitoring hub.
-    Attach to LiveExecutionEngine to get full observability.
+    Central monitoring hub for live trading engine.
+
+    Provides comprehensive observability for trading operations with
+    real-time metrics collection, alerting, and dashboard display.
+
+    Features:
+        - Event hooks for all trading operations
+        - Telegram integration for mobile alerts
+        - Prometheus metrics endpoint
+        - Console dashboard with rolling P&L
+        - Paper trading position display
+
+    Event Hooks:
+        - on_tick(): Called on each market data update
+        - on_order_submitted(): Called when order is sent
+        - on_fill(): Called when order is filled
+        - on_order_canceled(): Called when order is cancelled
+        - on_order_rejected(): Called when exchange rejects order
+        - on_circuit_breaker(): Called when circuit breaker trips
+        - on_reconnect(): Called on WebSocket reconnection
+        - on_error(): Called on any error
+        - update_pnl(): Update P&L tracking
+
+    Example:
+        monitor = EngineMonitor(
+            telegram=telegram_notifier,
+            metrics_port=9090,
+            dashboard_interval_s=30,
+            paper_trading=False
+        )
+
+        await monitor.start()
+
+        # Wire to engine events
+        engine.on_fill = monitor.on_fill
+        engine.on_error = monitor.on_error
+
+        # Alert manually
+        monitor.alert(AlertLevel.WARNING, "High latency detected")
+
+        # Access metrics
+        print(f"Fills: {monitor.metrics.total_fills}")
+        print(f"PnL: ${monitor.metrics.realized_pnl_usd}")
     """
 
     def __init__(

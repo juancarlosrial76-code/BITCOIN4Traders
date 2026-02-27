@@ -1,16 +1,71 @@
 """
-Real-Time Production Monitoring
-================================
-Professional-grade monitoring and alerting system.
+Real-Time Production Monitoring System
+====================================
+Professional-grade monitoring and alerting for live trading operations.
 
-Critical for live trading operations:
-- Real-time P&L tracking
-- Risk monitoring with alerts
-- Strategy health checks
-- System performance monitoring
-- Automatic failover
+This module provides institutional-grade monitoring capabilities critical for
+production trading systems. Used by hedge funds, prop firms, and systematic traders.
 
-Used by: All major hedge funds and prop trading firms
+Features:
+  - Real-Time P&L: Continuous portfolio value and P&L tracking
+  - Risk Monitoring: Drawdown, exposure, and VaR monitoring with alerts
+  - Strategy Health: Win rate, latency, and trade statistics
+  - System Performance: Uptime, memory, CPU monitoring
+  - Automatic Failover: Circuit breakers and emergency stops
+  - Alert Management: Hierarchical alert levels with acknowledgment
+
+Alert Levels:
+  - INFO: Informational messages (startup, normal events)
+  - WARNING: Non-critical issues requiring attention
+  - CRITICAL: Serious issues requiring action
+  - EMERGENCY: Immediate halt required
+
+Alert Types:
+  - DRAWDOWN: Max drawdown threshold exceeded
+  - POSITION_SIZE: Position concentration too high
+  - VOLATILITY: Unexpected volatility changes
+  - CONNECTION: Connection issues
+  - ORDER_ERROR: Order execution failures
+  - LATENCY: High latency detected
+  - PNL: P&L thresholds breached
+  - RISK_LIMIT: Risk limit exceeded
+
+Usage:
+    from src.monitoring.production_monitor import (
+        ProductionMonitor, LiveTrader, PerformanceReporter
+    )
+
+    # Initialize monitor
+    monitor = ProductionMonitor(
+        check_interval_seconds=5.0,
+        metrics_history_size=10000
+    )
+
+    # Configure thresholds
+    monitor.set_threshold('max_drawdown_pct', 0.10)
+    monitor.set_threshold('daily_loss_limit_pct', 0.05)
+
+    # Add alert handler
+    def handle_alert(alert):
+        print(f"ALERT: {alert.message}")
+    monitor.add_alert_handler(handle_alert)
+
+    # Start monitoring
+    monitor.start_monitoring()
+
+    # Record metrics
+    metrics = TradingMetrics(
+        timestamp=datetime.now(),
+        total_pnl=10000,
+        daily_pnl=500,
+        open_positions=5,
+        exposure_pct=0.6,
+        ...
+    )
+    monitor.record_metrics(metrics)
+
+    # Get summary
+    summary = monitor.get_metrics_summary(lookback_minutes=60)
 """
 
 import asyncio
@@ -85,8 +140,48 @@ class ProductionMonitor:
     """
     Real-time production monitoring system.
 
-    Monitors trading performance, risk limits, and system health.
-    Sends alerts when thresholds are breached.
+    Provides comprehensive monitoring for live trading operations with
+    automated alerting when thresholds are breached.
+
+    Key Features:
+        - Ring buffer for metrics history (configurable size)
+        - Configurable alert thresholds
+        - Multiple alert handlers support
+        - Background monitoring thread
+        - Comprehensive risk monitoring
+
+    Default Thresholds:
+        - max_drawdown_pct: 10% - halt if portfolio drops 10% from peak
+        - daily_loss_limit_pct: 5% - emergency if daily loss > 5%
+        - position_concentration: 25% - single position max 25% of capital
+        - max_latency_ms: 500ms - warn if latency exceeds 500ms
+        - min_win_rate: 45% - warn if win rate below 45%
+        - max_exposure_pct: 80% - warn if gross exposure > 80%
+
+    Thread Safety:
+        - Background thread runs monitoring loop
+        - All public methods are thread-safe
+
+    Example:
+        monitor = ProductionMonitor(
+            check_interval_seconds=5.0,
+            metrics_history_size=10000
+        )
+
+        # Set custom thresholds
+        monitor.set_threshold('max_drawdown_pct', 0.15)
+
+        # Add handler
+        monitor.add_alert_handler(my_alert_handler)
+
+        # Record metrics periodically
+        monitor.record_metrics(current_metrics)
+
+        # Start background monitoring
+        monitor.start_monitoring()
+
+        # Later, stop
+        monitor.stop_monitoring()
     """
 
     def __init__(
@@ -319,12 +414,40 @@ class LiveTrader:
     """
     Production trading wrapper with safety features.
 
-    Wraps strategy execution with:
-    - Automatic risk checks
-    - Position validation
-    - Order confirmation
-    - Error handling
-    - Automatic shutdown on critical errors
+    Wraps strategy execution with comprehensive safety controls including
+    risk checks, position validation, order confirmation, and automatic
+    shutdown on critical errors.
+
+    Safety Features:
+        - Pre-trade risk validation
+        - Position size limits
+        - Daily loss limits
+        - Circuit breaker integration
+        - Emergency stop capability
+        - Error handling and recovery
+
+    Trading Flow:
+        1. Check emergency stops
+        2. Check daily loss limit
+        3. Generate strategy signal
+        4. Validate with risk manager
+        5. Execute trade with confirmation
+        6. Record metrics
+
+    Example:
+        trader = LiveTrader(
+            strategy=my_strategy,
+            risk_manager=my_risk_manager,
+            monitor=production_monitor,
+            max_daily_loss_pct=0.05  # 5% max daily loss
+        )
+
+        # Start trading
+        trader.start_trading(capital=100000)
+
+        # Runs until stopped or emergency
+        # Or manually stop:
+        trader.stop_trading()
     """
 
     def __init__(
@@ -503,7 +626,26 @@ class LiveTrader:
 
 class PerformanceReporter:
     """
-    Generates professional trading performance reports.
+    Professional trading performance report generator.
+
+    Generates comprehensive performance reports including P&L analysis,
+    trading statistics, system health, and alert summaries.
+
+    Report Sections:
+        - Performance Summary: P&L, drawdown, Sharpe ratio
+        - Trading Activity: Trades, positions, win rate, sizes
+        - System Health: Uptime, latency, exposure
+        - Alerts: Active alerts requiring attention
+
+    Example:
+        reporter = PerformanceReporter(production_monitor)
+
+        # Generate daily report
+        report = reporter.generate_daily_report()
+        print(report)
+
+        # Save to file
+        reporter.save_report(report, 'reports/daily_20240101.txt')
     """
 
     def __init__(self, monitor: ProductionMonitor):

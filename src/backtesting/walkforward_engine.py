@@ -1,17 +1,63 @@
 """
 Walk-Forward Backtesting Engine
 ================================
-Rigorous validation with rolling train/test splits.
+Rigorous out-of-sample validation with rolling train/test splits.
 
-Walk-Forward Analysis:
-- Train on window 1 → Test on window 2
-- Train on window 2 → Test on window 3
-- Train on window 3 → Test on window 4
-- ...
+This module implements the Walk-Forward Analysis methodology, which is
+the gold standard for validating trading strategies. It prevents the two
+most common failures in algorithmic trading:
+1. Look-ahead bias: Using future information in training
+2. Overfitting: Creating strategies that work on historical data but fail live
 
-Prevents look-ahead bias and overfitting.
+Walk-Forward Analysis Process:
+-------------------------------
+1. Split data into overlapping train/test windows:
+   - Window 1: Train on period A → Test on period B
+   - Window 2: Train on period B → Test on period C
+   - Window 3: Train on period C → Test on period D
+   - ...continuing until all data is used
 
-Reference: Pardo (2008) - The Evaluation and Optimization of Trading Strategies
+2. For each window:
+   - Train the agent/strategy on the training period (in-sample)
+   - Test on the test period without any modification (out-of-sample)
+   - Record all metrics from both periods
+
+3. Aggregate results:
+   - Mean performance across all test windows
+   - Stability analysis (how consistent are results?)
+   - Robustness checks (did strategy work in most windows?)
+
+Key Features:
+-------------
+- Configurable window sizes (train/test/step)
+- Purged Walk-Forward integration with Anti-Bias Framework
+- Automatic validation thresholds
+- Results serialization and visualization support
+
+Why Walk-Forward?
+----------------
+Traditional backtesting suffers from:
+- In-sample overfitting: Strategy optimized for historical period
+- Look-ahead bias: Accidental inclusion of future data
+- Regime instability: Strategy may work in one market regime only
+
+Walk-forward addresses these by:
+- Always testing on unseen data
+- Validating across multiple market regimes
+- Providing realistic expectations for live performance
+
+Reference:
+---------
+- Pardo (2008): "The Evaluation and Optimization of Trading Strategies"
+- Lopez de Prado (2018): "Advances in Financial Machine Learning"
+- Kaufman (2013): "Trading Systems and Methods"
+
+Anti-Bias Integration:
+---------------------
+When the Anti-Bias Framework is available, this engine uses:
+- Purged splits: Remove training samples whose lookback overlaps test
+- Embargo zones: Gap between train/test to prevent leakage
+- This ensures truly out-of-sample testing
 """
 
 import numpy as np
@@ -41,7 +87,44 @@ except ImportError:
 
 @dataclass
 class WalkForwardConfig:
-    """Walk-forward analysis configuration."""
+    """
+    Configuration parameters for Walk-Forward Analysis.
+
+    This dataclass defines all parameters needed to configure the
+    walk-forward backtesting process, including window sizes, training
+    parameters, and validation thresholds.
+
+    Attributes:
+        train_window_days: Number of days for training period (default: 365 = 1 year)
+            Longer windows provide more training data but may include stale patterns
+        test_window_days: Number of days for testing period (default: 90 = 3 months)
+            Shorter windows provide more test samples but less statistical power
+        step_days: Number of days to step forward between windows (default: 30 = 1 month)
+            Smaller steps create more windows but with higher correlation
+        train_iterations: Training iterations per window (default: 200)
+        results_dir: Directory to save results (default: "data/backtests")
+        min_trades: Minimum trades required in test period for valid result (default: 10)
+        max_drawdown_threshold: Maximum allowed drawdown in test (default: 0.30 = 30%)
+            Strategies exceeding this threshold are flagged but not automatically rejected
+
+    Example:
+        --------
+        # Conservative configuration (longer training, shorter testing)
+        config = WalkForwardConfig(
+            train_window_days=730,    # 2 years training
+            test_window_days=60,     # 2 months testing
+            step_days=30,            # Step monthly
+            min_trades=20,           # Require more trades
+            max_drawdown_threshold=0.25  # Stricter drawdown limit
+        )
+
+        # Aggressive configuration (shorter training, more frequent testing)
+        config = WalkForwardConfig(
+            train_window_days=180,    # 6 months training
+            test_window_days=30,     # 1 month testing
+            step_days=7,             # Step weekly
+        )
+    """
 
     # Window sizes
     train_window_days: int = 365  # 1 year training
@@ -61,7 +144,59 @@ class WalkForwardConfig:
 
 @dataclass
 class WindowResult:
-    """Results from a single walk-forward window."""
+    """
+    Results from a single walk-forward window.
+
+    This dataclass stores all metrics from both training and testing
+    phases of a single walk-forward iteration. It captures performance
+    data that allows for detailed analysis of strategy behavior across
+    different market conditions.
+
+    Attributes:
+        window_id: Zero-based index of this window in the sequence
+        train_start: Start date of training period
+        train_end: End date of training period
+        test_start: Start date of test period (immediately follows train_end)
+        test_end: End date of test period
+
+    Training Metrics (In-Sample):
+        train_return: Total return achieved during training
+        train_sharpe: Sharpe ratio during training
+        train_trades: Number of trades executed during training
+
+    Test Metrics (Out-of-Sample):
+        test_return: Total return achieved during testing
+        test_sharpe: Sharpe ratio during testing
+        test_sortino: Sortino ratio during testing
+        test_calmar: Calmar ratio during testing
+        test_max_drawdown: Maximum drawdown during testing
+        test_trades: Number of trades executed during testing
+        test_win_rate: Win rate during testing
+
+    Trade-Level Data:
+        trades: List of dictionaries containing trade details
+        equity_curve: pandas Series with equity values over time
+
+    Example:
+        --------
+        result = WindowResult(
+            window_id=3,
+            train_start=datetime(2020, 1, 1),
+            train_end=datetime(2020, 12, 31),
+            test_start=datetime(2021, 1, 1),
+            test_end=datetime(2021, 3, 31),
+            train_return=0.15,
+            train_sharpe=1.2,
+            train_trades=85,
+            test_return=0.08,
+            test_sharpe=0.9,
+            test_sortino=1.1,
+            test_calmar=1.5,
+            test_max_drawdown=-0.05,
+            test_trades=32,
+            test_win_rate=0.62,
+        )
+    """
 
     window_id: int
     train_start: datetime
@@ -90,28 +225,74 @@ class WindowResult:
 
 class WalkForwardEngine:
     """
-    Walk-forward backtesting engine.
+    Walk-forward backtesting engine for rigorous strategy validation.
 
-    Implements rigorous out-of-sample validation:
-    1. Split data into overlapping train/test windows
-    2. Train agent on each training window
-    3. Test agent on corresponding test window (out-of-sample)
-    4. Aggregate results across all windows
+    This engine implements the complete walk-forward analysis workflow,
+    providing rigorous out-of-sample validation for trading strategies.
+    It splits historical data into multiple overlapping train/test windows,
+    trains on each training window, and tests on the corresponding test
+    window without any modification.
 
-    Usage:
-    ------
-    config = WalkForwardConfig(
-        train_window_days=365,
-        test_window_days=90,
-        step_days=30
-    )
+    The key insight of walk-forward analysis is that it simulates real
+    trading: you train on past data and apply to future data. By doing
+    this repeatedly across different time periods, you get a realistic
+    picture of how the strategy might perform live.
 
-    engine = WalkForwardEngine(env, agent, config)
-    results = engine.run()
+    Attributes:
+        env: Trading environment (Gym-compatible) that provides observations
+            and executes trades
+        agent: PPOAgent or similar trading agent that will be retrained
+            for each window
+        config: WalkForwardConfig with window sizes and parameters
 
-    # Analyze
-    summary = engine.summarize_results(results)
-    engine.plot_results(results)
+    Key Methods:
+        create_windows(): Generate train/test date ranges
+        train_on_window(): Train agent on training period
+        test_on_window(): Test trained agent on test period (out-of-sample)
+        run(): Execute complete walk-forward analysis
+        summarize_results(): Aggregate and analyze all window results
+        create_purged_splits(): Generate purged CV splits (if Anti-Bias available)
+
+    Example:
+        --------
+        # Configure walk-forward analysis
+        config = WalkForwardConfig(
+            train_window_days=365,    # 1 year training
+            test_window_days=90,     # 3 months testing
+            step_days=30,            # Step forward 1 month each iteration
+            min_trades=10,
+            max_drawdown_threshold=0.30,
+        )
+
+        # Initialize engine with environment and agent
+        engine = WalkForwardEngine(env, agent, config)
+
+        # Run complete analysis
+        results = engine.run()
+
+        # Analyze results
+        summary = engine.summarize_results(results)
+
+        print(f"Mean Test Return: {summary['mean_test_return']:.2%}")
+        print(f"Positive Windows: {summary['positive_windows']}/{summary['n_windows']}")
+
+        # Visualize
+        engine.plot_results(results)
+
+    Performance Expectations:
+    -------------------------
+    A robust strategy should show:
+    - Positive returns in most (ideally >70%) test windows
+    - Consistent Sharpe ratios across windows (low variance)
+    - Test performance not significantly worse than training
+    - Max drawdowns within acceptable limits
+
+    Warning Signs:
+    -------------
+    - Training Sharpe >> Test Sharpe (overfitting)
+    - Very few positive test windows (strategy doesn't generalize)
+    - High variance in test metrics (regime instability)
+    - Test max drawdowns significantly exceed training
     """
 
     def __init__(

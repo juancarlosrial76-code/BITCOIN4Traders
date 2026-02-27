@@ -1,13 +1,52 @@
 """
 Market Microstructure Features
-================================
-SOTA feature: Order flow and microstructure analysis.
+===============================
 
-Professional quant firms use microstructure features to:
-1. Detect informed trading (order flow toxicity)
-2. Predict short-term price movements
-3. Optimize execution timing
-4. Detect market manipulation
+SOTA (State-of-the-Art) module for order flow and market microstructure analysis.
+
+Professional quant firms and high-frequency traders use microstructure features to:
+1. DETECT INFORMED TRADING: Identify when large traders are actively buying/selling
+2. PREDICT SHORT-TERM PRICE MOVEMENTS: Order flow often precedes price
+3. OPTIMIZE EXECUTION TIMING: Time entries when liquidity is favorable
+4. DETECT MARKET MANIPULATION: Identify iceberg orders, spoofing
+5. MEASURE LIQUIDITY: Understand true market depth and impact
+
+What is Market Microstructure?
+------------------------------
+Microstructure is the study of the process and outcomes of exchanging assets.
+Unlike traditional technical analysis (which looks at prices over time),
+microstructure examines:
+- Order book dynamics (bid/ask spread, depth)
+- Trade sequencing (who is trading, in what order)
+- Transaction costs and execution quality
+- Information arrival and price discovery
+
+Key Concepts:
+-------------
+1. VPIN (Volume-Synchronized Probability of Informed Trading):
+   Measures order flow toxicity - when informed traders are active, volatility
+   tends to increase. Derived from the classic PIN model.
+
+2. ORDER IMBALANCE: Difference between buy and sell volume at bid/ask levels.
+   Positive imbalance = more buying pressure = potential price increase.
+
+3. TOXIC FLOW: Order flow that moves prices against the market maker.
+   Detected by trade sequencing patterns.
+
+4. KYLE'S LAMBDA: Price impact coefficient. Measures how much prices move
+   in response to order flow. High lambda = low liquidity.
+
+5. AMIHUD ILLIQUIDITY: Price impact per dollar of trading. Used to measure
+   market liquidity costs.
+
+Academic References:
+-------------------
+- Easley, Lopez de Prado, O'Hara (2012): "VPIN and the Flash Crash"
+- Kyle (1985): "Continuous Auctions and Insider Trading"
+- Amihud (2002): "Illiquidity and Stock Returns"
+
+Author: BITCOIN4Traders Team
+Version: 1.0.0
 """
 
 import numpy as np
@@ -20,7 +59,35 @@ from loguru import logger
 
 @dataclass
 class OrderFlowMetrics:
-    """Order flow metrics from tick data."""
+    """
+    Comprehensive order flow metrics from tick-level trade data.
+
+    This dataclass encapsulates all key order flow measurements used to
+    understand the balance between buying and selling pressure in the market.
+
+    Attributes:
+        buy_volume: Total volume of buy-initiated trades (in base currency)
+        sell_volume: Total volume of sell-initiated trades (in base currency)
+        buy_pressure: Volume-weighted dollar value at bid levels
+        sell_pressure: Volume-weighted dollar value at ask levels
+        order_imbalance: Normalized difference between bid/ask volumes (-1 to +1)
+        trade_intensity: Ratio of trades to book updates (high = active market)
+        toxic_flow_score: Probability that informed traders are active (0-1)
+
+    Interpretation:
+        - Positive order_imbalance: More buying pressure
+        - Negative order_imbalance: More selling pressure
+        - High toxic_flow_score: Informed traders likely present, expect volatility
+        - High trade_intensity: Active market, good for execution
+
+    Example:
+        >>> metrics = analyzer.calculate_order_flow_metrics(
+        ...     bid_prices, ask_prices, bid_volumes, ask_volumes,
+        ...     trade_prices, trade_volumes
+        ... )
+        >>> print(f"Order imbalance: {metrics.order_imbalance:.3f}")
+        >>> print(f"Toxic flow: {metrics.toxic_flow_score:.3f}")
+    """
 
     buy_volume: float
     sell_volume: float
@@ -35,8 +102,47 @@ class MicrostructureAnalyzer:
     """
     Analyzes market microstructure from tick-level data.
 
-    Implements VPIN (Volume-Synchronized Probability of Informed Trading)
-    and other microstructure metrics used by high-frequency traders.
+    This class implements VPIN (Volume-Synchronized Probability of Informed
+    Trading) and other microstructure metrics used by high-frequency traders
+    and quantitative funds.
+
+    VPIN (Volume-Synchronized Probability of Informed Trading):
+    -----------------------------------------------------------
+    VPIN measures the probability that informed traders are active in the
+    market. When informed traders (those with private information) are active:
+    - Order flow becomes more one-sided
+    - Volatility tends to increase
+    - Market makers widen spreads
+
+    VPIN is calculated by:
+    1. Classifying trades as buys or sells using the tick rule
+    2. Creating volume buckets of equal size
+    3. Computing order imbalance in each bucket
+    4. Averaging the imbalances
+
+    High VPIN (>0.5) historically preceded market disruptions including
+    the 2010 Flash Crash.
+
+    Attributes:
+        bucket_size: Number of trades per volume bucket for VPIN (default: 50)
+        trade_history: List of recent trades
+        vpin_history: Historical VPIN values
+
+    Usage:
+        >>> analyzer = MicrostructureAnalyzer(bucket_size=50)
+        >>> vpin = analyzer.calculate_vpin(trades_df)
+        >>> print(f"VPIN: {vpin:.3f}")
+        >>>
+        >>> # Calculate comprehensive metrics
+        >>> metrics = analyzer.calculate_order_flow_metrics(
+        ...     bid_prices, ask_prices, bid_volumes, ask_volumes,
+        ...     trade_prices, trade_volumes
+        ... )
+        >>> print(f"Order imbalance: {metrics.order_imbalance:.3f}")
+
+    References:
+        - Easley, D., Lopez de Prado, M., O'Hara, M. (2012)
+        - "The VPIN Theory of Flash Crashes"
     """
 
     def __init__(self, bucket_size: int = 50):
@@ -55,10 +161,52 @@ class MicrostructureAnalyzer:
         """
         Calculate Volume-Synchronized Probability of Informed Trading.
 
-        VPIN detects when informed traders are active by measuring
-        order flow toxicity. High VPIN predicts volatility.
+        VPIN detects when informed traders are active by measuring order flow
+        toxicity. High VPIN predicts increased volatility and potential
+        market dislocations.
 
-        Reference: Easley, Lopez de Prado, O'Hara (2012)
+        The Algorithm:
+        --------------
+        1. Classify each trade as buy or sell using the tick rule:
+           - Price up from previous tick → Buy
+           - Price down from previous tick → Sell
+           - Price unchanged → Same as previous
+
+        2. Create volume buckets of equal size (bucket_size trades each)
+
+        3. Calculate order imbalance for each bucket:
+           Imbalance = |Buy Volume - Sell Volume| / Total Volume
+
+        4. VPIN = Average of all bucket imbalances
+
+        Interpretation:
+        ---------------
+        - VPIN < 0.3: Low informed trading, stable conditions
+        - VPIN 0.3-0.5: Moderate activity
+        - VPIN > 0.5: High informed trading, expect volatility
+
+        Parameters:
+        -----------
+        trades : pd.DataFrame
+            Trade data with columns: price, volume (optional, defaults to 1)
+
+        Returns:
+        --------
+        vpin : float
+            VPIN value between 0 and 1
+            Returns 0.0 if insufficient data (< bucket_size trades)
+
+        Example:
+            >>> trades = pd.DataFrame({
+            ...     'price': [50000, 50010, 50020, 50015, 50025],
+            ...     'volume': [1.5, 2.0, 1.0, 0.5, 3.0]
+            ... })
+            >>> vpin = analyzer.calculate_vpin(trades)
+            >>> print(f"VPIN: {vpin:.3f}")
+
+        Reference:
+            Easley, Lopez de Prado, O'Hara (2012)
+            "Volume Synchronized Probability of Informed Trading"
         """
         if len(trades) < self.bucket_size:
             return 0.0
@@ -288,9 +436,53 @@ def calculate_spread_metrics(
 
 class LiquidityAnalyzer:
     """
-    Analyzes market liquidity conditions.
+    Analyzes market liquidity conditions for execution optimization.
 
-    Critical for execution algorithms and position sizing.
+    Liquidity analysis is critical for:
+    1. POSITION SIZING: Larger positions require more liquid markets
+    2. EXECUTION STRATEGY: Liquid markets → market orders; illiquid → limit orders
+    3. SLIPPAGE ESTIMATION: Predict execution costs
+    4. RISK MANAGEMENT: Illiquid markets have higher risk
+
+    Key Metrics:
+    ------------
+    1. KYLE'S LAMBDA: Price impact coefficient
+       - Measures how much prices move per unit of order flow
+       - High lambda = low liquidity = high price impact
+
+    2. AMIHUD ILLIQUIDITY RATIO: |return| / dollar volume
+       - Measures price impact per dollar traded
+       - Higher = more illiquid
+
+    3. MARKET DEPTH: Volume available at price levels
+       - Cumulative bid/ask volume
+       - Depth imbalance
+
+    4. LIQUIDITY SCORE: Composite 0-1 score
+       - Combines volume, spread, and depth metrics
+
+    Attributes:
+        liquidity_history: Historical liquidity measurements
+
+    Usage:
+        >>> analyzer = LiquidityAnalyzer()
+        >>>
+        >>> # Calculate Kyle's Lambda
+        >>> kyle_lambda = analyzer.calculate_kyle_lambda(returns, signed_volume)
+        >>> print(f"Kyle's Lambda: {kyle_lambda:.6f}")
+        >>>
+        >>> # Calculate Amihud Illiquidity
+        >>> amihud = analyzer.calculate_amihud_illiquidity(returns, volumes)
+        >>> print(f"Amihud Ratio: {amihud:.4f}")
+        >>>
+        >>> # Estimate market depth
+        >>> depth = analyzer.estimate_market_depth(bid_prices, ask_prices,
+        ...                                          bid_volumes, ask_volumes)
+        >>> print(f"Depth imbalance: {depth['depth_imbalance']:.3f}")
+
+    References:
+        - Kyle, A. (1985): "Continuous Auctions and Insider Trading"
+        - Amihud, Y. (2002): "Illiquidity and Stock Returns"
     """
 
     def __init__(self):

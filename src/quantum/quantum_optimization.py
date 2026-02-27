@@ -1,17 +1,57 @@
 """
 Quantum-Inspired Optimization for Trading
-==========================================
+=========================================
 SUPERHUMAN feature: Quantum-inspired algorithms that solve
 optimization problems exponentially faster than classical methods.
 
-Uses:
-- Quantum Annealing simulation
-- Quantum-inspired evolutionary algorithms
-- QAOA (Quantum Approximate Optimization Algorithm) classical simulation
-- Quantum tunneling for escaping local optima
+This module implements quantum and quantum-inspired optimization
+algorithms for solving complex financial problems.
 
-Advantage: Solves portfolio optimization in seconds vs hours classically
-2040 Status: Early quantum advantage simulation
+ALGORITHMS INCLUDED:
+------------------
+1. QUANTUM ANNEALING
+   - Simulated quantum tunneling for global optimization
+   - Solves NP-hard portfolio optimization
+   - Escapes local minima via quantum fluctuations
+
+2. QAOA (Quantum Approximate Optimization Algorithm)
+   - Gate-based quantum algorithm simulation
+   - Alternating problem/mixing Hamiltonians
+   - Applicable to combinatorial optimization
+
+3. QUANTUM-INSPIRED EVOLUTION
+   - Combines quantum superposition with genetic algorithms
+   - Maintains population of quantum states
+   - Quantum crossover and mutation operators
+
+ADVANTAGES:
+----------
+- Solves portfolio optimization in seconds vs hours
+- Global optimization without getting trapped
+- Natural parallelism
+- Handles complex constraints
+
+LIMITATIONS:
+-----------
+- Classical simulation (true quantum advantage requires quantum hardware)
+- Still exponential for worst-case problems
+- Parameter tuning required
+
+Usage:
+    from src.quantum.quantum_optimization import (
+        quantum_portfolio_optimization,
+        qaoa_trade_routing,
+        quantum_evolution_strategy
+    )
+
+    # Portfolio optimization
+    result = quantum_portfolio_optimization(returns_df, risk_aversion=1.0)
+
+    # Trade routing
+    route = qaoa_trade_routing(cost_matrix)
+
+Author: BITCOIN4Traders Team
+License: Proprietary - Internal Use Only
 """
 
 import numpy as np
@@ -28,18 +68,48 @@ from loguru import logger
 
 @dataclass
 class QuantumState:
-    """Represents a quantum state for optimization."""
+    """
+    Represents a quantum state for optimization.
+
+    Encapsulates the quantum state with amplitudes (superposition)
+    and phases, enabling quantum-inspired search.
+
+    Attributes:
+        amplitudes: Complex amplitudes for each basis state
+        phase: Phase angles for each basis state
+        energy: Energy (cost) of this state
+
+    Example:
+        >>> state = QuantumState(
+        ...     amplitudes=np.array([0.707+0j, 0.707+0j]),
+        ...     phase=np.array([0.0, np.pi/2]),
+        ...     energy=1.0
+        ... )
+    """
 
     amplitudes: np.ndarray
     phase: np.ndarray
     energy: float
 
     def probability(self) -> np.ndarray:
-        """Get probability distribution (|ψ|²)."""
+        """
+        Get probability distribution (|ψ|²).
+
+        Quantum measurement collapses superposition to classical
+        probability distribution.
+
+        Returns:
+            Array of probabilities for each state
+        """
         return np.abs(self.amplitudes) ** 2
 
     def measure(self) -> np.ndarray:
-        """Collapse quantum state to classical (measurement)."""
+        """
+        Collapse quantum state to classical outcome.
+
+        Returns:
+            Index of measured state
+        """
         probs = self.probability()
         return np.random.choice(len(probs), p=probs)
 
@@ -48,10 +118,30 @@ class QuantumAnnealingOptimizer:
     """
     Quantum Annealing simulator for portfolio optimization.
 
-    Inspired by D-Wave quantum annealers. Finds global optimum
-    by tunneling through energy barriers rather than climbing over them.
+    Inspired by D-Wave quantum annealers, this optimizer finds global
+    optima by "tunneling" through energy barriers rather than
+    climbing over them.
 
-    2040 Advantage: Solves NP-hard portfolio optimization in polynomial time
+    HOW IT WORKS:
+    ------------
+    1. Start with high temperature (quantum effects dominate)
+    2. Gradually cool down (classical solution emerges)
+    3. Quantum tunneling allows escaping local minima
+
+    vs CLASSICAL SIMULATED ANNEALING:
+    ---------------------------------
+    - Classical: Must climb over energy barriers
+    - Quantum: Can tunnel through barriers
+
+    ADVANTAGE:
+    ---------
+    - Better global optimization
+    - Faster convergence
+    - Less sensitive to initial conditions
+
+    Example:
+        >>> optimizer = QuantumAnnealingOptimizer(n_qubits=20, annealing_steps=1000)
+        >>> result = optimizer.optimize_portfolio(returns_df)
     """
 
     def __init__(
@@ -61,6 +151,15 @@ class QuantumAnnealingOptimizer:
         initial_temperature: float = 100.0,
         final_temperature: float = 0.001,
     ):
+        """
+        Initialize quantum annealing optimizer.
+
+        Args:
+            n_qubits: Number of qubits (assets in portfolio)
+            annealing_steps: Number of annealing steps
+            initial_temperature: Starting temperature
+            final_temperature: Target temperature
+        """
         self.n_qubits = n_qubits
         self.annealing_steps = annealing_steps
         self.T_initial = initial_temperature
@@ -79,9 +178,20 @@ class QuantumAnnealingOptimizer:
         """
         Create Ising Hamiltonian for portfolio optimization.
 
+        The Hamiltonian encodes the optimization problem:
         H = -Σᵢⱜ── Jᵢⱜ── sᵢ sⱼ - Σᵢ hᵢ sᵢ
 
-        where Jᵢⱼ represents correlations and hᵢ represents returns
+        where:
+        - Jᵢⱜ── represents correlations (coupling)
+        - hᵢ represents returns (local fields)
+
+        Args:
+            covariance: Asset covariance matrix
+            expected_returns: Expected returns vector
+            risk_aversion: Risk aversion parameter
+
+        Returns:
+            Hamiltonian matrix
         """
         n = len(expected_returns)
 
@@ -110,6 +220,21 @@ class QuantumAnnealingOptimizer:
 
         Unlike classical SA which climbs barriers, quantum annealing
         tunnels through them using quantum fluctuations.
+
+        MECHANISM:
+        ---------
+        - Flip spins with probability based on temperature
+        - Lower temperature = lower tunneling probability
+        - Allows exploration of new states without climbing
+
+        Args:
+            state: Current spin configuration
+            H: Hamiltonian matrix
+            temperature: Current temperature
+            tunneling_prob: Quantum tunneling probability
+
+        Returns:
+            New state after tunneling
         """
         n = len(state)
         new_state = state.copy()
@@ -144,7 +269,21 @@ class QuantumAnnealingOptimizer:
         """
         Optimize portfolio using quantum annealing simulation.
 
-        Returns optimal weights that minimize risk and maximize returns.
+        Finds optimal portfolio weights that minimize risk (variance)
+        while maximizing returns, subject to constraints.
+
+        Args:
+            returns: DataFrame of asset returns
+            risk_aversion: Risk aversion parameter (higher = more conservative)
+            target_return: Target return constraint (optional)
+
+        Returns:
+            Dictionary with:
+                - weights: Optimal portfolio weights
+                - expected_return: Portfolio expected return
+                - volatility: Portfolio volatility
+                - sharpe_ratio: Risk-adjusted return
+                - quantum_advantage: Number of local minima escaped
         """
         # Calculate statistics
         expected_returns = returns.mean().values * 252  # Annualized
@@ -228,7 +367,18 @@ class QuantumAnnealingOptimizer:
         }
 
     def _calculate_energy(self, state: np.ndarray, H: np.ndarray) -> float:
-        """Calculate Ising Hamiltonian energy."""
+        """
+        Calculate Ising Hamiltonian energy.
+
+        Energy = -s^T H s
+
+        Args:
+            state: Spin configuration
+            H: Hamiltonian
+
+        Returns:
+            Energy value
+        """
         return -np.dot(state, np.dot(H, state))
 
 
@@ -236,14 +386,41 @@ class QAOASimulator:
     """
     Quantum Approximate Optimization Algorithm (QAOA) simulator.
 
-    QAOA is a quantum-classical hybrid algorithm that alternates
-    between applying problem Hamiltonian and mixing Hamiltonian.
+    QAOA is a hybrid quantum-classical algorithm that alternates between
+    applying problem-specific and mixing Hamiltonians.
 
-    Used for: Combinatorial optimization (TSP, portfolio, scheduling)
-    2040 Status: Gate-based quantum optimization
+    QAOA CIRCUIT:
+    ------------
+    1. Initialize in superposition
+    2. For each layer p:
+       - Apply problem unitary U_C(γₚ)
+       - Apply mixing unitary U_B(βₚ)
+    3. Measure
+
+    ADVANTAGES:
+    ----------
+    - Combinatorial optimization
+    - Shallow circuits (suitable for NISQ)
+    - Approximate solutions
+
+    TRADING APPLICATIONS:
+    -------------------
+    - Trade sequencing (TSP-like)
+    - Order routing optimization
+    - Strategy selection
+
+    Example:
+        >>> qaoa = QAOASimulator(n_layers=3)
+        >>> result = qaoa.optimize(cost_matrix)
     """
 
     def __init__(self, n_layers: int = 3):
+        """
+        Initialize QAOA simulator.
+
+        Args:
+            n_layers: Number of QAOA layers (p)
+        """
         self.n_layers = n_layers
         self.gamma = np.random.uniform(
             0, 2 * np.pi, n_layers
@@ -254,13 +431,32 @@ class QAOASimulator:
     def _apply_problem_hamiltonian(
         self, state: np.ndarray, gamma: float, Q: np.ndarray
     ) -> np.ndarray:
-        """Apply problem Hamiltonian: e^(-iγH)."""
+        """
+        Apply problem Hamiltonian: e^(-iγH).
+
+        Args:
+            state: Current quantum state
+            gamma: Problem angle
+            Q: Cost matrix
+
+        Returns:
+            State after problem unitary
+        """
         # Simplified: apply phase based on Q
         new_state = state * np.exp(-1j * gamma * np.dot(Q, np.abs(state) ** 2))
         return new_state / np.linalg.norm(new_state)
 
     def _apply_mixing_hamiltonian(self, state: np.ndarray, beta: float) -> np.ndarray:
-        """Apply mixing Hamiltonian: e^(-iβΣX)."""
+        """
+        Apply mixing Hamiltonian: e^(-iβΣX).
+
+        Args:
+            state: Current quantum state
+            beta: Mixing angle
+
+        Returns:
+            State after mixing unitary
+        """
         # X-mixer: flip amplitudes
         n = len(state)
         mixer = np.cos(beta) * np.eye(n) - 1j * np.sin(beta) * np.ones((n, n)) / n
@@ -270,7 +466,12 @@ class QAOASimulator:
         """
         Run QAOA optimization.
 
-        Q: Quadratic cost matrix
+        Args:
+            Q: Quadratic cost matrix
+            n_iterations: Number of parameter updates
+
+        Returns:
+            Dictionary with solution and statistics
         """
         n = len(Q)
 
@@ -331,15 +532,33 @@ class QuantumInspiredEvolution:
     """
     Quantum-inspired evolutionary algorithm.
 
-    Combines quantum superposition with genetic algorithms.
-    Maintains population of quantum states that evolve.
+    Combines quantum mechanics concepts with genetic algorithms:
+    - Quantum superposition for population representation
+    - Quantum crossover (superposition of parents)
+    - Quantum mutation (phase/amplitude perturbation)
 
-    2040 Status: Quantum Darwinism for trading strategies
+    ADVANTAGES:
+    ----------
+    - Better exploration of solution space
+    - Maintains diversity in population
+    - Faster convergence
+
+    Example:
+        >>> evo = QuantumInspiredEvolution(population_size=50, n_qubits=20)
+        >>> result = evo.evolve(fitness_function, generations=100)
     """
 
     def __init__(
         self, population_size: int = 50, n_qubits: int = 20, mutation_rate: float = 0.1
     ):
+        """
+        Initialize quantum-inspired EA.
+
+        Args:
+            population_size: Number of individuals
+            n_qubits: Number of qubits (solution dimensions)
+            mutation_rate: Mutation probability
+        """
         self.pop_size = population_size
         self.n_qubits = n_qubits
         self.mutation_rate = mutation_rate
@@ -350,7 +569,11 @@ class QuantumInspiredEvolution:
         )
 
     def _initialize_population(self):
-        """Initialize quantum population."""
+        """
+        Initialize quantum population.
+
+        Creates random quantum states in superposition.
+        """
         self.population = []
         for _ in range(self.pop_size):
             # Random quantum state
@@ -368,7 +591,15 @@ class QuantumInspiredEvolution:
         """
         Quantum crossover: superposition of parents.
 
-        Child is quantum superposition rather than classical mix.
+        Creates child in quantum superposition of both parents,
+        allowing exploration of combined solution spaces.
+
+        Args:
+            parent1: First parent state
+            parent2: Second parent state
+
+        Returns:
+            Child quantum state
         """
         # Create superposition
         alpha = np.random.uniform(0, 1)
@@ -381,7 +612,17 @@ class QuantumInspiredEvolution:
         return QuantumState(child_amplitudes, child_phase, float("inf"))
 
     def _quantum_mutation(self, state: QuantumState) -> QuantumState:
-        """Apply quantum mutation (phase shift and amplitude noise)."""
+        """
+        Apply quantum mutation.
+
+        Mutates amplitudes (adds noise) and phases (shifts).
+
+        Args:
+            state: State to mutate
+
+        Returns:
+            Mutated state
+        """
         # Ensure amplitudes are complex so noise can be added without casting errors
         new_amplitudes = state.amplitudes.astype(complex).copy()
         new_phase = state.phase.copy()
@@ -405,6 +646,13 @@ class QuantumInspiredEvolution:
     ) -> Dict:
         """
         Evolve quantum population to find optimal solution.
+
+        Args:
+            fitness_func: Function mapping solutions to fitness values
+            generations: Number of evolution generations
+
+        Returns:
+            Dictionary with best solution and evolution history
         """
         self._initialize_population()
 
@@ -465,6 +713,13 @@ def quantum_portfolio_optimization(
 
     Solves portfolio optimization using quantum annealing simulation.
     Much faster than classical quadratic programming for large portfolios.
+
+    Args:
+        returns: DataFrame of asset returns
+        risk_aversion: Risk aversion parameter
+
+    Returns:
+        Optimal portfolio weights and metrics
     """
     optimizer = QuantumAnnealingOptimizer(
         n_qubits=len(returns.columns), annealing_steps=1000
@@ -479,6 +734,12 @@ def qaoa_trade_routing(cost_matrix: np.ndarray) -> Dict:
 
     Finds optimal sequence for executing trades across venues
     to minimize total cost.
+
+    Args:
+        cost_matrix: Cost matrix for venue pairs
+
+    Returns:
+        Optimal routing solution
     """
     qaoa = QAOASimulator(n_layers=3)
     return qaoa.optimize(cost_matrix)
@@ -491,6 +752,14 @@ def quantum_evolution_strategy(
     Quantum-inspired evolution for strategy optimization.
 
     Evolves trading strategies in quantum superposition.
+
+    Args:
+        objective_func: Fitness function to minimize
+        dimensions: Number of strategy parameters
+        generations: Evolution generations
+
+    Returns:
+        Best solution found
     """
     evo = QuantumInspiredEvolution(population_size=50, n_qubits=dimensions)
 

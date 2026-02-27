@@ -1,16 +1,81 @@
 """
 Adversarial Training System
-============================
+===========================
 Self-play mechanism where Trader and Adversary improve each other.
 
-Architecture:
-- Trader Agent: Maximizes profit in trading environment
-- Adversary Agent: Creates challenging market conditions
-- Self-Play: Agents alternate training to push each other
+This module implements an adversarial training framework for developing
+robust trading agents. Instead of training in isolation, the Trader agent
+must contend with an intelligent Adversary that learns to create challenging
+market conditions.
 
-Key Innovation:
-Adversary doesn't just add noise - it learns to create realistic
-but difficult scenarios that expose Trader weaknesses.
+Architecture:
+-------------
+- Trader Agent: Maximizes profit in the trading environment
+- Adversary Agent: Learns to create difficult market scenarios
+- Self-Play: Alternating training pushes both agents to improve
+
+The Adversary doesn't just add random noise - it learns to create realistic
+but difficult scenarios that expose the Trader's weaknesses. This leads to
+more robust strategies that perform well under adverse conditions.
+
+Adversary Strategies:
+---------------------
+The adversary can apply the following modifications to the observation space:
+- Action 0 (Volatility): Adds Gaussian noise to simulate volatile markets
+- Action 1 (Trend Bias): Injects systematic bias into price features
+- Action 2 (Signal Inversion): Flips signs of random features
+- Action 3 (No-op): Observes without interference
+
+Adversary Reward:
+-----------------
+The adversary receives rewards based on:
+- Zero-sum component: 50% of trader's loss
+- Difficulty bonus: Reward for increasing market difficulty
+- Success bonus: Extra reward when trader loses money
+
+This creates a competitive co-evolution where both agents improve.
+
+Reference:
+---------
+Schulman, J., Wolski, F., Dhariwal, P., Radford, A., & Klimov, O. (2017).
+Proximal Policy Optimization Algorithms. arXiv:1707.06347.
+
+Usage Example:
+-------------
+    from src.training.adversarial_trainer import AdversarialTrainer, AdversarialConfig
+    from src.agents.ppo_agent import PPOConfig
+
+    # Configure agents
+    trader_config = PPOConfig(state_dim=20, n_actions=3)
+    adversary_config = PPOConfig(state_dim=20, n_actions=4)
+
+    config = AdversarialConfig(
+        n_iterations=500,
+        steps_per_iteration=2048,
+        trader_config=trader_config,
+        adversary_config=adversary_config,
+        adversary_start_iteration=100,  # Warm-up period
+        adversary_strength=0.1,
+    )
+
+    # Initialize trainer
+    trainer = AdversarialTrainer(env, config)
+
+    # Train
+    trainer.train()
+
+    # Evaluate
+    metrics = trainer.evaluate(n_episodes=100)
+    print(f"Mean Return: {metrics['mean_return']*100:.2f}%")
+
+Memory Management:
+------------------
+The trainer includes configurable memory management:
+- History trimming: Limits stored metrics to prevent unbounded growth
+- GPU memory: Clears CUDA cache periodically
+- Adversary buffers: Optional clearing after each training iteration
+
+Configure via config/memory_management.yaml
 """
 
 import gc
@@ -47,7 +112,52 @@ def _load_mem_cfg() -> dict:
 
 @dataclass
 class AdversarialConfig:
-    """Adversarial training configuration."""
+    """
+    Configuration for Adversarial Training.
+
+    This dataclass contains all hyperparameters and settings for the
+    adversarial training system, including agent configurations, training
+    schedules, and checkpointing options.
+
+    Attributes:
+        n_iterations (int): Total number of training iterations. Default: 500.
+        steps_per_iteration (int): Environment steps per iteration. Default: 2048.
+
+    Agent Configuration:
+        trader_config (PPOConfig): Configuration for the trader agent.
+        adversary_config (PPOConfig): Configuration for the adversary agent.
+
+    Adversarial Settings:
+        adversary_start_iteration (int): When to start adversary training (warm-up).
+            Default: 100. The trader trains alone for the first 100 iterations.
+        adversary_strength (float): Scaling factor for adversary modifications [0, 1].
+            Higher values = more severe market manipulations. Default: 0.1.
+
+    Checkpointing:
+        save_frequency (int): Save checkpoint every N iterations. Default: 50.
+        checkpoint_dir (str): Directory to save model checkpoints. Default: "data/models/adversarial".
+
+    Logging:
+        log_frequency (int): Log detailed metrics every N iterations. Default: 10.
+        tensorboard (bool): Whether to use TensorBoard for logging. Default: True.
+
+    Example:
+        >>> from src.agents.ppo_agent import PPOConfig
+        >>>
+        >>> trader_config = PPOConfig(state_dim=20, n_actions=3, gamma=0.99)
+        >>> adversary_config = PPOConfig(state_dim=20, n_actions=4)
+        >>>
+        >>> config = AdversarialConfig(
+        ...     n_iterations=500,
+        ...     steps_per_iteration=2048,
+        ...     trader_config=trader_config,
+        ...     adversary_config=adversary_config,
+        ...     adversary_start_iteration=100,
+        ...     adversary_strength=0.1,
+        ...     save_frequency=50,
+        ...     log_frequency=10,
+        ... )
+    """
 
     # Training
     n_iterations: int = 500
@@ -72,27 +182,79 @@ class AdversarialConfig:
 
 class AdversarialTrainer:
     """
-    Adversarial training system.
+    Adversarial Training System for Robust Trading Agents.
 
-    Coordinates self-play between Trader and Adversary agents.
+    This trainer implements a self-play mechanism where a Trader agent and an
+    Adversary agent co-evolve to improve each other. The Adversary learns to
+    create challenging market conditions that expose the Trader's weaknesses,
+    leading to more robust trading strategies.
 
-    Workflow:
-    1. Trader trains to maximize profit
-    2. Adversary observes Trader's strategy
-    3. Adversary learns to create scenarios that hurt Trader
-    4. Trader must adapt to new challenges
-    5. Repeat → Robust trading strategy
+    Training Workflow:
+    -----------------
+    1. Warm-up Phase (iterations < adversary_start_iteration):
+       - Trader collects experience in normal market conditions
+       - Trader learns from its own experience
+       - Adversary is inactive
 
-    Usage:
-    ------
-    config = AdversarialConfig(n_iterations=500)
-    trainer = AdversarialTrainer(env, config)
+    2. Adversarial Phase (iterations >= adversary_start_iteration):
+       - Trader selects actions and receives (potentially modified) observations
+       - Adversary observes the same state and selects a modification action
+       - Modified observations are fed to the Trader
+       - Both agents receive rewards based on their objectives
+       - Both agents update their policies
 
-    # Train
-    trainer.train()
+    3. Evaluation:
+       - Disable adversary for deterministic evaluation
+       - Run multiple episodes and collect metrics
 
-    # Evaluate
-    metrics = trainer.evaluate(n_episodes=100)
+    Key Methods:
+    -----------
+    - train(): Main training loop
+    - collect_trajectories(): Gather experience from environment
+    - train_trader(): Update Trader policy
+    - train_adversary(): Update Adversary policy
+    - evaluate(): Evaluate trained Trader
+    - save_checkpoint()/load_checkpoint(): Model persistence
+
+    Attributes:
+        env: The trading environment (Gym-style).
+        config (AdversarialConfig): Training configuration.
+        device (str): Computation device.
+        trader (PPOAgent): The main trading agent.
+        adversary (PPOAgent): The adversary agent.
+        iteration (int): Current training iteration.
+        total_steps (int): Total environment steps taken.
+        history (dict): Training history with metrics.
+
+    Args:
+        env: Trading environment with Gym-style interface (reset(), step()).
+        config (AdversarialConfig): Training configuration.
+        device (str): Device for computation. Default: "cpu".
+
+    Environment Interface:
+    ----------------------
+    The environment must implement:
+        - reset() -> observation, info
+        - step(action) -> observation, reward, terminated, truncated, info
+
+    The info dict should contain:
+        - "return": Total episode return
+        - "risk_metrics": Dict with "sharpe_ratio" and "max_drawdown"
+
+    Example:
+        >>> config = AdversarialConfig(n_iterations=500)
+        >>> trainer = AdversarialTrainer(env, config)
+        >>>
+        >>> # Train for specified iterations
+        >>> trainer.train()
+        >>>
+        >>> # Evaluate the trained trader (adversary disabled)
+        >>> metrics = trainer.evaluate(n_episodes=100)
+        >>> print(f"Sharpe: {metrics['mean_sharpe']:.2f}")
+        >>>
+        >>> # Save/Load
+        >>> trainer.save_checkpoint("data/models/adversarial/checkpoint.pth")
+        >>> trainer.load_checkpoint("data/models/adversarial/checkpoint.pth")
     """
 
     def __init__(

@@ -1,21 +1,88 @@
 """
 Live Data Quality Monitor
-==========================
+=========================
+Real-time monitoring and alerting for data quality in production trading systems.
 
-Real-time monitoring of data quality for live trading systems.
+This module provides continuous monitoring of data quality metrics with automatic
+alerting and source switching capabilities. It is designed for production
+environments where data quality directly impacts trading performance.
 
 Features:
-- Continuous quality monitoring
-- Real-time alerts for data degradation
-- Automatic source switching
-- Quality trend analysis
-- Live comparison between sources
+    - Continuous quality monitoring at configurable intervals
+    - Real-time alerts for data degradation
+    - Automatic source switching on quality decline
+    - Quality trend analysis over time
+    - Live comparison between multiple data sources
+    - Thread-safe monitoring with background thread
+
+Alert Types:
+    - QUALITY_DEGRADATION: Overall quality score below threshold
+    - MISSING_DATA_SPIKE: Missing values exceed 5%
+    - OUTLIER_DETECTED: Outliers exceed 5%
+    - STALE_DATA: Data age exceeds 24 hours
+    - SOURCE_DISCREPANCY: Significant price differences between sources
+    - LIQUIDITY_DROP: Volume/availability issues detected
 
 Use Cases:
-- Production trading systems
-- Multi-source data feeds
-- Quality-based source selection
-- Data pipeline monitoring
+    - Production trading systems requiring high data reliability
+    - Multi-source data feeds with automatic failover
+    - Quality-based source selection for live trading
+    - Data pipeline monitoring and alerting
+    - Risk management through data quality gates
+
+Architecture:
+    LiveQualityMonitor
+    ├── Quality history tracking per source
+    ├── Alert evaluation and triggering
+    ├── Best source selection
+    └── Background monitoring thread
+
+    DynamicSourceSelector
+    ├── Automatic source switching
+    ├── Cooldown period management
+    └── Alert-driven re-evaluation
+
+Usage:
+    from src.data_quality.live_monitor import LiveQualityMonitor, DynamicSourceSelector
+
+    # Create monitor
+    monitor = LiveQualityMonitor(
+        check_interval=60,        # Check every 60 seconds
+        history_window=100,       # Keep last 100 snapshots
+        quality_threshold=70.0    # Minimum acceptable quality
+    )
+
+    # Add data sources
+    monitor.add_source("Binance_Primary", df_binance)
+    monitor.add_source("Binance_Backup", df_backup)
+
+    # Register alert handler
+    def handle_alert(alert):
+        print(f"ALERT: {alert.severity} - {alert.message}")
+    monitor.register_alert_handler(handle_alert)
+
+    # Start monitoring
+    monitor.start_monitoring()
+
+    # Get current best source
+    best = monitor.get_best_source()
+    print(f"Using: {best}")
+
+    # Or use dynamic selector for automatic switching
+    selector = DynamicSourceSelector(monitor, switch_threshold=60.0)
+    data = selector.get_data()  # Auto-selects best source
+
+    # Stop monitoring
+    monitor.stop_monitoring()
+
+Dependencies:
+    - pandas: Data handling
+    - numpy: Numerical operations
+    - loguru: Logging
+
+Warning:
+    The monitor runs in a background thread. Ensure proper thread shutdown
+    before application exit to avoid hanging.
 """
 
 import pandas as pd
@@ -87,10 +154,71 @@ class QualitySnapshot:
 
 class LiveQualityMonitor:
     """
-    Live monitoring of data quality for trading data feeds.
+    Real-time data quality monitoring for production trading systems.
 
-    Continuously monitors data quality and triggers alerts
-    when quality degrades below thresholds.
+    This class provides continuous monitoring of data quality metrics with
+    configurable alerting thresholds and automatic source selection. It is
+    designed for production environments where data quality must be maintained
+    around the clock.
+
+    Attributes:
+        check_interval: Seconds between quality checks (default: 60)
+        history_window: Number of quality snapshots to retain (default: 100)
+        quality_threshold: Minimum acceptable quality score (default: 70.0)
+        sources: Dict of data source name -> DataFrame
+        quality_history: Rolling quality snapshots per source
+        alerts: Recent alert history (max 1000)
+        alert_handlers: Registered callback functions
+        is_monitoring: Whether background thread is running
+        current_best_source: Currently selected best source
+
+    Monitoring Process:
+        1. Collect latest data from each source
+        2. Run DataQualityAssessor on each source
+        3. Store quality snapshot in history
+        4. Evaluate alert conditions
+        5. Trigger callbacks for active alerts
+        6. Update best source selection
+
+    Alert Evaluation:
+        - QUALITY_DEGRADATION: Score < threshold
+        - MISSING_DATA_SPIKE: >5% missing values
+        - OUTLIER_DETECTED: >5% outliers
+        - STALE_DATA: Freshness score <50
+
+    Example:
+        >>> monitor = LiveQualityMonitor(
+        ...     check_interval=60,
+        ...     quality_threshold=75.0
+        ... )
+        >>>
+        >>> # Add sources
+        >>> monitor.add_source("Primary", df_primary)
+        >>> monitor.add_source("Backup", df_backup)
+        >>>
+        >>> # Register handler
+        >>> def on_alert(alert):
+        ...     print(f"ALERT: {alert.message}")
+        >>> monitor.register_alert_handler(on_alert)
+        >>>
+        >>> # Start monitoring
+        >>> monitor.start_monitoring()
+        >>>
+        >>> # Check status
+        >>> time.sleep(30)
+        >>> monitor.print_status()
+        >>>
+        >>> # Stop
+        >>> monitor.stop_monitoring()
+
+    Thread Safety:
+        The monitoring loop runs in a separate daemon thread. All shared
+        state access is protected by the GIL. Alert handlers are called
+        synchronously and should not block.
+
+    Note:
+        The monitor imports DataQualityAssessor internally. Ensure that
+        module is available when using _check_source_quality().
     """
 
     def __init__(

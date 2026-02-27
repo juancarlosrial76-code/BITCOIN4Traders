@@ -1,12 +1,77 @@
 """
 Data Manager - CCXT Integration & Parquet Caching
 ==================================================
-Professional data loading with:
-- CCXT exchange integration
-- Parquet format for efficient storage
-- Automatic caching
-- Data validation & quality checks
-- Rate limit handling
+
+Professional-grade data management module for algorithmic trading.
+This module provides comprehensive data loading, caching, and validation
+functionality using CCXT (CryptoCurrency eXchange Trading) library.
+
+Key Features:
+-------------
+1. CCXT INTEGRATION: Unified API for 100+ cryptocurrency exchanges
+   - Supports spot, futures, and margin markets
+   - Automatic rate limiting
+   - Network error handling with retries
+
+2. PARQUET CACHING: Efficient binary format for storing OHLCV data
+   - 10x faster than CSV loading
+   - Preserves data types
+   - Compressed storage (Snappy algorithm)
+   - Atomic writes prevent corruption
+
+3. DATA VALIDATION: Comprehensive quality checks
+   - OHLC consistency (high >= max(open,close), low <= min(open,close))
+   - Missing value detection
+   - Timeline gap detection
+   - Duplicate timestamp handling
+
+4. INCREMENTAL UPDATES: Efficient data refresh
+   - Checks cached data before downloading
+   - Only fetches missing periods
+   - Rate limited to respect exchange limits
+
+5. MULTI-SYMBOL SUPPORT: Load multiple trading pairs
+   - Batch loading with progress tracking
+   - Error isolation per symbol
+
+Architecture:
+-------------
+DataManager (CCXT → Parquet Cache)
+    ↓
+DataLoader → OHLCV DataFrame
+    ↓
+FeatureEngine → Feature DataFrame
+    ↓
+RL Agent / Backtest
+
+Usage:
+------
+# Initialize with configuration
+config = DataConfig(
+    exchange_id="binance",
+    symbols=["BTC/USDT", "ETH/USDT"],
+    timeframe="1h",
+    start_date="2020-01-01",
+)
+dm = DataManager(config)
+
+# Fetch data (uses cache if available)
+df = dm.fetch_ohlcv("BTC/USDT")
+
+# Validate data quality
+is_valid, issues = dm.validate_data(df)
+
+# Load multiple symbols
+data = dm.load_multiple_symbols(["BTC/USDT", "ETH/USDT"])
+
+References:
+-----------
+- CCXT Library: https://github.com/ccxt/ccxt
+- Parquet Format: Apache Parquet documentation
+- Binance API: https://developers.binance.com
+
+Author: BITCOIN4Traders Team
+Version: 1.0.0
 """
 
 import ccxt
@@ -22,7 +87,35 @@ from dataclasses import dataclass
 
 @dataclass
 class DataConfig:
-    """Configuration for data management."""
+    """
+       Configuration for data management operations.
+
+       This dataclass defines all parameters needed for data loading, caching,
+       and processing. Typically loaded from Hydra configuration in production.
+
+       Attributes:
+           exchange_id: CCXT exchange identifier (e.g., 'binance', 'kraken', 'ftx')
+           symbols: List of trading pairs (e.g., ['BTC/USDT', 'ETH/USDT'])
+           timeframe: Candle timeframe ('1m', '5m', '15m', '1h', '4h', '1d')
+           start_date: Start date for historical data ('YYYY-MM-DD')
+           end_date: End date for historical data (None        cache_dir: = current date)
+    Directory for cached Parquet files
+           processed_dir: Directory for processed feature files
+           rate_limit_delay: Seconds between API requests (default: 0.1)
+           max_retries: Maximum retry attempts for failed requests (default: 3)
+
+       Example:
+           >>> config = DataConfig(
+           ...     exchange_id="binance",
+           ...     symbols=["BTC/USDT", "ETH/USDT"],
+           ...     timeframe="1h",
+           ...     start_date="2023-01-01",
+           ...     cache_dir=Path("data/cache"),
+           ...     processed_dir=Path("data/processed"),
+           ...     rate_limit_delay=0.1,
+           ...     max_retries=3,
+           ... )
+    """
 
     exchange_id: str = "binance"
     symbols: List[str] = None
@@ -45,12 +138,49 @@ class DataManager:
     """
     Professional data management with CCXT and Parquet caching.
 
-    Features:
-    - Loads OHLCV data from multiple exchanges
-    - Caches data locally in Parquet format
-    - Validates data quality
-    - Handles rate limits and network errors
-    - Incremental updates
+    This class provides a complete solution for loading cryptocurrency market
+    data from exchanges and managing local caches. It handles:
+
+    1. DATA FETCHING: Download OHLCV candles from exchanges via CCXT
+    2. CACHING: Store and retrieve data in Parquet format
+    3. VALIDATION: Check data quality before use
+    4. RATE LIMITING: Respect exchange API limits
+    5. ERROR HANDLING: Retry failed requests with exponential backoff
+
+    Key Features:
+        - Automatic caching: Data is cached after first download
+        - Incremental updates: Only fetches new data since last download
+        - Multi-symbol support: Batch load multiple trading pairs
+        - Data validation: Comprehensive quality checks
+
+    Attributes:
+        config: DataConfig object with all parameters
+        exchange: Initialized CCXT exchange instance
+
+    Usage:
+        # Initialize with config
+        config = DataConfig(
+            exchange_id="binance",
+            symbols=["BTC/USDT"],
+            timeframe="1h",
+        )
+        dm = DataManager(config)
+
+        # Fetch data (uses cache if available)
+        df = dm.fetch_ohlcv("BTC/USDT", since=datetime(2023, 1, 1))
+
+        # Validate data quality
+        is_valid, issues = dm.validate_data(df)
+        if not is_valid:
+            print(f"Data issues: {issues}")
+
+        # Load multiple symbols
+        data = dm.load_multiple_symbols()
+
+    Note:
+        This class maintains backward compatibility with the original
+        FeatureEngine class for feature computation. Consider using
+        the dedicated feature_engine.py module for production use.
     """
 
     def __init__(self, config: DataConfig):
@@ -93,23 +223,67 @@ class DataManager:
         use_cache: bool = True,
     ) -> pd.DataFrame:
         """
-        Fetch OHLCV data for a symbol.
+        Fetch OHLCV (Open-High-Low-Close-Volume) data for a symbol.
+
+        This method retrieves historical candlestick data from the exchange
+        and optionally caches it locally. Subsequent calls with the same
+        parameters will load from cache for faster execution.
+
+        The Method:
+        -----------
+        1. Check local cache for existing data
+        2. If cache miss or outdated, fetch from exchange in batches
+        3. Handle rate limiting and retry failed requests
+        4. Convert to DataFrame with proper types
+        5. Save to cache for future use
+
+        Batch Fetching:
+        ---------------
+        Most exchanges limit candles per request (Binance: 1000).
+        This method automatically handles pagination by fetching
+        sequential batches until all requested data is retrieved.
 
         Parameters:
         -----------
         symbol : str
-            Trading pair (e.g., 'BTC/USDT')
+            Trading pair in exchange format (e.g., 'BTC/USDT', 'ETH/USDT')
         since : datetime, optional
-            Start date for data
+            Start date for data retrieval. If None, uses cached data from
+            earliest available.
         limit : int
-            Max number of candles per request
+            Maximum number of candles per API request (default: 1000)
+            Higher values may be rejected by some exchanges.
         use_cache : bool
-            Whether to use cached data
+            Whether to use cached data if available (default: True)
+            Set to False to force fresh download.
 
         Returns:
         --------
         df : pd.DataFrame
-            OHLCV data with columns: [open, high, low, close, volume]
+            OHLCV data with columns:
+            - open: Opening price
+            - high: Highest price
+            - low: Lowest price
+            - close: Closing price
+            - volume: Trading volume
+
+            Index is DatetimeIndex (timestamp of candle open time).
+
+        Raises:
+        -------
+        ValueError: If no data could be fetched
+
+        Example:
+            >>> dm = DataManager(config)
+            >>>
+            >>> # Fetch last year of hourly data
+            >>> df = dm.fetch_ohlcv(
+            ...     symbol="BTC/USDT",
+            ...     since=datetime(2023, 1, 1),
+            ...     use_cache=True
+            ... )
+            >>> print(f"Loaded {len(df)} candles")
+            >>> print(f"Date range: {df.index.min()} to {df.index.max()}")
         """
         # Check cache first
         if use_cache:
@@ -257,13 +431,45 @@ class DataManager:
 
     def validate_data(self, df: pd.DataFrame) -> Tuple[bool, List[str]]:
         """
-        Validate data quality.
+        Validate data quality with comprehensive checks.
+
+        This method performs thorough validation of OHLCV data to ensure
+        it's suitable for backtesting and trading. Data quality issues
+        can lead to incorrect backtest results or live trading failures.
+
+        Validation Checks:
+        ------------------
+        1. MISSING VALUES: Check for NaN in any column
+        2. PRICE VALIDITY: Ensure all prices > 0
+        3. OHLC LOGIC: Verify high >= max(open,close) and low <= min(open,close)
+        4. CLOSE RANGE: Verify close is within [low, high]
+        5. DUPLICATES: Check for duplicate timestamps
+        6. TIMELINE GAPS: Detect missing periods in the time series
+
+        Parameters:
+        -----------
+        df : pd.DataFrame
+            OHLCV data to validate
 
         Returns:
         --------
         is_valid : bool
+            True if all validation checks pass
         issues : List[str]
-            List of data quality issues
+            List of descriptive issues found. Empty if is_valid is True.
+
+        Example:
+            >>> dm = DataManager(config)
+            >>> df = dm.fetch_ohlcv("BTC/USDT")
+            >>>
+            >>> is_valid, issues = dm.validate_data(df)
+            >>>
+            >>> if is_valid:
+            ...     print("Data passed validation")
+            ... else:
+            ...     print("Validation failed:")
+            ...     for issue in issues:
+            ...         print(f"  - {issue}")
         """
         issues = []
 

@@ -1,14 +1,69 @@
 """
 Data Processors for Multiple Data Sources
-==========================================
-Process data from various sources into standardized format.
+=========================================
+Comprehensive data processing pipeline for trading systems.
 
-Supported sources:
-- Yahoo Finance (yfinance)
-- Binance (CCXT)
-- Alpha Vantage
-- Quandl
-- Local CSV files
+This module provides unified data acquisition and processing from various
+sources, converting raw market data into features suitable for ML models.
+
+SUPPORTED DATA SOURCES:
+----------------------
+1. YAHOO FINANCE (yfinance)
+   - Wide range of equities, ETFs, crypto
+   - Historical daily data
+   - Free and easy to use
+
+2. BINANCE (via CCXT)
+   - Cryptocurrency exchange data
+   - High-frequency data (1m, 5m, 1h, etc.)
+   - Real-time streaming support
+
+3. ALPHA VANTAGE
+   - Fundamental data
+   - Economic indicators
+   - Requires API key
+
+4. QUANDL
+   - Alternative data
+   - Institutional data
+   - Requires subscription
+
+5. LOCAL CSV FILES
+   - Custom data sources
+   - Backtesting with proprietary data
+
+PROCESSING FEATURES:
+------------------
+- Technical indicator calculation (MACD, RSI, ADX, Bollinger Bands, VWAP)
+- Covariance matrix computation
+- Data normalization (z-score, min-max)
+- Train/validation/test splitting
+
+Usage:
+    from src.data_processors.processors import (
+        create_data_processor,
+        DataProcessorConfig,
+        YahooFinanceProcessor,
+        BinanceProcessor,
+        CSVProcessor
+    )
+
+    # Configure processor
+    config = DataProcessorConfig(
+        start_date="2020-01-01",
+        use_technical_indicators=True,
+        normalize=True
+    )
+
+    # Create processor
+    processor = create_data_processor("yahoo", config)
+
+    # Download and process
+    data = processor.download_data(["BTC-USD", "ETH-USD"])
+    processed = processor.process(data)
+
+Author: BITCOIN4Traders Team
+License: Proprietary - Internal Use Only
 """
 
 import pandas as pd
@@ -21,7 +76,29 @@ import yfinance as yf
 
 @dataclass
 class DataProcessorConfig:
-    """Configuration for data processor."""
+    """
+    Configuration for data processor.
+
+    Controls all aspects of data acquisition and processing.
+
+    Attributes:
+        start_date: Start date for historical data (YYYY-MM-DD)
+        end_date: End date for historical data (YYYY-MM-DD or None for now)
+        use_technical_indicators: Whether to calculate technical indicators
+        tech_indicator_list: List of indicators to compute
+        use_covariance: Whether to compute rolling covariance
+        covariance_window: Window size for covariance calculation
+        normalize: Whether to normalize features
+        normalization_method: 'zscore' or 'minmax'
+
+    Example:
+        >>> config = DataProcessorConfig(
+        ...     start_date="2020-01-01",
+        ...     end_date="2024-01-01",
+        ...     use_technical_indicators=True,
+        ...     normalize=True
+        ... )
+    """
 
     # Time range
     start_date: str = "2010-01-01"
@@ -51,18 +128,66 @@ class DataProcessorConfig:
 
 
 class BaseDataProcessor(ABC):
-    """Abstract base class for data processors."""
+    """
+    Abstract base class for data processors.
+
+    Defines the interface that all data source processors must implement.
+    Provides common processing functionality.
+
+    PROCESSING PIPELINE:
+    ------------------
+    1. Download raw data from source
+    2. Add technical indicators
+    3. Add covariance features
+    4. Normalize data
+    5. Split into train/val/test
+
+    SUBCLASSES:
+    ----------
+    - YahooFinanceProcessor: Yahoo Finance data
+    - BinanceProcessor: Binance exchange data
+    - CSVProcessor: Local CSV files
+    """
 
     def __init__(self, config: DataProcessorConfig):
+        """
+        Initialize processor with configuration.
+
+        Args:
+            config: DataProcessorConfig instance
+        """
         self.config = config
 
     @abstractmethod
     def download_data(self, tickers: List[str], **kwargs) -> pd.DataFrame:
-        """Download data from source."""
+        """
+        Download data from the source.
+
+        Args:
+            tickers: List of ticker symbols
+
+        Returns:
+            DataFrame with OHLCV data
+        """
         pass
 
     def add_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Add technical indicators to dataframe."""
+        """
+        Add technical indicators to dataframe.
+
+        Calculates popular technical analysis indicators:
+        - MACD: Moving Average Convergence Divergence
+        - RSI: Relative Strength Index
+        - ADX: Average Directional Index
+        - Bollinger Bands: Price volatility bands
+        - VWAP: Volume Weighted Average Price
+
+        Args:
+            df: DataFrame with OHLCV data
+
+        Returns:
+            DataFrame with additional indicator columns
+        """
         from ta.trend import MACD, ADXIndicator
         from ta.momentum import RSIIndicator
         from ta.volatility import BollingerBands
@@ -115,7 +240,18 @@ class BaseDataProcessor(ABC):
         return df
 
     def add_covariance_matrix(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Add covariance matrix as feature."""
+        """
+        Add rolling covariance matrix as features.
+
+        Computes pairwise covariances between asset returns over
+        a rolling window, capturing cross-asset relationships.
+
+        Args:
+            df: DataFrame with price data
+
+        Returns:
+            DataFrame with covariance features
+        """
         if not self.config.use_covariance:
             return df
 
@@ -156,39 +292,20 @@ class BaseDataProcessor(ABC):
 
         return df
 
-        tickers = self._get_unique_tickers(df)
-        window = self.config.covariance_window
-
-        # Calculate returns for each ticker
-        returns_cols = []
-        for ticker in tickers:
-            close_col = f"close_{ticker}" if "close_0" in df.columns else "close"
-            returns_col = f"returns_{ticker}"
-            df[returns_col] = df[close_col].pct_change()
-            returns_cols.append(returns_col)
-
-        # Rolling covariance (for each day, use past window)
-        for i in range(len(df)):
-            if i >= window:
-                window_data = df[returns_cols].iloc[i - window : i].dropna()
-                if len(window_data) > 1:
-                    cov_matrix = window_data.cov()
-
-                    # Flatten covariance matrix and add to dataframe
-                    for j, ticker1 in enumerate(tickers):
-                        for k, ticker2 in enumerate(tickers):
-                            col_name = f"cov_{ticker1}_{ticker2}"
-                            if col_name not in df.columns:
-                                df[col_name] = np.nan
-                            df.loc[i, col_name] = cov_matrix.iloc[j, k]
-
-        # Drop intermediate returns columns
-        df = df.drop(columns=returns_cols, errors="ignore")
-
-        return df
-
     def normalize_data(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Normalize data."""
+        """
+        Normalize data using specified method.
+
+        Normalization methods:
+        - Z-SCORE: (x - mean) / std (standardizes to ~N(0,1))
+        - MIN-MAX: (x - min) / (max - min) (scales to [0,1])
+
+        Args:
+            df: DataFrame with numeric columns
+
+        Returns:
+            Normalized DataFrame
+        """
         if not self.config.normalize:
             return df
 
@@ -216,7 +333,21 @@ class BaseDataProcessor(ABC):
         return df
 
     def process(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Complete data processing pipeline."""
+        """
+        Complete data processing pipeline.
+
+        Applies all configured processing steps in order:
+        1. Technical indicators
+        2. Covariance features
+        3. Drop NaN rows
+        4. Normalization
+
+        Args:
+            df: Raw OHLCV data
+
+        Returns:
+            Fully processed DataFrame
+        """
         # Add technical indicators
         if self.config.use_technical_indicators:
             df = self.add_technical_indicators(df)
@@ -234,7 +365,17 @@ class BaseDataProcessor(ABC):
         return df
 
     def _get_unique_tickers(self, df: pd.DataFrame) -> List[str]:
-        """Extract unique tickers from dataframe columns."""
+        """
+        Extract unique tickers from dataframe columns.
+
+        Handles both single-ticker and multi-ticker data formats.
+
+        Args:
+            df: DataFrame with price data
+
+        Returns:
+            List of ticker identifiers
+        """
         # Check if using multi-ticker format
         if "close_0" in df.columns:
             # Extract ticker indices
@@ -250,7 +391,20 @@ class BaseDataProcessor(ABC):
     def split_data(
         self, df: pd.DataFrame, train_ratio: float = 0.7, val_ratio: float = 0.15
     ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        """Split data into train/val/test sets."""
+        """
+        Split data into train/validation/test sets.
+
+        Uses temporal splitting (no shuffling) to preserve
+        chronological order for time series data.
+
+        Args:
+            df: Processed DataFrame
+            train_ratio: Fraction for training (default: 70%)
+            val_ratio: Fraction for validation (default: 15%)
+
+        Returns:
+            Tuple of (train_df, val_df, test_df)
+        """
         n = len(df)
         train_end = int(n * train_ratio)
         val_end = int(
@@ -268,12 +422,43 @@ class BaseDataProcessor(ABC):
 
 
 class YahooFinanceProcessor(BaseDataProcessor):
-    """Data processor for Yahoo Finance."""
+    """
+    Data processor for Yahoo Finance.
+
+    Downloads historical data using the yfinance library.
+
+    FEATURES:
+    --------
+    - Wide asset coverage (stocks, ETFs, crypto, forex)
+    - Daily, weekly, monthly data
+    - Fundamental data available
+    - Free and requires no API key
+
+    LIMITATIONS:
+    -----------
+    - Delayed data for some instruments
+    - Rate limiting
+    - Not suitable for real-time trading
+
+    Example:
+        >>> processor = YahooFinanceProcessor(config)
+        >>> data = processor.download_data(["BTC-USD", "ETH-USD"], interval="1d")
+    """
 
     def download_data(
         self, tickers: List[str], interval: str = "1d", **kwargs
     ) -> pd.DataFrame:
-        """Download data from Yahoo Finance."""
+        """
+        Download data from Yahoo Finance.
+
+        Args:
+            tickers: List of Yahoo Finance ticker symbols
+            interval: Data frequency ('1d', '1wk', '1mo', etc.)
+            **kwargs: Additional arguments for yfinance
+
+        Returns:
+            DataFrame with OHLCV data for all tickers
+        """
         all_data = []
 
         for i, ticker in enumerate(tickers):
@@ -314,9 +499,39 @@ class YahooFinanceProcessor(BaseDataProcessor):
 
 
 class BinanceProcessor(BaseDataProcessor):
-    """Data processor for Binance (via CCXT)."""
+    """
+    Data processor for Binance (via CCXT).
+
+    Downloads cryptocurrency market data from Binance exchange.
+
+    FEATURES:
+    --------
+    - High-frequency data (1m, 5m, 15m, 1h, etc.)
+    - Real-time data
+    - Wide crypto coverage
+    - Low latency
+
+    LIMITATIONS:
+    -----------
+    - Requires CCXT library
+    - Only crypto assets
+    - API rate limits
+
+    Example:
+        >>> processor = BinanceProcessor(config)
+        >>> data = processor.download_data(["BTC/USDT", "ETH/USDT"], timeframe="1h")
+    """
 
     def __init__(self, config: DataProcessorConfig):
+        """
+        Initialize Binance processor.
+
+        Args:
+            config: DataProcessorConfig
+
+        Raises:
+            ImportError: If CCXT not installed
+        """
         super().__init__(config)
         try:
             import ccxt
@@ -328,7 +543,17 @@ class BinanceProcessor(BaseDataProcessor):
     def download_data(
         self, tickers: List[str], timeframe: str = "1h", **kwargs
     ) -> pd.DataFrame:
-        """Download data from Binance."""
+        """
+        Download data from Binance.
+
+        Args:
+            tickers: List of Binance ticker symbols (e.g., 'BTC/USDT')
+            timeframe: OHLCV timeframe ('1m', '5m', '1h', '1d')
+            **kwargs: Additional arguments
+
+        Returns:
+            DataFrame with OHLCV data
+        """
         all_data = []
 
         for i, ticker in enumerate(tickers):
@@ -369,10 +594,39 @@ class BinanceProcessor(BaseDataProcessor):
 
 
 class CSVProcessor(BaseDataProcessor):
-    """Data processor for local CSV files."""
+    """
+    Data processor for local CSV files.
+
+    Loads custom data from CSV files for backtesting
+    with proprietary or alternative data sources.
+
+    FEATURES:
+    --------
+    - Custom data formats
+    - No external dependencies
+    - Full control over data
+
+    LIMITATIONS:
+    -----------
+    - Manual data preparation required
+    - No automatic updates
+
+    Example:
+        >>> processor = CSVProcessor(config)
+        >>> data = processor.download_data(["data/btc.csv", "data/eth.csv"])
+    """
 
     def download_data(self, file_paths: List[str], **kwargs) -> pd.DataFrame:
-        """Load data from CSV files."""
+        """
+        Load data from CSV files.
+
+        Args:
+            file_paths: List of paths to CSV files
+            **kwargs: Additional arguments for pd.read_csv
+
+        Returns:
+            DataFrame with loaded data
+        """
         all_data = []
 
         for i, file_path in enumerate(file_paths):
@@ -403,7 +657,14 @@ def create_data_processor(
         config: Processor configuration
 
     Returns:
-        Data processor instance
+        Data processor instance for the specified source
+
+    Raises:
+        ValueError: If unknown source specified
+
+    Example:
+        >>> config = DataProcessorConfig(start_date="2020-01-01")
+        >>> processor = create_data_processor("yahoo", config)
     """
     source = source.lower()
 

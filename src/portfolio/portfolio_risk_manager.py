@@ -1,13 +1,53 @@
 """
 Advanced Portfolio Risk Manager
 ===============================
-SOTA feature: Institutional-grade risk management.
+Institutional-grade risk management for quantitative trading.
 
-Used by hedge funds and prop trading firms to:
-1. Control drawdowns at portfolio level
-2. Manage cross-asset correlations
-3. Dynamic position sizing based on risk
-4. Real-time VaR monitoring
+This module provides comprehensive risk management tools used by hedge funds,
+prop trading firms, and quantitative researchers. It implements state-of-the-art
+risk measurement and management techniques.
+
+Features:
+  - Value at Risk (VaR): Historical and parametric VaR calculation
+  - Risk Parity: Equal risk contribution portfolio optimization
+  - Dynamic Position Sizing: Volatility-based and Kelly criterion sizing
+  - Circuit Breakers: Automatic trading halt on extreme losses
+  - Stress Testing: Simulate portfolio under crisis scenarios
+  - Real-time Monitoring: Continuous risk metric tracking
+
+Risk Metrics:
+  - Portfolio VaR (1-day and 5-day)
+  - Marginal Risk Contributions
+  - Diversification Ratio
+  - Beta (market sensitivity)
+  - Maximum Drawdown
+  - Position Concentration
+
+Usage:
+    from src.portfolio.portfolio_risk_manager import PortfolioRiskManager, PortfolioRiskConfig
+
+    config = PortfolioRiskConfig(
+        max_portfolio_var=0.02,  # 2% daily VaR limit
+        max_drawdown_pct=0.15,   # 15% max drawdown
+        risk_budget_method='risk_parity'
+    )
+
+    manager = PortfolioRiskManager(config)
+
+    # Add positions
+    for asset, returns in returns_df.items():
+        manager.add_position(asset, position_size, returns)
+
+    # Calculate portfolio risk
+    var = manager.calculate_portfolio_var(returns_df)
+    print(f"Portfolio VaR: {var['portfolio_var']:.2%}")
+
+    # Get optimal position sizes
+    sizes = manager.calculate_dynamic_position_sizes(returns_df, capital)
+
+References:
+  - "Risk Parity" by David Caberra
+  - "Quantitative Risk Management" by McNeil, Frey, Embrechts
 """
 
 import numpy as np
@@ -23,7 +63,49 @@ warnings.filterwarnings("ignore")
 
 @dataclass
 class PortfolioRiskConfig:
-    """Configuration for portfolio risk management."""
+    """
+    Configuration for portfolio risk management.
+
+    Defines risk limits, budgeting methods, and circuit breaker settings
+    for the portfolio risk manager.
+
+    Portfolio Limits:
+        - max_portfolio_var: Maximum allowed daily VaR (default 2%)
+        - max_drawdown_pct: Maximum drawdown before circuit breaker (default 15%)
+        - max_correlation: Max correlation between positions (default 0.7)
+        - max_concentration: Max weight in single asset (default 25%)
+
+    Risk Budgeting:
+        - risk_budget_method: Method for allocating risk ('equal', 'inverse_vol', 'kelly')
+        - target_volatility: Target annualized volatility (default 15%)
+
+    Dynamic Adjustments:
+        - use_dynamic_sizing: Enable dynamic position sizing
+        - vol_lookback: Lookback window for volatility (default 30 days)
+        - var_confidence: VaR confidence level (default 95%)
+
+    Circuit Breakers:
+        - enable_circuit_breakers: Enable automatic trading halt
+        - daily_loss_limit: Max daily loss before halt (default 5%)
+        - consecutive_loss_days: Days of loss before halt (default 3)
+
+    Example:
+        # Conservative config
+        config = PortfolioRiskConfig(
+            max_portfolio_var=0.01,  # 1% VaR
+            max_drawdown_pct=0.10,   # 10% max drawdown
+            risk_budget_method='risk_parity',
+            daily_loss_limit=0.03    # 3% daily loss limit
+        )
+
+        # Aggressive config
+        config = PortfolioRiskConfig(
+            max_portfolio_var=0.05,
+            max_drawdown_pct=0.25,
+            risk_budget_method='inverse_vol',
+            enable_circuit_breakers=False
+        )
+    """
 
     # Portfolio Limits
     max_portfolio_var: float = 0.02  # 2% daily VaR limit
@@ -48,7 +130,27 @@ class PortfolioRiskConfig:
 
 @dataclass
 class PositionRisk:
-    """Risk metrics for a single position."""
+    """
+    Risk metrics for a single position.
+
+    Contains comprehensive risk measurements for an individual position
+    including VaR, beta, and correlation contributions.
+
+    Attributes:
+        asset: Asset symbol (e.g., 'BTC', 'AAPL')
+        position_size: Current position size in base units
+        weight: Portfolio weight (percentage of total portfolio)
+        var_1d: 1-day Value at Risk (95% confidence)
+        var_5d: 5-day Value at Risk (estimated via sqrt rule)
+        beta: Market sensitivity (correlation with market)
+        contribution_to_var: Position's contribution to portfolio VaR
+        correlation_matrix: Correlations with other positions
+
+    Note:
+        - VaR represents potential loss at given confidence level
+        - Beta > 1 means more volatile than market
+        - Contribution to VaR shows how much position adds to total risk
+    """
 
     asset: str
     position_size: float
@@ -62,10 +164,59 @@ class PositionRisk:
 
 class PortfolioRiskManager:
     """
-    Institutional-grade portfolio risk management.
+    Institutional-grade portfolio risk management system.
 
-    Implements risk parity, dynamic position sizing, and
-    real-time VaR monitoring as used by top quant funds.
+    Implements comprehensive risk measurement and management techniques used by
+    top quantitative funds. Provides real-time monitoring and automated
+    risk controls.
+
+    Key Capabilities:
+        - Value at Risk (VaR): Both historical simulation and parametric methods
+        - Risk Parity: Equal risk contribution portfolio optimization
+        - Dynamic Position Sizing: Adjusts positions based on volatility and correlations
+        - Circuit Breakers: Automatic halt on extreme market conditions
+        - Risk Reporting: Comprehensive risk metrics and attribution
+
+    Risk Budgeting Methods:
+        - 'equal': Equal weights across all positions
+        - 'inverse_vol': Weight inversely proportional to volatility
+        - 'risk_parity': Equal risk contribution from each position
+        - 'kelly': Kelly criterion for optimal growth
+
+    Circuit Breaker Triggers:
+        - Daily loss exceeds limit
+        - Maximum drawdown exceeded
+        - Consecutive loss days threshold
+
+    Example:
+        # Initialize with config
+        config = PortfolioRiskConfig(
+            max_portfolio_var=0.02,
+            max_drawdown_pct=0.15,
+            risk_budget_method='risk_parity',
+            enable_circuit_breakers=True
+        )
+
+        manager = PortfolioRiskManager(config)
+
+        # Add positions with historical returns
+        manager.add_position('BTC', 0.5, btc_returns)
+        manager.add_position('ETH', 0.3, eth_returns)
+
+        # Calculate portfolio VaR
+        var_result = manager.calculate_portfolio_var(returns_df)
+        print(f"Portfolio VaR: {var_result['portfolio_var']:.2%}")
+
+        # Get risk contributions
+        contributions = manager.calculate_risk_contribution(returns_df)
+
+        # Optimize position sizes
+        sizes = manager.calculate_dynamic_position_sizes(returns_df, 100000)
+
+        # Check circuit breaker after daily P&L
+        cb_result = manager.check_circuit_breakers(daily_pnl=1000, portfolio_value=100000)
+        if cb_result['triggered']:
+            print(f"Circuit breaker: {cb_result['reason']}")
     """
 
     def __init__(self, config: PortfolioRiskConfig = None):
@@ -396,8 +547,33 @@ class StressTestEngine:
     """
     Portfolio stress testing engine.
 
-    SOTA feature: Simulates portfolio performance under
-    various market stress scenarios.
+    Simulates portfolio performance under various market stress scenarios
+    to understand potential losses during crisis events.
+
+    Predefined Scenarios:
+        - market_crash: 20% market drop, 3x volatility
+        - high_volatility: 5% drop, 2.5x volatility
+        - correlation_spike: All correlations go to 0.9
+        - liquidity_crisis: 10% drop, 2x volatility
+
+    Output Metrics:
+        - VaR (95%): Value at Risk at 95% confidence
+        - CVaR: Conditional Value at Risk (expected shortfall)
+        - Max Drawdown: Maximum peak-to-trough decline
+        - Worst Day: Single worst trading day
+        - Stress Sharpe: Risk-adjusted return under stress
+
+    Example:
+        engine = StressTestEngine()
+
+        # Run all scenarios
+        results = engine.run_stress_test(returns_df, weights)
+
+        # Run specific scenario
+        crash_results = engine.run_stress_test(returns_df, weights, 'market_crash')
+
+        print(f"Crash VaR: {crash_results['market_crash']['var_95']:.2%}")
+        print(f"Crash Max DD: {crash_results['market_crash']['max_drawdown']:.2%}")
     """
 
     def __init__(self):

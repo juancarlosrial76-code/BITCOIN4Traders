@@ -472,8 +472,71 @@ class SACAgent:
     """
     Soft Actor-Critic (SAC) Agent.
 
-    Maximum entropy RL algorithm for continuous action spaces.
-    Better sample efficiency than DDPG.
+    SAC is an off-policy maximum entropy reinforcement learning algorithm.
+    It optimizes for both reward maximization and policy entropy, leading to
+    better exploration and robustness.
+
+    Key Features:
+    - Maximum Entropy: Encourages stochastic policies and wide exploration
+    - Automatic Temperature: Learns the entropy weight (α) automatically
+    - Twin Q-Networks: Uses two critics to reduce overestimation
+    - Off-Policy: Highly sample efficient compared to on-policy methods
+
+    Algorithm:
+    ---------
+    1. Sample action from policy: a = tanh(μ(s) + ε * σ(s))
+    2. Store transition in replay buffer
+    3. Sample mini-batch from buffer
+    4. Critic update: minimize MSE with soft Q-targets
+       y = r + γ * (min(Q1', Q2') - α * log π(a'|s'))
+    5. Actor update: maximize Q - α * log π(a|s)
+    6. Update temperature parameter α
+    7. Soft update target networks
+
+    The entropy bonus in the target ensures the policy remains stochastic,
+    which is crucial for effective exploration in complex environments.
+
+    Attributes:
+        state_dim (int): Dimension of state space.
+        action_dim (int): Dimension of continuous action space.
+        max_action (float): Maximum action magnitude.
+        gamma (float): Discount factor.
+        tau (float): Soft update coefficient.
+        alpha (float): Entropy regularization coefficient.
+        batch_size (int): Mini-batch size.
+        device (str): Computation device.
+        actor (GaussianActor): Stochastic policy network.
+        critic1 (CriticNetwork): First Q-network.
+        critic2 (CriticNetwork): Second Q-network (reduces overestimation).
+        critic1_target (CriticNetwork): Target for critic1.
+        critic2_target (CriticNetwork): Target for critic2.
+        buffer (ReplayBuffer): Experience replay buffer.
+
+    Args:
+        state_dim (int): Dimension of state space.
+        action_dim (int): Dimension of continuous action.
+        max_action (float): Maximum action value. Default: 1.0.
+        learning_rate (float): Learning rate. Default: 3e-4.
+        gamma (float): Discount factor. Default: 0.99.
+        tau (float): Soft update coefficient. Default: 0.005.
+        alpha (float): Entropy coefficient. Default: 0.2.
+        buffer_size (int): Replay buffer capacity. Default: 1000000.
+        batch_size (int): Mini-batch size. Default: 256.
+        device (str): Computation device. Default: "cuda" if available else "cpu".
+
+    Example:
+        >>> agent = SACAgent(state_dim=20, action_dim=1, alpha=0.2)
+        >>> state = env.reset()
+        >>> action = agent.select_action(state, evaluate=False)
+        >>> next_state, reward, done, _ = env.step(action)
+        >>> agent.store_transition(state, action, reward, next_state, done)
+        >>> losses = agent.train()
+        >>> print(f"Critic1 loss: {losses['critic1_loss']:.4f}")
+
+    Note:
+        - SAC is generally more stable and sample-efficient than DDPG
+        - The entropy coefficient can be learned automatically (see SAC with α tuning)
+        - Uses tanh squashing with reparameterization for differentiable sampling
     """
 
     def __init__(
@@ -650,7 +713,49 @@ class GaussianActor(nn.Module):
 
 
 class ReplayBuffer:
-    """Experience Replay Buffer."""
+    """
+    Experience Replay Buffer.
+
+    A FIFO buffer that stores (state, action, reward, next_state, done) tuples
+    for off-policy reinforcement learning algorithms. Uses circular array
+    for efficient storage when capacity is reached.
+
+    The replay buffer breaks temporal correlation in learning samples,
+    which is essential for stable deep Q-learning. Instead of learning
+    from consecutive experiences (which are highly correlated), we sample
+    random mini-batches.
+
+    Key Features:
+    - Fixed Capacity: Old experiences are discarded when full
+    - Random Sampling: Uniform random sampling for each mini-batch
+    - Efficient Storage: Uses circular indexing to overwrite old data
+
+    Attributes:
+        capacity (int): Maximum number of transitions to store.
+        buffer (list): List of transition tuples.
+        position (int): Current write position (circular index).
+
+    Args:
+        capacity (int): Maximum buffer size. Default: 100000.
+
+    Methods:
+        push(state, action, reward, next_state, done): Add transition to buffer.
+        sample(batch_size): Randomly sample mini-batch of transitions.
+        __len__(): Return current number of stored transitions.
+
+    Example:
+        >>> buffer = ReplayBuffer(capacity=10000)
+        >>>
+        >>> # Add transitions
+        >>> for _ in range(1000):
+        ...     state, action, reward, next_state, done = get_experience()
+        ...     buffer.push(state, action, reward, next_state, done)
+        >>>
+        >>> # Sample mini-batch
+        >>> batch = buffer.sample(batch_size=32)
+        >>> states, actions, rewards, next_states, dones = batch
+        >>> print(f"Sampled {len(states)} transitions")
+    """
 
     def __init__(self, capacity: int):
         self.capacity = capacity
@@ -689,8 +794,68 @@ class A2CAgent:
     """
     Advantage Actor-Critic (A2C) Agent.
 
-    Synchronous version of A3C. Uses on-policy updates.
-    Good for discrete and continuous action spaces.
+    A2C (Advantage Actor-Critic) is a synchronous, on-policy algorithm that
+    combines policy gradient (actor) with value function approximation (critic).
+    It computes advantages to reduce variance in policy gradient estimates.
+
+    Key Features:
+    - Synchronous Updates: Multiple environments collected in parallel
+    - Advantage Estimation: A(s,a) = Q(s,a) - V(s) for lower variance
+    - On-Policy Learning: Learns from current trajectory (no replay buffer)
+    - Both Discrete and Continuous: Works with Categorical or Gaussian policies
+
+    Algorithm:
+    ---------
+    1. Collect trajectories using current policy
+    2. Compute returns: G_t = r_t + γ * r_{t+1} + ... + γ^n * V(s_{t+n})
+    3. Compute advantages: A_t = G_t - V(s_t)
+    4. Actor loss: -log π(a|s) * A (policy gradient with advantage)
+    5. Critic loss: MSE(V(s), G_t) (value function regression)
+    6. Entropy loss: -H(π) (encourages exploration)
+    7. Total loss: actor_loss + value_coef * critic_loss - entropy_coef * entropy
+    8. Update networks via gradient descent
+
+    The advantage function tells us how much better an action is compared
+    to the average, guiding the policy update in the right direction.
+
+    Attributes:
+        state_dim (int): Dimension of state space.
+        action_dim (int): Dimension of action space.
+        discrete (bool): Whether action space is discrete.
+        gamma (float): Discount factor.
+        entropy_coef (float): Entropy bonus coefficient.
+        value_loss_coef (float): Value loss weight.
+        max_grad_norm (float): Gradient clipping threshold.
+        device (str): Computation device.
+        actor_critic (ActorCriticNetwork): Combined actor-critic network.
+        optimizer (torch.optim.Adam): Optimizer for all network parameters.
+
+    Args:
+        state_dim (int): Dimension of state space.
+        action_dim (int): Dimension of action space.
+        discrete (bool): Whether action space is discrete. Default: True.
+        learning_rate (float): Learning rate. Default: 3e-4.
+        gamma (float): Discount factor. Default: 0.99.
+        entropy_coef (float): Entropy coefficient. Default: 0.01.
+        value_loss_coef (float): Value loss weight. Default: 0.5.
+        max_grad_norm (float): Gradient clipping. Default: 0.5.
+        device (str): Computation device. Default: "cuda" if available else "cpu".
+
+    Example:
+        >>> # Discrete actions
+        >>> agent = A2CAgent(state_dim=20, action_dim=3, discrete=True)
+        >>> # Continuous actions
+        >>> agent = A2CAgent(state_dim=20, action_dim=1, discrete=False)
+        >>>
+        >>> states, actions, rewards, dones, next_state = collect_rollout()
+        >>> losses = agent.train(states, actions, rewards, dones, next_state)
+        >>> print(f"Actor loss: {losses['actor_loss']:.4f}")
+
+    Note:
+        - A2C is on-policy; must collect fresh experiences each update
+        - More sample-efficient than pure policy gradient (REINFORCE)
+        - Works for both discrete and continuous action spaces
+        - Consider PPO for more stable updates with clipped objectives
     """
 
     def __init__(
@@ -899,12 +1064,80 @@ class ActorCriticNetwork(nn.Module):
 
 class TD3Agent:
     """
-    Twin Delayed Deep Deterministic Policy Gradient (TD3).
+    Twin Delayed Deep Deterministic Policy Gradient (TD3) Agent.
 
-    Improvement over DDPG with:
-    - Twin critics to reduce overestimation
-    - Delayed policy updates
-    - Target policy smoothing
+    TD3 is an improved version of DDPG that addresses the overestimation
+    bias common in actor-critic methods. It uses several key innovations.
+
+    Key Features:
+    - Twin Critics: Two Q-networks take the minimum to avoid Q-overestimation
+    - Delayed Policy Updates: Actor updates less frequently than critics
+    - Target Policy Smoothing: Adds noise to target actions for robustness
+    - Clipped Noise: Prevents extreme action perturbations
+
+    Algorithm:
+    ---------
+    1. Sample action with exploration noise: a = π(s) + noise
+    2. Store transition in replay buffer
+    3. Sample mini-batch
+    4. Critic update:
+       - Add clipped noise to target action: a' = a_target + clip(noise, -c, c)
+       - Compute twin Q-targets: y = r + γ * min(Q1', Q2')
+       - Minimize MSE for both critics
+    5. Delayed actor update (every policy_freq steps):
+       - Update actor to maximize Q1(s, π(s))
+       - Soft update all target networks
+
+    The combination of twin critics and delayed updates significantly
+    reduces the overestimation bias that plagues DDPG.
+
+    Attributes:
+        state_dim (int): Dimension of state space.
+        action_dim (int): Dimension of continuous action space.
+        max_action (float): Maximum action magnitude.
+        gamma (float): Discount factor.
+        tau (float): Soft update coefficient.
+        policy_noise (float): Noise scale for target smoothing.
+        noise_clip (float): Clipping range for policy noise.
+        policy_freq (int): Actor update frequency (in critic steps).
+        batch_size (int): Mini-batch size.
+        device (str): Computation device.
+        actor (ActorNetwork): Main actor network.
+        actor_target (ActorNetwork): Target actor network.
+        critic1 (CriticNetwork): First Q-network.
+        critic2 (CriticNetwork): Second Q-network.
+        critic1_target (CriticNetwork): Target for critic1.
+        critic2_target (CriticNetwork): Target for critic2.
+        buffer (ReplayBuffer): Experience replay buffer.
+        total_it (int): Total training iterations.
+
+    Args:
+        state_dim (int): Dimension of state space.
+        action_dim (int): Dimension of continuous action.
+        max_action (float): Maximum action value. Default: 1.0.
+        learning_rate (float): Learning rate. Default: 3e-4.
+        gamma (float): Discount factor. Default: 0.99.
+        tau (float): Soft update coefficient. Default: 0.005.
+        policy_noise (float): Target policy noise scale. Default: 0.2.
+        noise_clip (float): Noise clipping range. Default: 0.5.
+        policy_freq (int): Actor update frequency. Default: 2.
+        buffer_size (int): Replay buffer capacity. Default: 1000000.
+        batch_size (int): Mini-batch size. Default: 256.
+        device (str): Computation device. Default: "cuda" if available else "cpu".
+
+    Example:
+        >>> agent = TD3Agent(state_dim=20, action_dim=1, policy_freq=2)
+        >>> state = env.reset()
+        >>> action = agent.select_action(state, noise=0.1)
+        >>> next_state, reward, done, _ = env.step(action)
+        >>> agent.store_transition(state, action, reward, next_state, done)
+        >>> losses = agent.train()
+        >>> print(f"Actor loss: {losses['actor_loss']:.4f}")
+
+    Note:
+        - TD3 typically outperforms DDPG in continuous control tasks
+        - policy_freq=2 is a good default (update actor every 2 critic updates)
+        - Requires careful tuning of noise parameters for best results
     """
 
     def __init__(

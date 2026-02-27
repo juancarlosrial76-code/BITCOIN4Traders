@@ -625,38 +625,96 @@ class PPOAgent:
             self.hiddens.append(None)
 
     def compute_gae(self, next_value: float) -> Tuple[np.ndarray, np.ndarray]:
-        values = self.values + [next_value]  # Append bootstrap value for final state
+        """
+        Compute Generalized Advantage Estimation (GAE) and returns.
+
+        GAE provides a bias-variance tradeoff in advantage estimation:
+        - lambda=0: High bias, low variance (TD(0))
+        - lambda=1: Low bias, high variance (Monte Carlo)
+
+        The algorithm works backwards through the trajectory, computing
+        advantage estimates that incorporate multi-step returns while
+        maintaining computational efficiency.
+
+        Args:
+            next_value (float): Bootstrap value for final state (0 if episode ended).
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray]:
+                - advantages: Normalized advantage estimates
+                - returns: Target values for value function (advantage + baseline)
+        """
+        # Append bootstrap value for final state to enable TD learning at episode end
+        # This prevents the "deadly triad" problem in RL
+        values = self.values + [next_value]
         advantages = []
-        gae = 0  # Running GAE accumulator (initialized to 0)
-        for t in reversed(
-            range(len(self.rewards))
-        ):  # Iterate backwards through trajectory
+        gae = 0  # Running GAE accumulator initialized to 0
+
+        # Iterate backwards through trajectory to compute backwards GAE recursion
+        # Going backwards allows us to compute A_t using A_{t+1} which is already known
+        for t in reversed(range(len(self.rewards))):
+            # TD error (δ_t): How much we exceeded expected value
+            # If done, the value of next state is effectively 0 (no future rewards)
             delta = (
                 self.rewards[t]
-                + self.config.gamma * values[t + 1] * (1 - self.dones[t])  # TD target
-                - values[t]  # Subtract current value estimate → TD error
+                + self.config.gamma * values[t + 1] * (1 - self.dones[t])
+                - values[t]
             )
-            # GAE recursion: A_t = δ_t + (γλ)(1-done) * A_{t+1}
+
+            # GAE formula: A_t = δ_t + γλ(1-done) * A_{t+1}
+            # This accumulates n-step returns with exponential weighting
             gae = (
                 delta
                 + self.config.gamma * self.config.gae_lambda * (1 - self.dones[t]) * gae
             )
-            advantages.insert(0, gae)  # Prepend to maintain time-order
+            advantages.insert(0, gae)  # Prepend to maintain original time order
 
         advantages = np.array(advantages)
-        returns = advantages + np.array(
-            self.values
-        )  # Target returns = advantage + value baseline
+
+        # Returns = advantage + value baseline (for value function training)
+        # This is the "target" we want V(s) to predict
+        returns = advantages + np.array(self.values)
         return advantages, returns
 
     def train(self, next_value: float = 0.0) -> Dict:
+        """
+        Perform one PPO update using collected experience.
+
+        This method implements the core PPO training loop:
+        1. Compute advantages using GAE
+        2. Normalize advantages for stability
+        3. Multiple epochs of mini-batch updates
+        4. Compute clipped surrogate objective
+        5. Update actor and critic networks
+        6. Optional early stopping based on KL divergence
+
+        The clipped surrogate objective prevents destructive large policy updates
+        by limiting how much the policy can change in each update.
+
+        Args:
+            next_value (float): Bootstrap value for the final state in the buffer.
+                Should be 0 if the episode ended, otherwise the estimated value
+                of the current state. Default: 0.0.
+
+        Returns:
+            Dict: Training statistics including:
+                - actor_loss: Mean actor loss for this update
+                - critic_loss: Mean critic loss for this update
+                - entropy: Mean policy entropy
+                - mean_kl: Mean KL divergence between old and new policy
+                - n_epochs: Number of epochs trained
+        """
+        # Check if we have any experience to learn from
         if len(self.states) == 0:
             return {}
 
-        # Compute advantages
+        # Step 1: Compute Generalized Advantage Estimation
+        # This gives us advantage estimates with good bias-variance tradeoff
         advantages, returns = self.compute_gae(next_value)
 
-        # Normalize advantages to zero-mean, unit-variance for training stability
+        # Step 2: Normalize advantages to zero-mean, unit-variance
+        # This improves training stability by ensuring advantages are well-scaled
+        # The small epsilon (1e-8) prevents division by zero
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         # Convert to tensors
@@ -737,35 +795,51 @@ class PPOAgent:
                 critic_values, _ = self.critic(batch_states, None)
                 critic_values = critic_values.squeeze()
 
-                # Losses
+                # Compute losses for this mini-batch
+                # --------------------------------------
+
+                # Log probability of taken actions under current policy
                 log_probs = dist.log_prob(batch_actions)
+
+                # Policy entropy - measures stochasticity of the policy
+                # Higher entropy = more exploration
                 entropy = dist.entropy().mean()
 
-                ratio = torch.exp(
-                    log_probs - batch_old_log_probs
-                )  # Importance sampling ratio π_new/π_old
-                surr1 = ratio * batch_advantages  # Unclipped surrogate objective
+                # Importance sampling ratio: π_θ(a|s) / π_θ_old(a|s)
+                # Measures how much the probability of taking action a changed
+                ratio = torch.exp(log_probs - batch_old_log_probs)
+
+                # PPO Clipped Surrogate Objective
+                # --------------------------------
+                # surr1: Unclipped objective (can lead to large updates)
+                # surr2: Clipped objective (constrained within [1-ε, 1+ε])
+                # Taking the minimum prevents overly large policy changes
+                surr1 = ratio * batch_advantages
                 surr2 = (
                     torch.clamp(
                         ratio,
                         1 - self.config.clip_epsilon,
                         1 + self.config.clip_epsilon,
                     )
-                    * batch_advantages  # Clipped surrogate: prevents large policy updates
+                    * batch_advantages
                 )
 
-                actor_loss = -torch.min(
-                    surr1, surr2
-                ).mean()  # PPO-clip objective (negated for gradient ascent)
-                critic_loss = F.mse_loss(
-                    critic_values, batch_returns
-                )  # Value function MSE loss
+                # Actor loss: negative of clipped objective (we maximize, so minimize negative)
+                # The min() ensures we take the less aggressive update
+                actor_loss = -torch.min(surr1, surr2).mean()
 
+                # Critic loss: MSE between predicted values and target returns
+                # This learns the value function V(s) ≈ E[future rewards]
+                critic_loss = F.mse_loss(critic_values, batch_returns)
+
+                # Total loss: weighted combination of all components
+                # -actor_loss: We want to maximize this (via minimization)
+                # +critic_loss: Weighted value function loss
+                # -entropy: Entropy bonus (subtracted to maximize entropy)
                 loss = (
                     actor_loss
-                    + self.config.value_loss_coef * critic_loss  # Weighted value loss
-                    - self.config.entropy_coef
-                    * entropy  # Entropy bonus encourages exploration
+                    + self.config.value_loss_coef * critic_loss
+                    - self.config.entropy_coef * entropy
                 )
 
                 self.actor_optimizer.zero_grad()

@@ -1,17 +1,84 @@
 """
 Alpha Research Framework
-=========================
-Professional-grade alpha research and validation system.
+=======================
+Professional-grade alpha factor mining and validation system.
 
-Features:
-- Automated alpha idea generation
-- Cross-sectional analysis
-- Factor mining and validation
-- Alpha combination and stacking
-- Out-of-sample testing
-- Turnover analysis
+This module provides comprehensive tools for discovering, validating, and
+combining alpha factors for quantitative trading strategies. It implements
+techniques used by top quantitative hedge funds.
 
-Used by: WorldQuant, Two Sigma, Renaissance Technologies
+Alpha Mining Capabilities:
+    1. Technical Alphas: Indicator-based signals
+       - Momentum (price rate of change)
+       - Mean reversion (z-score deviation)
+       - Volume-weighted indicators
+       - Volatility regimes
+       - RSI extremes
+       - Bollinger Band positioning
+
+    2. Statistical Alphas: Data-driven signals
+       - Beta-adjusted returns (market-neutral)
+       - Skewness (crash risk)
+       - Kurtosis (tail risk)
+       - Volatility of volatility
+       - Autocorrelation (momentum/reversal)
+       - Hurst exponent (trend strength)
+
+    3. Cross-Sectional Alphas: Relative ranking signals
+       - Cross-sectional momentum
+       - Cross-sectional reversal
+       - Cross-sectional volatility
+
+Alpha Validation Metrics:
+    - IC (Information Coefficient): Correlation with future returns
+    - IR (Information Ratio): IC mean / IC std
+    - Sharpe Ratio: Risk-adjusted returns
+    - Max Drawdown: Peak-to-trough decline
+    - Turnover: Signal change rate
+    - Decay: Half-life of predictive power
+    - Stability: Consistency over time
+
+Alpha Combination Methods:
+    - Equal Weight: Simple averaging
+    - IC Weight: Weighted by IC scores
+    - ML Stack: Ridge/Lasso/ElasticNet combination
+    - PCA: Principal component combination
+
+Factor Neutralization:
+    - Market beta removal
+    - Sector exposure removal
+    - Style factor removal
+    - Creates pure alpha signals
+
+Usage:
+    from src.research.alpha_research import AlphaMiner, AlphaValidator, AlphaCombiner
+
+    # Generate alphas
+    miner = AlphaMiner()
+    technical_alphas = miner.generate_technical_alphas(df)
+    statistical_alphas = miner.generate_statistical_alphas(df)
+
+    # Validate alphas
+    validator = AlphaValidator()
+    for name, alpha in {**technical_alphas, **statistical_alphas}.items():
+        metrics = validator.validate_alpha(name, alpha, forward_returns)
+        print(f"{name}: IC={metrics.ic:.3f}, Sharpe={metrics.sharpe:.2f}")
+
+    # Combine best alphas
+    combiner = AlphaCombiner()
+    best_alphas = validator.get_best_alphas(n=5)
+    combined = combiner.ic_weighted_combine(dict(best_alphas), {a.name: a.ic for a in best_alphas})
+
+Dependencies:
+    - numpy: Numerical operations
+    - pandas: Data manipulation
+    - scipy: Statistical tests
+    - scikit-learn: ML models and preprocessing
+
+Note:
+    Alpha factors require forward returns for validation. Ensure proper
+    temporal separation between factor calculation and return measurement
+    to avoid look-ahead bias.
 """
 
 import numpy as np
@@ -46,13 +113,61 @@ class AlphaMetrics:
 
 class AlphaMiner:
     """
-    Automated alpha factor mining.
+    Automated alpha factor mining from market data.
 
-    Discovers predictive relationships in data using:
-    - Technical indicators
-    - Statistical arbitrage signals
-    - Cross-sectional rankings
-    - Time-series momentum
+    This class generates predictive signals (alphas) from raw market data using
+    various techniques including technical indicators, statistical measures,
+    and cross-sectional rankings.
+
+    Attributes:
+        min_obs: Minimum observations required for alpha calculation
+        alphas: Dictionary of generated alpha factors
+
+    Alpha Categories:
+
+    Technical Alphas:
+        - mom_[5,10,20,60]: Price momentum over N periods
+        - mr_[5,10,20]: Mean reversion (negative z-score)
+        - vwma_dist: Volume-weighted moving average distance
+        - vol_regime: Volatility breakout indicator
+        - rsi_extreme: RSI overbought/oversold signals
+        - bb_position: Bollinger Band position
+
+    Statistical Alphas:
+        - residual: Beta-adjusted market-neutral returns
+        - skew: Rolling skewness (crash risk)
+        - kurt: Rolling kurtosis (tail risk)
+        - vol_of_vol: Volatility of volatility
+        - autocorr_1: First-order autocorrelation
+        - hurst: Hurst exponent (trend/reversion)
+
+    Cross-Sectional Alphas:
+        - xs_mom: Cross-sectional momentum ranking
+        - xs_reversal: Cross-sectional reversal ranking
+        - xs_vol: Cross-sectional volatility ranking
+
+    Example:
+        >>> miner = AlphaMiner(min_observations=100)
+        >>>
+        >>> # Generate technical alphas
+        >>> tech_alphas = miner.generate_technical_alphas(df)
+        >>> print(f"Generated {len(tech_alphas)} technical alphas")
+
+        >>> # Generate statistical alphas
+        >>> stat_alphas = miner.generate_statistical_alphas(df)
+        >>> print(f"Generated {len(stat_alphas)} statistical alphas")
+
+        >>> # Generate cross-sectional alphas
+        >>> xs_alphas = miner.generate_cross_sectional_alphas(data_dict)
+        >>> print(f"Generated {len(xs_alphas)} cross-sectional alphas")
+
+    Input Data Format:
+        DataFrame with columns: close, volume (optional), and timestamp index
+        For cross-sectional: Dict of {symbol: DataFrame}
+
+    Note:
+        Some alphas may produce NaN values at the beginning due to rolling
+        window calculations. These should be handled before validation.
     """
 
     def __init__(self, min_observations: int = 100):
@@ -165,6 +280,19 @@ class AlphaMiner:
 
         # Hurst exponent (trend strength)
         def hurst_exponent(ts):
+            """
+            Calculate Hurst exponent using R/S (Rescaled Range) analysis.
+
+            The Hurst exponent measures long-term memory of time series:
+            - H > 0.5: Trending behavior (persistence)
+            - H < 0.5: Mean-reverting behavior (anti-persistence)
+            - H = 0.5: Random walk (no memory)
+
+            Implementation uses R/S analysis:
+            1. Calculate standard deviation at different lags
+            2. Fit log-log regression: log(R/S) = H * log(lag) + c
+            3. Slope is the Hurst exponent
+            """
             if len(ts) < 20:
                 return 0.5  # not enough data → assume random walk (H=0.5)
             lags = range(2, min(20, len(ts) // 2))
@@ -282,16 +410,37 @@ class AlphaValidator:
 
     def calculate_decay(self, factor: pd.Series, forward_returns: pd.Series) -> float:
         """
-        Calculate alpha decay (half-life).
+        Calculate alpha decay (half-life) in trading periods.
 
-        How quickly does predictive power diminish?
+        Measures how quickly the predictive power of an alpha factor diminishes
+        over time. This is critical for determining optimal holding periods.
+
+        Method:
+            1. Calculate IC at various lag offsets (1 to 20 periods)
+            2. Find when IC drops to 50% of initial value
+            3. Return that lag as the half-life
+
+        Interpretation:
+            - Low decay (<5): Short holding periods optimal
+            - Medium decay (5-15): Medium-term signals
+            - High decay (>15): Long-term alpha
+
+        Args:
+            factor: Alpha factor values
+            forward_returns: Future returns for IC calculation
+
+        Returns:
+            Half-life in periods (lower = faster decay)
         """
         ics = []
+        # Calculate IC at different lag offsets (1 to 20 periods ahead)
         for lag in range(1, min(21, len(factor) // 10)):
+            # Shift returns backward to align with current factor values
             shifted_returns = forward_returns.shift(-lag)
             ic, _ = self.calculate_information_coefficient(factor, shifted_returns)
             ics.append(ic)
 
+        # Not enough data or no meaningful IC
         if len(ics) < 2 or max(ics) < 0.01:
             return 1.0
 
@@ -311,36 +460,58 @@ class AlphaValidator:
         transaction_cost: float = 0.001,
     ) -> AlphaMetrics:
         """
-        Full validation of an alpha factor.
+        Perform comprehensive validation of an alpha factor.
+
+        Calculates multiple metrics to assess alpha quality:
+        - IC: Correlation with future returns
+        - IR: IC stability (mean/std)
+        - Sharpe: Annualized risk-adjusted returns
+        - Max Drawdown: Maximum peak-to-trough decline
+        - Turnover: Signal change frequency
+        - Decay: Half-life of predictive power
+        - Stability: Consistency of returns
+        - Fitness: Weighted composite score
+
+        Args:
+            name: Alpha identifier
+            factor: Alpha factor values
+            forward_returns: Future returns for validation
+            transaction_cost: Not used in current implementation
+
+        Returns:
+            AlphaMetrics with all calculated values
         """
-        # IC and IR
+        # IC (Information Coefficient): Measures predictive power
         ic, ic_ir = self.calculate_information_coefficient(factor, forward_returns)
 
-        # Generate factor returns
+        # Factor returns: Hypothetical returns if we traded this alpha
         factor_returns = factor * forward_returns
 
-        # Performance metrics
+        # Sharpe Ratio: Annualized risk-adjusted return
+        # Formula: mean / std * sqrt(252) for daily data
         sharpe = factor_returns.mean() / (factor_returns.std() + 1e-10) * np.sqrt(252)
 
-        # Drawdown
+        # Maximum Drawdown: Worst peak-to-trough decline
         cumulative = (1 + factor_returns).cumprod()
         rolling_max = cumulative.expanding().max()
         drawdown = (cumulative - rolling_max) / rolling_max
         max_dd = drawdown.min()
 
-        # Turnover
+        # Turnover: How often the signal changes (affects trading costs)
         turnover = self.calculate_turnover(factor)
 
-        # Decay
+        # Decay: How quickly predictive power fades
         decay = self.calculate_decay(factor, forward_returns)
 
-        # Stability (consistency of IC)
+        # Stability: Consistency of factor returns (0-1 scale)
+        # Higher = more consistent returns
         stability = 1.0 - (
             np.std(factor_returns) / (np.abs(factor_returns.mean()) + 1e-10)
         )
         stability = max(0, min(1, stability))
 
-        # Fitness score (composite)
+        # Fitness Score: Composite metric combining all factors
+        # Weights: IC(30%) + IR(20%) + Sharpe(20%) + LowTurnover(10%) + Stability(20%)
         fitness = (
             abs(ic) * 0.3
             + abs(ic_ir) * 0.2

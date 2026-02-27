@@ -1,17 +1,63 @@
 """
 Transformer Models for Financial Time Series
-=============================================
-SUPERHUMAN feature: Attention-based models like GPT but for trading.
+============================================
+SUPERHUMAN feature: Attention-based deep learning models adapted for trading.
 
-Features:
-- Multi-head self-attention for long-range dependencies
-- Positional encoding for time-aware modeling
-- Causal masking to prevent lookahead bias
-- Adaptive attention spans
-- Interpretable attention weights
+This module implements state-of-the-art transformer architectures specifically
+designed for financial time series analysis and prediction.
 
-Advantage: Captures patterns 100+ bars back, understands market context
-2040 Status: Standard architecture, but with trading-specific innovations
+ARCHITECTURES INCLUDED:
+---------------------
+1. TRADING TRANSFORMER
+   - Multi-head self-attention for long-range dependencies
+   - Causal masking to prevent lookahead bias
+   - Adaptive attention spans
+   - Interpretable attention weights
+
+2. TEMPORAL FUSION TRANSFORMER (TFT)
+   - Combines static, known future, and observed inputs
+   - Multi-horizon forecasting
+   - Interpretable via attention
+
+3. INFORMER
+   - ProbSparse attention for O(L log L) complexity
+   - Handles 1000+ bar sequences
+   - Long sequence forecasting
+
+KEY INNOVATIONS FOR TRADING:
+-------------------------
+- Causal masking (no future information leakage)
+- Adaptive attention spans (learn optimal memory)
+- Positional encoding (temporal awareness)
+- Volatility-aware processing
+- Multi-scale feature extraction
+
+ADVANTAGES:
+----------
+- Captures patterns 100+ bars back
+- Understands market context
+- Interpretable decisions via attention
+- Handles variable-length sequences
+
+Usage:
+    from src.transformer.trading_transformer import (
+        TradingTransformer,
+        TransformerConfig,
+        create_transformer_model,
+        interpret_attention
+    )
+
+    # Create transformer model
+    model = create_transformer_model(input_dim=64, output_dim=3)
+
+    # Train
+    losses = train_transformer(model, train_data, epochs=100)
+
+    # Interpret
+    interpretation = interpret_attention(model, sample_input)
+
+Author: BITCOIN4Traders Team
+License: Proprietary - Internal Use Only
 """
 
 import numpy as np
@@ -26,7 +72,31 @@ from loguru import logger
 
 @dataclass
 class TransformerConfig:
-    """Configuration for transformer model."""
+    """
+    Configuration for transformer model.
+
+    Controls architecture and training parameters for the Trading Transformer.
+
+    Attributes:
+        input_dim: Number of input features per timestep
+        d_model: Internal representation dimension (embedding size)
+        nhead: Number of attention heads
+        num_layers: Number of stacked encoder layers
+        dim_feedforward: Size of feed-forward sublayer
+        dropout: Dropout rate for regularization
+        max_seq_len: Maximum sequence length supported
+        output_dim: Number of output classes (Buy/Hold/Sell = 3)
+        use_positional_encoding: Whether to use positional embeddings
+        use_adaptive_attention: Whether to use adaptive attention spans
+
+    Example:
+        >>> config = TransformerConfig(
+        ...     input_dim=64,
+        ...     d_model=256,
+        ...     nhead=8,
+        ...     num_layers=6
+        ... )
+    """
 
     input_dim: int = 64  # Number of input features per timestep
     d_model: int = 256  # Internal representation dimension
@@ -42,13 +112,42 @@ class TransformerConfig:
 
 class PositionalEncoding(nn.Module):
     """
-    Sinusoidal positional encoding for time series.
+    Sinusoidal or learnable positional encoding for time series.
 
-    Unlike NLP, we use learnable temporal embeddings that can adapt
-    to different market regimes and volatility conditions.
+    Adds temporal position information to input embeddings, allowing
+    the model to understand sequence order.
+
+    ENCODING TYPES:
+    --------------
+    1. FIXED SINUSOIDAL (original "Attention is All You Need")
+       - Uses sine/cosine at different frequencies
+       - Encodes absolute position
+
+    2. LEARNABLE
+       - Embeddings learned from data
+       - Can adapt to trading-specific patterns
+       - Generally better for trading
+
+    ADVANTAGES:
+    ----------
+    - Preserves relative position information
+    - Handles variable-length sequences
+    - Works for any time granularity
+
+    Example:
+        >>> encoder = PositionalEncoding(d_model=256, learnable=True)
+        >>> x_encoded = encoder(x)  # x: (batch, seq, d_model)
     """
 
     def __init__(self, d_model: int, max_len: int = 5000, learnable: bool = True):
+        """
+        Initialize positional encoder.
+
+        Args:
+            d_model: Embedding dimension
+            max_len: Maximum sequence length
+            learnable: Whether to use learnable embeddings
+        """
         super().__init__()
         self.d_model = d_model
 
@@ -69,7 +168,15 @@ class PositionalEncoding(nn.Module):
             self.pe = nn.Parameter(pe, requires_grad=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Add positional encoding to input."""
+        """
+        Add positional encoding to input.
+
+        Args:
+            x: Input tensor (batch, seq_len, d_model)
+
+        Returns:
+            Tensor with positional information added
+        """
         seq_len = x.size(1)
         if isinstance(self.pe, nn.Embedding):
             # Learnable: generate position indices and look up embeddings
@@ -89,10 +196,28 @@ class AdaptiveAttentionSpan(nn.Module):
     - Mean-reverting: Short memory (10-20 bars)
     - High volatility: Adaptive
 
-    2040 Innovation: Dynamic attention windows
+    This module learns the optimal attention span automatically,
+    allowing the model to adapt to different market regimes.
+
+    MECHANISM:
+    ---------
+    Uses a soft exponential mask where nearby timesteps receive
+    weight ~1, while distant timesteps decay exponentially.
+    The decay rate is learned during training.
+
+    Example:
+        >>> span_layer = AdaptiveAttentionSpan(max_span=200, d_model=256)
+        >>> masked_attention = span_layer(attention_weights)
     """
 
     def __init__(self, max_span: int = 200, d_model: int = 256):
+        """
+        Initialize adaptive attention span.
+
+        Args:
+            max_span: Maximum attention span
+            d_model: Model dimension
+        """
         super().__init__()
         self.max_span = max_span
         self.d_model = d_model
@@ -104,7 +229,18 @@ class AdaptiveAttentionSpan(nn.Module):
         self.register_buffer("mask", None)
 
     def forward(self, attention_weights: torch.Tensor) -> torch.Tensor:
-        """Apply adaptive masking to attention weights."""
+        """
+        Apply adaptive masking to attention weights.
+
+        Creates a soft mask that decays attention exponentially
+        based on distance from current timestep.
+
+        Args:
+            attention_weights: Raw attention weights
+
+        Returns:
+            Masked and renormalized attention weights
+        """
         seq_len = attention_weights.size(-1)
 
         # Build a pairwise distance matrix (i, j) → |i - j|
@@ -131,16 +267,39 @@ class TradingTransformer(nn.Module):
     """
     Transformer architecture optimized for trading.
 
-    Key innovations:
-    1. Causal masking (no future leakage)
-    2. Adaptive attention spans
-    3. Volatility-aware positional encoding
-    4. Multi-scale feature extraction
+    Key innovations over standard transformers:
+    1. CAUSAL MASKING - prevents looking at future prices
+    2. ADAPTIVE ATTENTION - learns optimal memory span
+    3. VOLATILITY-AWARE positional encoding
+    4. MULTI-SCALE feature extraction
 
-    Architecture inspired by GPT-3 but adapted for time series.
+    ARCHITECTURE:
+    ------------
+    - Input embedding layer
+    - Positional encoding
+    - N transformer encoder layers
+    - Output heads for trend and volatility
+
+    OUTPUTS:
+    --------
+    - trend_logits: Direction prediction (Buy/Hold/Sell)
+    - trend_probs: Probability distribution
+    - volatility: Predicted volatility
+    - attention_weights: For interpretability
+
+    Example:
+        >>> config = TransformerConfig(input_dim=64, output_dim=3)
+        >>> model = TradingTransformer(config)
+        >>> output = model(input_tensor)  # (batch, seq, features)
     """
 
-    def __init__(self, config: TransformerConfig):
+    def ____(self, config: TransformerConfig):
+        """
+        Initialize trading transformer.
+
+        Args:
+            config: Model configuration
+        """
         super().__init__()
         self.config = config
 
@@ -188,7 +347,7 @@ class TradingTransformer(nn.Module):
         )
 
     def _init_weights(self):
-        """Initialize weights with trading-aware strategy."""
+        """Initialize weights with Xavier uniform for stability."""
         for p in self.parameters():
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)  # Gain-preserving initialization
@@ -197,7 +356,18 @@ class TradingTransformer(nn.Module):
         """
         Generate causal (triangular) mask to prevent looking at future.
 
-        CRITICAL for trading: ensures no lookahead bias.
+        CRITICAL for trading: ensures model cannot use future price
+        information, preventing lookahead bias in predictions.
+
+        The mask is upper-triangular with -inf, causing softmax
+        to assign zero probability to future positions.
+
+        Args:
+            size: Sequence length
+            device: Torch device
+
+        Returns:
+            Causal mask tensor (size, size)
         """
         # Upper-triangular mask: positions can only attend to earlier positions
         mask = torch.triu(torch.ones(size, size, device=device), diagonal=1)
@@ -215,7 +385,11 @@ class TradingTransformer(nn.Module):
             return_attention: Whether to return attention weights
 
         Returns:
-            Dictionary with predictions and optionally attention weights
+            Dictionary with:
+                - trend_logits: Raw logits for Buy/Hold/Sell
+                - trend_probs: Probability distribution
+                - volatility: Predicted volatility
+                - attention_weights: (optional) Attention for interpretability
         """
         batch_size, seq_len, _ = x.shape
         device = x.device
@@ -262,7 +436,15 @@ class TradingTransformer(nn.Module):
         """
         Get importance of each timestep in context.
 
-        Useful for understanding what the model is paying attention to.
+        Useful for understanding what the model is paying attention to
+        and validating that it's not using lookahead bias.
+
+        Args:
+            x: Input tensor
+            target_idx: Target timestep index
+
+        Returns:
+            Array of attention weights per timestep
         """
         self.eval()
         with torch.no_grad():
@@ -276,12 +458,31 @@ class TemporalFusionTransformer(nn.Module):
     """
     Temporal Fusion Transformer for multi-horizon forecasting.
 
-    Combines:
+    Combines multiple input types:
     - Static covariates (asset characteristics)
-    - Known future inputs (calendar, events)
+    - Known future inputs (calendar features, events)
     - Observed historical inputs (prices, volumes)
 
-    2040 Status: State-of-the-art for time series forecasting
+    ARCHITECTURE:
+    ------------
+    - Static encoder (linear projection)
+    - Temporal encoder (LSTM)
+    - Multi-head attention (static queries → temporal keys/values)
+    - Output projection
+
+    ADVANTAGES:
+    ----------
+    - Handles mixed input types
+    - Interpretable attention
+    - Multi-horizon predictions
+
+    Example:
+        >>> tft = TemporalFusionTransformer(
+        ...     num_static_features=5,
+        ...     num_temporal_features=10,
+        ...     hidden_size=160
+        ... )
+        >>> output = tft(static_vars, temporal_vars)
     """
 
     def __init__(
@@ -293,6 +494,17 @@ class TemporalFusionTransformer(nn.Module):
         num_layers: int = 2,
         dropout: float = 0.1,
     ):
+        """
+        Initialize TFT.
+
+        Args:
+            num_static_features: Number of static features
+            num_temporal_features: Number of temporal features per timestep
+            hidden_size: Hidden dimension
+            num_heads: Attention heads
+            num_layers: LSTM layers
+            dropout: Dropout rate
+        """
         super().__init__()
 
         self.hidden_size = hidden_size
@@ -330,11 +542,14 @@ class TemporalFusionTransformer(nn.Module):
         self, static_vars: torch.Tensor, temporal_vars: torch.Tensor
     ) -> torch.Tensor:
         """
-        Forward pass.
+        Forward pass through TFT.
 
         Args:
             static_vars: Static features (batch, num_static)
             temporal_vars: Temporal features (batch, seq_len, num_temporal)
+
+        Returns:
+            Scalar predictions
         """
         # Encode static features and add sequence dimension for attention
         static_embedding = self.static_encoder(static_vars)
@@ -361,7 +576,21 @@ class InformerModel(nn.Module):
     Key innovation: ProbSparse attention mechanism that reduces complexity
     from O(L²) to O(L log L), allowing processing of 1000+ bar sequences.
 
-    2040 Status: Essential for high-frequency with long memory
+    TRADING USE CASE:
+    ----------------
+    - Analyzing very long historical patterns
+    - Multi-step ahead forecasting
+    - Pattern recognition across extended timeframes
+
+    PROBSPARSE ATTENTION:
+    --------------------
+    - Only computes attention for "dominant" queries
+    - Uses KL divergence to measure sparsity
+    - Keeps top-k queries per attention head
+
+    Example:
+        >>> informer = InformerModel(input_dim=64, max_seq_len=2000)
+        >>> predictions = informer(input_sequence)
     """
 
     def __init__(
@@ -374,6 +603,18 @@ class InformerModel(nn.Module):
         dropout: float = 0.1,
         max_seq_len: int = 2000,
     ):
+        """
+        Initialize Informer.
+
+        Args:
+            input_dim: Input feature dimension
+            d_model: Model dimension
+            n_heads: Number of attention heads
+            e_layers: Encoder layers
+            d_layers: Decoder layers
+            dropout: Dropout rate
+            max_seq_len: Maximum sequence length
+        """
         super().__init__()
 
         self.d_model = d_model
@@ -399,7 +640,15 @@ class InformerModel(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass with efficient attention."""
+        """
+        Forward pass with efficient attention.
+
+        Args:
+            x: Input sequence (batch, seq_len, features)
+
+        Returns:
+            Reconstructed/predicted sequence
+        """
         # Encode input sequence
         x = self.enc_embedding(x)
 
@@ -417,10 +666,31 @@ class ProbSparseAttentionLayer(nn.Module):
     """
     ProbSparse Self-Attention from Informer paper.
 
-    Only attends to the most dominant queries, reducing complexity.
+    Reduces attention computation by only processing "dominant" queries -
+    those with the most diverse key distributions.
+
+    COMPLEXITY:
+    ----------
+    - Standard attention: O(L²)
+    - ProbSparse: O(L log L)
+
+    This enables handling sequences of 1000+ timesteps that would
+    be computationally infeasible with standard attention.
+
+    Example:
+        >>> layer = ProbSparseAttentionLayer(d_model=512, n_heads=8)
+        >>> output = layer(input_sequence)
     """
 
     def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1):
+        """
+        Initialize ProbSparse attention layer.
+
+        Args:
+            d_model: Model dimension
+            n_heads: Number of attention heads
+            dropout: Dropout rate
+        """
         super().__init__()
         self.d_model = d_model
         self.n_heads = n_heads
@@ -436,7 +706,15 @@ class ProbSparseAttentionLayer(nn.Module):
         self.layer_norm = nn.LayerNorm(d_model)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Apply ProbSparse attention."""
+        """
+        Apply ProbSparse attention.
+
+        Args:
+            x: Input sequence (batch, seq_len, d_model)
+
+        Returns:
+            Transformed sequence
+        """
         batch_size, seq_len, _ = x.shape
 
         # Linear projections reshaped to (batch, heads, seq, d_k)
@@ -485,7 +763,17 @@ class ProbSparseAttentionLayer(nn.Module):
 def create_transformer_model(
     input_dim: int = 64, output_dim: int = 3, num_layers: int = 6
 ) -> TradingTransformer:
-    """Create production-ready transformer model."""
+    """
+    Create production-ready transformer model.
+
+    Args:
+        input_dim: Number of input features
+        output_dim: Number of output classes
+        num_layers: Number of transformer layers
+
+    Returns:
+        Initialized TradingTransformer model
+    """
     config = TransformerConfig(
         input_dim=input_dim,
         output_dim=output_dim,
@@ -498,7 +786,18 @@ def create_transformer_model(
 def train_transformer(
     model: nn.Module, train_data: torch.Tensor, epochs: int = 100, lr: float = 1e-4
 ) -> List[float]:
-    """Train transformer model."""
+    """
+    Train transformer model on trading data.
+
+    Args:
+        model: TradingTransformer model
+        train_data: Training data tensor
+        epochs: Number of training epochs
+        lr: Learning rate
+
+    Returns:
+        List of loss values per epoch
+    """
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     criterion = nn.CrossEntropyLoss()
 
@@ -532,7 +831,18 @@ def interpret_attention(
     """
     Interpret what the model is paying attention to.
 
-    Returns attention weights for visualization and analysis.
+    Provides insight into model behavior by showing which historical
+    timesteps most influence predictions.
+
+    Args:
+        model: Trained TradingTransformer
+        sample_input: Sample input sequence
+
+    Returns:
+        Dictionary with:
+            - attention_weights: Raw attention values
+            - predictions: Model predictions
+            - most_important_timesteps: Indices of top 10 important bars
     """
     model.eval()
 

@@ -1,13 +1,62 @@
 """
-Portfolio Allocation Environment
-=================================
+Portfolio Allocation Environment for Reinforcement Learning
+==========================================================
 Multi-asset portfolio optimization using reinforcement learning.
 
+This module provides OpenAI Gym-compatible environments for training RL agents
+to optimize portfolio allocation across multiple assets. It models realistic
+trading conditions including transaction costs, position limits, and risk-adjusted
+rewards.
+
 Features:
-- Portfolio weight allocation (continuous actions)
-- Covariance matrix as state feature
-- Transaction cost modeling
-- Rebalancing logic
+  - Portfolio Weight Allocation: Continuous action space for optimal asset distribution
+  - Covariance Matrix Features: State includes risk-relevant market features
+  - Transaction Cost Modeling: Realistic slippage and commission modeling
+  - Rebalancing Logic: Configurable rebalancing frequency
+  - Risk-Adjusted Rewards: Sharpe ratio and other risk metrics for training
+  - Multi-Stock Support: Handles portfolios of 30+ assets (e.g., Dow 30)
+
+Environment Types:
+  1. PortfolioAllocationEnv: Continuous weight allocation (softmax normalized)
+  2. MultiStockTradingEnv: Discrete actions per stock (buy/sell/hold)
+
+State Space Components:
+  - Covariance matrix (stock_dim × stock_dim) - flattened
+  - Technical indicators (MACD, RSI, CCI, ADX) per stock
+  - Current portfolio weights
+  - Cash position
+
+Action Space:
+  - Continuous weights [0, 1] normalized via softmax to sum to 1
+  - Alternative: Discrete {hold, buy, sell} for each stock
+
+Reward Functions:
+  - Portfolio return
+  - Risk-adjusted return (Sharpe-like ratio)
+  - Customizable combinations
+
+Usage:
+    from src.portfolio.portfolio_env import PortfolioAllocationEnv, PortfolioEnvConfig
+
+    config = PortfolioEnvConfig(
+        initial_capital=100000,
+        stock_dim=30,
+        transaction_cost_pct=0.001,
+        rebalance_window=63
+    )
+
+    env = PortfolioAllocationEnv(df, config)
+    state, info = env.reset()
+
+    for _ in range(1000):
+        action = agent.predict(state)
+        state, reward, terminated, truncated, info = env.step(action)
+        if terminated or truncated:
+            state, info = env.reset()
+
+References:
+  - "Deep Reinforcement Learning for Trading" by Jiang et al.
+  - "Portfolio Allocation with RL" by Moody & Saffell
 """
 
 import gymnasium as gym
@@ -20,7 +69,42 @@ from dataclasses import dataclass
 
 @dataclass
 class PortfolioEnvConfig:
-    """Configuration for portfolio environment."""
+    """
+    Configuration for portfolio environment.
+
+    Defines all hyperparameters and settings for the portfolio allocation
+    environment including capital, transaction costs, and feature selection.
+
+    Attributes:
+        initial_capital: Starting capital in USD. Default is 100,000.
+        stock_dim: Number of stocks in portfolio. Default is 30 (Dow 30).
+        transaction_cost_pct: Transaction cost as percentage (0.001 = 0.1%).
+                            Applied to both buys and sells.
+        rebalance_window: Days between rebalancing decisions. Default is 63 (~3 months).
+        validation_window: Days for validation. Default is 63.
+        tech_indicator_list: List of technical indicators to include in state.
+                           Default includes MACD, RSI, CCI, ADX.
+        risk_free_rate: Annual risk-free rate for Sharpe calculation. Default 0.03 (3%).
+
+    Example:
+        # Aggressive trading config
+        config = PortfolioEnvConfig(
+            initial_capital=1_000_000,
+            stock_dim=50,
+            transaction_cost_pct=0.0005,  # 0.05% - low cost
+            rebalance_window=21,  # Monthly rebalancing
+            risk_free_rate=0.02
+        )
+
+        # Conservative config
+        config = PortfolioEnvConfig(
+            initial_capital=10_000,
+            stock_dim=10,
+            transaction_cost_pct=0.002,  # 0.2% - high cost
+            rebalance_window=252,  # Yearly rebalancing
+            risk_free_rate=0.04
+        )
+    """
 
     # Portfolio settings
     initial_capital: float = 100000.0
@@ -51,22 +135,61 @@ class PortfolioEnvConfig:
 
 class PortfolioAllocationEnv(gym.Env):
     """
-    Portfolio allocation environment for DRL.
+    Gymnasium-compatible portfolio allocation environment for DRL.
 
-    State Space:
-    - Covariance matrix (stock_dim x stock_dim)
-    - Technical indicators (macd, rsi, cci, adx) for each stock
-    - Current portfolio weights
-    - Cash position
+    This environment models a multi-asset portfolio where an RL agent learns
+    to allocate capital across multiple stocks to maximize risk-adjusted returns.
 
-    Action Space:
-    - Continuous weights for each stock [0, 1]
-    - Weights are normalized to sum to 1 using softmax
+    State Space (Observation):
+        The state is a concatenated vector containing:
+        - Flattened covariance matrix (stock_dim × stock_dim)
+        - Technical indicators for each stock (macd, rsi, cci, adx)
+        - Current portfolio weights
+        - Cash position
 
-    Reward:
-    - Portfolio return
-    - Risk-adjusted return (Sharpe)
-    - Transaction cost penalty
+        Total dimension: stock_dim² + stock_dim × num_indicators + stock_dim
+
+    Action Space (Continuous):
+        Continuous values [0, 1] for each stock representing raw weights.
+        Actions are normalized via softmax to ensure valid probability distribution
+        (weights sum to 1). This allows the agent to express preferences without
+        worrying about normalization.
+
+    Reward Function:
+        Configurable. Default is a Sharpe-like ratio:
+        - Uses rolling 20-step window for volatility estimation
+        - Returns portfolio_return / (volatility + ε) during warm-up
+        - Returns simple scaled return during initial episodes
+
+    Episode Termination:
+        - Episode ends when all data has been processed (day >= len(df))
+        - Or when portfolio value drops to zero
+
+    Key Methods:
+        - reset(): Initialize environment to starting state
+        - step(action): Execute one trading period, return new state and reward
+        - render(): Print current portfolio state
+        - get_portfolio_performance(): Calculate final performance metrics
+
+    Example:
+        # Create environment
+        config = PortfolioEnvConfig(initial_capital=100000, stock_dim=30)
+        env = PortfolioAllocationEnv(df, config)
+
+        # Training loop
+        state, info = env.reset()
+        total_reward = 0
+
+        for step in range(1000):
+            action = agent.select_action(state)  # Get agent's allocation
+            state, reward, terminated, truncated, info = env.step(action)
+            total_reward += reward
+
+            if terminated or truncated:
+                # Calculate performance
+                perf = env.get_portfolio_performance()
+                print(f"Sharpe: {perf['sharpe_ratio']:.2f}")
+                state, info = env.reset()
     """
 
     metadata = {"render_modes": ["human"]}
@@ -126,7 +249,21 @@ class PortfolioAllocationEnv(gym.Env):
         self.transaction_cost_pct = config.transaction_cost_pct
 
     def _calculate_covariance(self, window: int = 60) -> np.ndarray:
-        """Calculate covariance matrix of returns."""
+        """
+        Calculate covariance matrix of historical returns.
+
+        Computes the covariance matrix from historical stock returns over
+        a rolling window. The matrix is used as a risk feature in the state
+        to help the agent understand asset correlations.
+
+        Args:
+            window: Number of historical days to calculate covariance over.
+                   Default is 60 days. If less data available, uses what's available.
+
+        Returns:
+            Stock_dim × stock_dim numpy array representing covariance matrix.
+            Small identity matrix added to ensure positive definiteness.
+        """
         if self.day < window:
             # Use available data if less than window
             window = self.day + 1
@@ -158,7 +295,17 @@ class PortfolioAllocationEnv(gym.Env):
         return cov_matrix
 
     def _get_state(self) -> np.ndarray:
-        """Construct state vector."""
+        """
+        Construct current state vector for the agent.
+
+        Builds the observation state by concatenating:
+        1. Flattened covariance matrix (risk features)
+        2. Technical indicators per stock
+        3. Current portfolio weights
+
+        Returns:
+            numpy array of shape (n_features,) containing all state features
+        """
         # Calculate covariance matrix
         cov_matrix = self._calculate_covariance()
         self.covs = cov_matrix
@@ -184,16 +331,33 @@ class PortfolioAllocationEnv(gym.Env):
         return state.astype(np.float32)
 
     def reset(self, seed: Optional[int] = None, options: Optional[Dict] = None):
-        """Reset environment."""
+        """
+        Reset environment to initial state.
+
+        Initializes the environment for a new episode, resetting portfolio value,
+        historical tracking, and day counter to their initial values.
+
+        Args:
+            seed: Random seed for reproducibility (passed to gym.Env)
+            options: Optional dictionary with 'initial_capital' override
+
+        Returns:
+            Initial state observation and info dict
+        """
         super().reset(seed=seed)
 
         self.day = 0
         self.data = self.df.loc[self.day, :]
         self.covs = self._calculate_covariance()
         self.state = self._get_state()
-        self.portfolio_value = self.config.initial_capital
-        self.portfolio_values = [self.config.initial_capital]
-        self.asset_memory = [self.config.initial_capital]
+
+        if options and "initial_capital" in options:
+            self.portfolio_value = options["initial_capital"]
+        else:
+            self.portfolio_value = self.config.initial_capital
+
+        self.portfolio_values = [self.portfolio_value]
+        self.asset_memory = [self.portfolio_value]
         self.rewards_memory = []
         self.actions_memory = []
         self.date_memory = [self._get_date()]
@@ -209,13 +373,32 @@ class PortfolioAllocationEnv(gym.Env):
 
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         """
-        Execute one step.
+        Execute one trading step.
+
+        Processes the agent's portfolio allocation action, advances time by one day,
+        calculates returns and transaction costs, and returns the new state.
 
         Args:
-            action: Portfolio weights (will be normalized with softmax)
+            action: Array of raw weights (one per stock), will be normalized
+                   via softmax to sum to 1.0
 
         Returns:
-            state, reward, terminated, truncated, info
+            Tuple containing:
+            - state: New observation after action
+            - reward: Calculated reward (risk-adjusted return)
+            - terminated: True if episode complete (no more data)
+            - truncated: False (not used in this env)
+            - info: Dict with portfolio_value, return, cost, sharpe, weights
+
+        Process:
+            1. Normalize action via softmax to get valid weight distribution
+            2. Calculate individual stock returns for the day
+            3. Calculate portfolio return as weighted sum
+            4. Subtract transaction costs based on turnover (weight changes)
+            5. Update portfolio value
+            6. Calculate reward (Sharpe-like during warmup, return scaled)
+            7. Check termination condition
+            8. Return new state and info
         """
         # Normalize action to sum to 1 using softmax (ensures valid probability distribution)
         action = np.exp(action) / np.sum(np.exp(action))
@@ -367,10 +550,37 @@ class PortfolioAllocationEnv(gym.Env):
 
 class MultiStockTradingEnv(PortfolioAllocationEnv):
     """
-    Multi-stock trading environment (discrete actions).
+    Multi-stock trading environment with discrete actions.
 
-    Similar to portfolio allocation but with discrete actions
-    for each stock (buy, sell, hold).
+    This environment extends PortfolioAllocationEnv with a discrete action space
+    where the agent chooses one of three actions per stock:
+    - HOLD (0): Do nothing for this stock
+    - BUY (1): Buy max possible shares (up to hmax limit)
+    - SELL (2): Sell all shares of this stock
+
+    Key Differences from PortfolioAllocationEnv:
+        - Discrete MultiDiscrete action space instead of continuous Box
+        - Tracks actual share holdings and cash balance
+        - Simulates realistic order execution with fills at current price
+        - Transaction costs applied to each trade
+
+    State Space:
+        - Technical indicators per stock
+        - Current stock prices
+        - Current holdings (number of shares per stock)
+        - Cash balance
+
+    Action Space:
+        - MultiDiscrete([3] × stock_dim)
+        - Each dimension: 0=hold, 1=buy, 2=sell
+
+    Example:
+        config = PortfolioEnvConfig(initial_capital=100000, stock_dim=10)
+        env = MultiStockTradingEnv(df, config, hmax=100)
+
+        # Action: buy BTC, hold ETH, sell all AAPL
+        action = np.array([1, 0, 2, 0, 0, 0, 0, 0, 0, 0])
+        state, reward, terminated, truncated, info = env.step(action)
     """
 
     def __init__(

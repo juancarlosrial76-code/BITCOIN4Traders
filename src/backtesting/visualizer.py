@@ -1,15 +1,87 @@
 """
 Backtest Visualizer & Report Generator
 =======================================
-Creates comprehensive visual reports for backtest results.
+Comprehensive visualization suite for backtest results.
 
-Visualizations:
+This module creates professional-grade visual reports for trading
+strategy backtests, providing multiple perspectives on performance
+including equity curves, drawdown analysis, monthly returns, trade
+distribution, and rolling risk metrics.
+
+Visualizations Included:
+------------------------
 1. Equity Curve
+   - Shows portfolio value over time
+   - Includes benchmark comparison (mean return line)
+   - Displays starting and ending values
+
 2. Drawdown Chart
+   - Visual representation of peak-to-trough declines
+   - Highlights maximum drawdown with annotation
+   - Shows underwater periods as percentage of time
+
 3. Monthly Returns Heatmap
+   - Calendar-style heatmap with years as rows, months as columns
+   - Color-coded: green for positive, red for negative
+   - Allows quick identification of seasonal patterns
+
 4. Trade Distribution
+   - Histogram of individual trade P&Ls
+   - Shows mean and median trade values
+   - Reveals tail risks (large losses)
+
 5. Rolling Sharpe Ratio
-6. Win/Loss Analysis
+   - Time series of risk-adjusted returns
+   - Uses configurable rolling window (default: 60 days)
+   - Shows stability of performance over time
+
+6. Metrics Summary
+   - Text overlay with key performance indicators
+   - Includes returns, risk metrics, and trade statistics
+
+7. Walk-Forward Results (separate method)
+   - Train vs Test comparison
+   - Test Sharpe by window
+   - Test Max Drawdown by window
+   - Distribution of test returns
+
+Design Philosophy:
+------------------
+- Publication-ready figures (300 DPI)
+- Consistent styling with seaborn
+- Informative annotations and labels
+- Modular design for custom reports
+
+Usage:
+------
+    from backtesting.visualizer import BacktestVisualizer
+
+    # Initialize with custom figure size
+    viz = BacktestVisualizer(figsize=(16, 12))
+
+    # Create comprehensive report
+    fig = viz.create_report(
+        equity=equity_series,
+        trades=trades_df,
+        metrics=performance_metrics,
+        save_path='reports/backtest_2024.png'
+    )
+
+    # For walk-forward analysis
+    fig = viz.plot_walk_forward_results(
+        results=window_results,
+        save_path='reports/walkforward_results.png'
+    )
+
+    # Display in notebook
+    plt.show()
+
+Requirements:
+------------
+- matplotlib >= 3.0
+- seaborn >= 0.11
+- pandas >= 1.0
+- numpy >= 1.18
 """
 
 import numpy as np
@@ -28,19 +100,62 @@ sns.set_palette("husl")
 
 class BacktestVisualizer:
     """
-    Create visual reports for backtest results.
+    Create comprehensive visual reports for backtest results.
 
-    Usage:
-    ------
-    viz = BacktestVisualizer()
+    This class generates publication-ready visualizations for trading
+    strategy backtests. It combines multiple chart types into a single
+    figure for comprehensive analysis, and provides separate methods
+    for walk-forward results visualization.
 
-    # Create full report
-    viz.create_report(
-        equity=equity_series,
-        trades=trades_df,
-        metrics=performance_metrics,
-        save_path='reports/backtest_2024.png'
-    )
+    Attributes:
+        figsize: Tuple specifying figure size in inches (width, height).
+                 Default: (16, 12) inches
+
+    Configuration:
+        The visualizer uses seaborn for consistent styling:
+        - Style: "seaborn-v0_8-darkgrid"
+        - Palette: "husl"
+
+    These can be customized by modifying the module-level settings
+    before creating the visualizer.
+
+    Key Methods:
+        create_report(): Generate comprehensive backtest report
+        plot_walk_forward_results(): Visualize walk-forward analysis results
+
+    Example:
+        --------
+        # Basic usage with equity curve and trades
+        viz = BacktestVisualizer(figsize=(16, 12))
+
+        fig = viz.create_report(
+            equity=equity_series,
+            trades=trades_df,
+            metrics=performance_metrics,
+            save_path='reports/backtest_2024.png'
+        )
+
+        # Show in notebook or GUI
+        plt.show()
+
+        # Walk-forward specific visualization
+        wf_viz = viz.plot_walk_forward_results(
+            results=walkforward_results,
+            save_path='reports/walkforward.png'
+        )
+
+    Report Layout:
+    -------------
+    The create_report() method generates a 4x3 grid:
+    - Row 1 (full width): Equity curve
+    - Row 2 (full width): Drawdown chart
+    - Row 3 (left 2/3): Monthly returns heatmap
+    - Row 3 (right 1/3): Trade distribution (if trades provided)
+    - Row 4 (left 2/3): Rolling Sharpe ratio
+    - Row 4 (right 1/3): Metrics summary text
+
+    Returns:
+        matplotlib.figure.Figure: The generated figure object
     """
 
     def __init__(self, figsize: tuple = (16, 12)):

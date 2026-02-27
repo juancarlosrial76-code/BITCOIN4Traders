@@ -1,9 +1,12 @@
 """Backtesting package for BITCOIN4Traders."""
 
-from backtesting.performance_calculator import PerformanceCalculator, PerformanceMetrics
-from backtesting.visualizer import BacktestVisualizer
-from backtesting.walkforward_engine import WalkForwardEngine, WalkForwardConfig
-from backtesting.strategy_evolution import (
+from src.backtesting.performance_calculator import (
+    PerformanceCalculator,
+    PerformanceMetrics,
+)
+from src.backtesting.visualizer import BacktestVisualizer
+from src.backtesting.walkforward_engine import WalkForwardEngine, WalkForwardConfig
+from src.backtesting.strategy_evolution import (
     StrategyEvolution,
     WalkForwardStrategyEvolution,
     EvolutionReport,
@@ -11,7 +14,7 @@ from backtesting.strategy_evolution import (
     evolve_strategy,
     load_evolution_config,
 )
-from backtesting.stress_tester import (
+from src.backtesting.stress_tester import (
     StressTestEngine,
     run_black_swan_test,
 )

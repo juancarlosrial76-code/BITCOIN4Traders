@@ -1,9 +1,61 @@
 """
-Feature Engine - Institutional Grade
-=====================================
-Scikit-learn style fit/transform pattern to prevent data leakage
-Zero hardcoded parameters - all via Hydra config
-Ensures stationarity and proper scaling
+Feature Engine - Institutional Grade Feature Engineering
+=========================================================
+
+This module provides production-grade feature engineering for algorithmic trading
+and reinforcement learning applications. It implements the scikit-learn fit/transform
+pattern to prevent data leakage, which is critical for building robust trading models.
+
+Key Features:
+-------------
+1. PREVENTS DATA LEAKAGE: Uses fit_transform() for training data and transform()
+   for test/live data, ensuring the model never sees future information during training.
+
+2. ENSURES STATIONARITY: Converts raw prices to log returns, which have more
+   desirable statistical properties for time series analysis (additive, bounded).
+
+3. PROPER SCALING: Uses sklearn scalers (StandardScaler, MinMaxScaler, or RobustScaler)
+   that learn statistics from training data only and apply them consistently to
+   test/live data.
+
+4. SYSTEMATIC NaN HANDLING: Multiple strategies (rolling, forward_fill, drop_all)
+   to handle missing values from rolling window calculations.
+
+5. NUMBA OPTIMIZATION: JIT-compiled functions for critical performance paths.
+
+6. HYDRA INTEGRATION: All parameters configurable via Hydra config system.
+
+Technical Indicators Computed:
+-------------------------------
+- Log Returns: Natural logarithm of price ratio (ln(P_t / P_{t-1}))
+- Volatility: Annualized rolling standard deviation of returns (20, 50 windows)
+- OU Score: Ornstein-Uhlenbeck mean reversion z-score
+- RSI: Relative Strength Index (14-period)
+- MACD: Moving Average Convergence Divergence with signal line and histogram
+- Bollinger Bands: Band width and position metrics
+
+Usage:
+------
+# Training Phase (fit scaler on historical data)
+    engine = FeatureEngine(config)
+    train_features = engine.fit_transform(train_df)
+
+# Testing/Live Phase (use training statistics)
+    test_features = engine.transform(test_df)
+
+# Production: Save and reload scaler
+    engine.save_scaler()
+    engine.load_scaler()
+    live_features = engine.transform(live_df)
+
+References:
+----------
+- Borrowed (2013): "Advances in Financial Machine Learning"
+- Easley et al. (2012): "Volume Synchronized Probability of Informed Trading"
+- sklearn.preprocessing documentation
+
+Author: BITCOIN4Traders Team
+Version: 1.0.0
 """
 
 import pandas as pd
@@ -19,7 +71,37 @@ from numba import jit
 
 @dataclass
 class FeatureConfig:
-    """Configuration loaded via Hydra."""
+    """
+    Configuration dataclass for FeatureEngine.
+
+    This configuration is typically loaded via Hydra from a YAML config file,
+    ensuring zero hardcoded parameters in production code.
+
+    Attributes:
+        volatility_window: Rolling window size for short-term volatility calculation
+                          (typically 20 periods for hourly data)
+        ou_window: Window for Ornstein-Uhlenbeck mean reversion calculation
+        rolling_mean_window: Window for rolling mean and standard deviation
+        use_log_returns: If True, use log returns; if False, use simple percentage returns
+        scaler_type: Type of scaler - "standard" (z-score), "minmax", or "robust"
+        save_scaler: Whether to save fitted scaler to disk for production use
+        scaler_path: Directory path where scaler will be saved
+        dropna_strategy: Strategy for handling NaN values - "rolling", "forward_fill", or "drop_all"
+        min_valid_rows: Minimum number of valid rows required after processing
+
+    Example:
+        >>> config = FeatureConfig(
+        ...     volatility_window=20,
+        ...     ou_window=50,
+        ...     rolling_mean_window=20,
+        ...     use_log_returns=True,
+        ...     scaler_type="standard",
+        ...     save_scaler=True,
+        ...     scaler_path=Path("data/scalers"),
+        ...     dropna_strategy="rolling",
+        ...     min_valid_rows=100,
+        ... )
+    """
 
     volatility_window: int
     ou_window: int
@@ -36,21 +118,71 @@ class FeatureEngine:
     """
     Production-grade feature engineering with fit/transform pattern.
 
+    This class implements institutional-grade feature engineering specifically
+    designed for algorithmic trading and reinforcement learning applications.
+    The key innovation is the strict separation between fit (training) and
+    transform (inference) phases to prevent data leakage.
+
     Key Features:
-    - NO data leakage (fit on train, transform on test/live)
-    - Ensures stationarity (log returns)
-    - Proper scaling (preserves train statistics)
-    - Handles NaN systematically
-    - Numba-optimized where possible
+        - NO DATA LEAKAGE: fit_transform() computes statistics on training data,
+          transform() applies those same statistics to new data. This is critical
+          for building models that generalize to live trading.
+
+        - STATIONARITY: Uses log returns instead of raw prices, which have better
+          statistical properties (additive, more normally distributed).
+
+        - PROPER SCALING: Fitted scaler can be saved and reloaded for production use,
+          ensuring consistent feature scaling between training and inference.
+
+        - COMPREHENSIVE INDICATORS: Includes volatility, RSI, MACD, Bollinger Bands,
+          and Ornstein-Uhlenbeck mean reversion score.
+
+        - NUMBA OPTIMIZED: Critical computation paths use JIT compilation for
+          performance.
 
     Usage:
-    ------
-    # Training phase
-    engine = FeatureEngine(config)
-    train_features = engine.fit_transform(train_df)
+        # Training phase - fit the engine on historical data
+        engine = FeatureEngine(config)
+        train_features = engine.fit_transform(train_df)
 
-    # Testing/Live phase
-    test_features = engine.transform(test_df)  # Uses train stats!
+        # Testing/Live phase - use training statistics (CRITICAL!)
+        test_features = engine.transform(test_df)  # Uses train stats!
+
+        # Save for production
+        engine.save_scaler()
+
+        # Production: load scaler and transform live data
+        engine.load_scaler()
+        live_features = engine.transform(live_df)
+
+    Attributes:
+        config: FeatureConfig object with all parameters
+        is_fitted: Boolean flag indicating if fit_transform() has been called
+        scaler: Fitted sklearn scaler (StandardScaler, MinMaxScaler, or RobustScaler)
+        train_stats: Dictionary of statistics from training data (for transform)
+
+    Raises:
+        RuntimeError: If transform() is called before fit_transform()
+        ValueError: If invalid scaler_type or dropna_strategy is provided
+        ValueError: If insufficient data after NaN handling
+
+    Example:
+        >>> config = FeatureConfig(
+        ...     volatility_window=20,
+        ...     ou_window=50,
+        ...     rolling_mean_window=20,
+        ...     use_log_returns=True,
+        ...     scaler_type="standard",
+        ...     save_scaler=False,
+        ...     scaler_path=Path("data/scalers"),
+        ...     dropna_strategy="rolling",
+        ...     min_valid_rows=100,
+        ... )
+        >>> engine = FeatureEngine(config)
+        >>> train_features = engine.fit_transform(train_df)
+        >>> print(f"Training features shape: {train_features.shape}")
+        >>> test_features = engine.transform(test_df)
+        >>> print(f"Test features shape: {test_features.shape}")
     """
 
     def __init__(self, config: FeatureConfig):
@@ -89,22 +221,39 @@ class FeatureEngine:
 
     def fit_transform(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Fit on training data and transform.
+        Fit on training data and transform in one step.
 
-        This method:
-        1. Computes training statistics
-        2. Fits the scaler
-        3. Transforms the data
+        This method must be called ONCE on training data to:
+        1. Compute raw features (returns, volatility, technical indicators)
+        2. Store training statistics (mean, std) for later use in transform()
+        3. Fit the scaler on training features
+        4. Transform training features using the fitted scaler
+
+        CRITICAL: After calling fit_transform, you MUST call transform() (not
+        fit_transform again) on any new data (test set, live data). This ensures
+        the model uses training statistics only, preventing data leakage.
 
         Parameters:
         -----------
         df : pd.DataFrame
-            Raw OHLCV data
+            Raw OHLCV (Open, High, Low, Close, Volume) data with DatetimeIndex.
+            Must contain columns: open, high, low, close, volume
 
         Returns:
         --------
         features : pd.DataFrame
-            Transformed features
+            Transformed features with all computed indicators and scaled values.
+            Contains columns: open, high, low, close, volume, log_ret, volatility_20,
+            volatility_50, ou_score, rolling_mean, rolling_std, rsi_14, macd,
+            macd_signal, macd_hist, bb_width, bb_position
+
+        Example:
+            >>> config = FeatureConfig(...)
+            >>> engine = FeatureEngine(config)
+            >>> train_features = engine.fit_transform(train_df)
+            >>> print(f"Fitted on {len(train_features)} training samples")
+            >>> # Later, on test data:
+            >>> test_features = engine.transform(test_df)  # Note: transform(), not fit_transform()
         """
         logger.info("Fitting FeatureEngine on training data...")
 
@@ -136,19 +285,40 @@ class FeatureEngine:
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Transform test/live data using training statistics.
+        Transform test or live data using training statistics.
 
-        CRITICAL: Uses statistics from training data to prevent leakage!
+        CRITICAL: This method uses statistics learned from training data via
+        fit_transform(). This is the KEY mechanism that prevents data leakage.
+        Never call fit_transform() on test or live data!
+
+        The method:
+        1. Computes raw features using the same formulas as fit_transform()
+        2. Applies the OU score using TRAINING mean/std (not the data's own stats)
+        3. Handles NaN values using the same strategy
+        4. Scales features using the FITTED scaler (trained on training data)
 
         Parameters:
         -----------
         df : pd.DataFrame
-            Raw OHLCV data
+            Raw OHLCV data (can be test set or live data)
+            Must contain columns: open, high, low, close, volume
 
         Returns:
         --------
         features : pd.DataFrame
-            Transformed features
+            Transformed features using training statistics.
+            Has same column structure as fit_transform output.
+
+        Raises:
+        -------
+        RuntimeError: If called before fit_transform() - you must fit the
+            engine on training data first
+
+        Example:
+            >>> # After fitting on training data
+            >>> test_features = engine.transform(test_df)
+            >>> print(f"Transformed {len(test_features)} test samples")
+            >>> # Features are scaled using training statistics!
         """
         if not self.is_fitted:
             raise RuntimeError("FeatureEngine not fitted. Call fit_transform() first.")
@@ -173,18 +343,51 @@ class FeatureEngine:
         return df
 
     def _compute_raw_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Compute raw features from OHLCV."""
+        """
+        Compute raw technical indicators from OHLCV data.
+
+        This method calculates all technical indicators used as features for
+        the trading model. All calculations are performed on raw (unscaled)
+        values.
+
+        Features computed:
+            1. log_ret: Log returns (ln(P_t / P_{t-1})) - ensures stationarity
+            2. volatility_20: 20-period annualized rolling volatility
+            3. volatility_50: 50-period annualized rolling volatility (longer-term)
+            4. rolling_mean: Rolling mean of close price
+            5. rolling_std: Rolling standard deviation of close price
+            6. rsi_14: Relative Strength Index (14-period)
+            7. macd: MACD line (12-period EMA - 26-period EMA)
+            8. macd_signal: Signal line (9-period EMA of MACD)
+            9. macd_hist: MACD histogram (MACD - Signal)
+            10. bb_width: Bollinger Band width (normalized)
+            11. bb_position: Bollinger Band position (0-1 scale)
+
+        Parameters:
+        -----------
+        df : pd.DataFrame
+            OHLCV data with columns: open, high, low, close, volume
+
+        Returns:
+        --------
+        df : pd.DataFrame
+            DataFrame with additional feature columns (unscaled)
+        """
         df = df.copy()
 
         # 1. Log Returns (ensures stationarity): ln(P_t / P_{t-1})
+        # Log returns are preferred over simple returns because:
+        # - Additive: log(a) + log(b) = log(a*b)
+        # - Symmetric: log(1+x) ≈ -log(1-x) for small x
+        # - Bounded: less affected by extreme price movements
         if self.config.use_log_returns:
-            df["log_ret"] = np.log(
-                df["close"] / df["close"].shift(1)
-            )  # Log return: additive, symmetric
+            df["log_ret"] = np.log(df["close"] / df["close"].shift(1))
         else:
             df["log_ret"] = df["close"].pct_change()  # Simple pct return as alternative
 
         # 2. Volatility (rolling std of returns)
+        # Annualized to allow comparison across different timeframes
+        # For hourly data: 252 trading days * 24 hours = 6048 periods/year
         df["volatility_20"] = (
             df["log_ret"].rolling(window=self.config.volatility_window).std()
             * np.sqrt(
@@ -199,6 +402,7 @@ class FeatureEngine:
         )
 
         # 3. Rolling statistics (for OU score)
+        # Used to compute mean-reversion signals
         df["rolling_mean"] = (
             df["close"].rolling(window=self.config.rolling_mean_window).mean()
         )
@@ -208,9 +412,12 @@ class FeatureEngine:
         )
 
         # 4. RSI (Relative Strength Index)
+        # Momentum oscillator measuring speed and change of price movements
+        # Scale: 0 = oversold, 100 = overbought
         df["rsi_14"] = self._compute_rsi(df["close"], window=14)
 
         # 5. MACD (Moving Average Convergence Divergence)
+        # Trend-following momentum indicator
         macd_line, signal_line = self._compute_macd(df["close"])
         df["macd"] = macd_line
         df["macd_signal"] = signal_line
@@ -219,6 +426,7 @@ class FeatureEngine:
         )  # MACD histogram: momentum of momentum
 
         # 6. Bollinger Bands
+        # Statistical bands around a moving average
         upper, lower = self._compute_bollinger_bands(df["close"], window=20, num_std=2)
         # Handle division by zero if close is 0 (unlikely but safe)
         df["bb_width"] = (upper - lower) / (

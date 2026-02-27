@@ -1,6 +1,6 @@
 """Reward module with Anti-Bias Framework."""
 
-from reward.antibias_rewards import (
+from src.reward.antibias_rewards import (
     BaseReward,
     SharpeIncrementReward,
     CalmarIncrementReward,

@@ -1,12 +1,59 @@
 """
-PHASE 7 – BINANCE WEBSOCKET CONNECTOR
-======================================
-Production-grade connector with:
-  - Automatic reconnect (exponential backoff, max 10 attempts)
-  - Heartbeat / ping-pong monitoring
-  - Subscription management (orderbook, trades, user data stream)
-  - Thread-safe message dispatch
-  - Structured error taxonomy
+Binance WebSocket Connector (Phase 7)
+=====================================
+Production-grade WebSocket connector for Binance exchange with institutional-grade
+reliability features.
+
+This connector provides a robust, asynchronous WebSocket interface to Binance's
+combined stream endpoint, supporting both market data and user data streams with
+automatic reconnection and error handling.
+
+Key Features:
+  - Automatic Reconnection: Exponential backoff with configurable max attempts
+  - Heartbeat/Ping-Pong: Connection health monitoring
+  - Subscription Management: Dynamic subscribe/unsubscribe at runtime
+  - Thread-Safe Dispatch: Async handlers registered per stream
+  - Error Taxonomy: Structured error handling for different failure modes
+  - User Data Stream: Real-time order and balance updates via listenKey
+
+Architecture:
+  - Combined Streams: Single WebSocket connection multiplexed across multiple streams
+  - AsyncIO: Modern async/await pattern for all operations
+  - State Machine: Well-defined connection states (DISCONNECTED → CONNECTING → CONNECTED)
+  - Backoff Strategy: Jittered exponential backoff prevents thundering herd
+
+Stream Types:
+  - Market Data: <symbol>@ticker, <symbol>@kline_<interval>, <symbol>@bookTicker
+  - User Data: User data stream via listenKey (requires authentication)
+  - Combined: Multiple streams merged into single connection
+
+Usage:
+    connector = BinanceWSConnector(
+        api_key='your_key',
+        api_secret='your_secret',
+        reconnect_policy=ReconnectPolicy(max_attempts=10)
+    )
+
+    # Register handlers
+    async def handle_ticker(data):
+        print(f"Price: {data['c']}")
+
+    connector.on('btcusdt@ticker', handle_ticker)
+
+    # Connect and subscribe
+    await connector.connect()
+    await connector.subscribe(['btcusdt@ticker'])
+
+    # Run until disconnected
+    await asyncio.Future()  # Run forever
+
+Error Handling:
+  - ConnectionLostError: WebSocket closed unexpectedly
+  - AuthenticationError: Invalid API key or signature
+  - RateLimitError: 429/418 from Binance (back off immediately)
+  - SubscriptionError: Failed to subscribe to a stream
+
+Requires: pip install aiohttp
 """
 
 from __future__ import annotations
@@ -73,6 +120,44 @@ class ConnState(Enum):
 
 @dataclass
 class ReconnectPolicy:
+    """
+    Configuration for WebSocket reconnection behavior.
+
+    Defines how the connector should behave when the connection is lost,
+    including maximum retry attempts, delay between attempts, and backoff strategy.
+
+    Attributes:
+        max_attempts: Maximum number of reconnection attempts before giving up.
+                      Default is 10. Set to 0 for infinite retries.
+        base_delay_s: Initial delay in seconds before first reconnection.
+                      Default is 1.0 second.
+        max_delay_s: Maximum delay cap between reconnection attempts.
+                     Default is 60.0 seconds.
+        backoff_factor: Multiplier for exponential backoff. Each retry delay
+                        is multiplied by this factor. Default is 2.0.
+        jitter: If True, adds random ±20% jitter to delay to prevent
+                thundering herd problems. Default is True.
+
+    Example:
+        # Aggressive reconnection for critical trading
+        policy = ReconnectPolicy(
+            max_attempts=20,
+            base_delay_s=0.5,
+            max_delay_s=30.0,
+            backoff_factor=1.5,
+            jitter=True
+        )
+
+        # Conservative for development
+        policy = ReconnectPolicy(
+            max_attempts=5,
+            base_delay_s=2.0,
+            max_delay_s=120.0,
+            backoff_factor=2.0,
+            jitter=False
+        )
+    """
+
     max_attempts: int = 10
     base_delay_s: float = 1.0
     max_delay_s: float = 60.0
@@ -100,6 +185,30 @@ Handler = Callable[[dict], Coroutine]
 
 
 class HandlerRegistry:
+    """
+    Registry for managing WebSocket message handlers.
+
+    This class provides a thread-safe mechanism for registering and dispatching
+    message handlers for different Binance stream types. Supports multiple
+    handlers per stream and proper error isolation.
+
+    Usage:
+        registry = HandlerRegistry()
+
+        async def ticker_handler(data):
+            print(f"Price update: {data['c']}")
+
+        registry.register('btcusdt@ticker', ticker_handler)
+
+        # Later, dispatch messages
+        await registry.dispatch('btcusdt@ticker', {'c': '50000'})
+
+    Note:
+        - Each handler is called in its own try/except block to prevent
+          one failing handler from affecting others
+        - Handlers are called sequentially, not concurrently
+    """
+
     def __init__(self):
         self._handlers: Dict[str, List[Handler]] = {}
 
@@ -130,8 +239,65 @@ class HandlerRegistry:
 
 class BinanceWSConnector:
     """
-    Single multiplexed WebSocket to Binance combined stream endpoint.
-    Manages: connection lifecycle, subscriptions, reconnect, heartbeat.
+    Production-grade WebSocket connector for Binance combined stream endpoint.
+
+    This class manages a single multiplexed WebSocket connection to Binance,
+    handling connection lifecycle, subscriptions, automatic reconnection,
+    heartbeat monitoring, and message dispatch to registered handlers.
+
+    Key Design Principles:
+        - Single connection: Multiple streams via single WebSocket (efficient)
+        - Async-first: All operations are async for non-blocking operation
+        - Resilient: Automatic reconnection with exponential backoff
+        - Observable: Built-in heartbeat and connection state tracking
+
+    Connection States (ConnState):
+        - DISCONNECTED: Initial state or after clean disconnect
+        - CONNECTING: Attempting to establish WebSocket connection
+        - CONNECTED: Active connection, receiving messages
+        - RECONNECTING: Attempting to recover from connection loss
+        - CLOSING: Graceful shutdown in progress
+        - CLOSED: Clean shutdown complete
+
+    Attributes:
+        state: Current connection state (ConnState enum)
+        is_connected: Boolean property indicating active connection
+
+    Example:
+        # Initialize with reconnection policy
+        policy = ReconnectPolicy(
+            max_attempts=10,
+            base_delay_s=1.0,
+            max_delay_s=60.0,
+            backoff_factor=2.0,
+            jitter=True
+        )
+
+        connector = BinanceWSConnector(
+            api_key='your_key',
+            api_secret='your_secret',
+            reconnect_policy=policy,
+            paper_trading=False
+        )
+
+        # Register message handlers before connecting
+        async def on_ticker(msg):
+            print(f"BTCUSDT: {msg['c']}")
+
+        connector.on('btcusdt@ticker', on_ticker)
+
+        # Connect and subscribe
+        await connector.connect()
+        await connector.subscribe(['btcusdt@ticker', 'ethusdt@ticker'])
+
+        # Wait for connection
+        while connector.is_connected:
+            await asyncio.sleep(1)
+
+    Note:
+        - Always register handlers BEFORE calling connect()
+        - Call disconnect() properly to clean up resources
+        - Use paper_trading=True to skip user data stream in testing
     """
 
     _BASE_URL = "wss://stream.binance.com:9443/stream"
@@ -178,7 +344,20 @@ class BinanceWSConnector:
     # ── Public API ──────────────────────────
 
     async def connect(self) -> None:
-        """Open connection and start background tasks."""
+        """
+        Open WebSocket connection and start background tasks.
+
+        Establishes connection to Binance WebSocket server and initializes
+        background tasks for message receiving, heartbeat monitoring, and
+        user data stream management.
+
+        Raises:
+            ConnectionLostError: If connection fails after max attempts
+
+        Note:
+            - Register all handlers BEFORE calling connect()
+            - Background tasks will auto-reconnect on connection loss
+        """
         if self._state not in (ConnState.DISCONNECTED, ConnState.RECONNECTING):
             return
         self._state = ConnState.CONNECTING
@@ -186,7 +365,13 @@ class BinanceWSConnector:
         await self._do_connect()
 
     async def disconnect(self) -> None:
-        """Graceful shutdown."""
+        """
+        Graceful shutdown of WebSocket connection.
+
+        Cancels background tasks, closes WebSocket connection, and
+        releases HTTP session resources. This method should always
+        be called when done to prevent resource leaks.
+        """
         self._state = ConnState.CLOSING
         await self._cancel_background_tasks()
         if self._ws and not self._ws.closed:
@@ -197,11 +382,32 @@ class BinanceWSConnector:
         logger.info("WebSocket connector closed cleanly.")
 
     def on(self, stream: str, handler: Handler) -> None:
-        """Register an async callback for a specific stream."""
+        """
+        Register an async callback handler for a specific stream.
+
+        Args:
+            stream: Stream name (e.g., 'btcusdt@ticker', 'ethusdt@kline_1m')
+            handler: Async callable that takes a dict payload
+
+        Note:
+            - Multiple handlers can be registered for the same stream
+            - Handlers are called in registration order
+        """
         self._registry.register(stream, handler)
 
     async def subscribe(self, streams: List[str]) -> None:
-        """Subscribe to additional streams at runtime."""
+        """
+        Subscribe to additional WebSocket streams at runtime.
+
+        Sends SUBSCRIBE request to Binance to start receiving messages
+        for the specified streams.
+
+        Args:
+            streams: List of stream names to subscribe to
+
+        Example:
+            await connector.subscribe(['btcusdt@ticker', 'ethusdt@bookTicker'])
+        """
         new = [s for s in streams if s not in self._subscriptions]
         if not new:
             return
@@ -210,7 +416,15 @@ class BinanceWSConnector:
         logger.info("Subscribed: %s", new)
 
     async def unsubscribe(self, streams: List[str]) -> None:
-        """Unsubscribe from streams."""
+        """
+        Unsubscribe from WebSocket streams.
+
+        Sends UNSUBSCRIBE request to Binance to stop receiving messages
+        for the specified streams.
+
+        Args:
+            streams: List of stream names to unsubscribe from
+        """
         existing = [s for s in streams if s in self._subscriptions]
         if not existing:
             return

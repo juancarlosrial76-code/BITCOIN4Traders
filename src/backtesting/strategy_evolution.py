@@ -1,8 +1,92 @@
 """
 Strategy Evolution Module
-=========================
+========================
 "Darwinian approach" for BITCOIN4Traders: strategies compete,
 the best-performing one survives and is used for live trading.
+
+This module implements an evolutionary approach to strategy selection
+where multiple trading strategies compete against each other, with
+only the best-performing strategies surviving for live trading.
+
+Core Concepts:
+--------------
+1. Signal Generation: Multiple technical indicators generate trading signals
+2. Backtesting: Each signal is backtested on historical data
+3. Selection: Only strategies meeting performance thresholds survive
+4. Evolution: Best strategy is selected for live trading
+5. Re-evaluation: Strategy can be replaced if performance degrades
+
+Supported Strategies:
+-------------------
+- RSI_Oversold: Buy when RSI below threshold (mean reversion)
+- SMA_Cross: Buy when fast MA crosses above slow MA (trend following)
+- Bollinger_Lower: Buy when price near lower Bollinger Band
+- MACD_Momentum: Buy when MACD histogram is positive
+- OU_MeanReversion: Buy when Ornstein-Uhlenbeck score is negative
+
+Configuration:
+-------------
+Strategies are configured via YAML (config/strategy_evolution.yaml):
+
+    strategies:
+        RSI_Oversold:
+            enabled: true
+            indicator: rsi_14
+            lower_threshold: 30
+
+        SMA_Cross:
+            enabled: true
+            fast_window: 20
+            slow_window: 50
+
+    validation:
+        min_candles: 500
+        min_trades: 20
+        profit_factor_threshold: 1.5
+        fee_adjusted_threshold: 1.2
+
+    backtest:
+        lookback_window: 200
+
+    adaptive:
+        reeval_every_n_candles: 50
+
+    costs:
+        fee_bps: 10
+
+Classes:
+-------
+- StrategyResult: Individual strategy performance metrics
+- EvolutionReport: Complete evolution results with ranking
+- SignalBuilder: Generates trading signals from indicators
+- SignalBacktester: Backtests signal strategies
+- StrategyEvolution: Main evolution engine
+
+Usage:
+------
+    from backtesting.strategy_evolution import evolve_strategy
+
+    # Run evolution and get best strategy
+    report, best_name = evolve_strategy(market_data)
+
+    # Or use the full class for more control
+    evo = StrategyEvolution(cfg_path="config/strategy_evolution.yaml")
+    report = evo.evolve(market_data)
+
+    print(report.to_dataframe())
+
+    # Check if should re-evaluate
+    if evo.should_reeval():
+        report = evo.evolve(market_data)
+
+    # Get current signal for live trading
+    signal = evo.get_current_signal(live_data)
+
+Reference:
+---------
+- Kaufman, P.J. (2013): "Trading Systems and Methods"
+- Pardo, R. (2008): "The Evaluation and Optimization of Trading Strategies"
+- Lopez de Prado, M. (2018): "Advances in Financial Machine Learning"
 """
 
 from __future__ import annotations
@@ -32,6 +116,45 @@ def load_evolution_config(cfg_path: str = _DEFAULT_CFG_PATH) -> dict:
 
 @dataclass
 class StrategyResult:
+    """
+    Performance results for a single trading strategy.
+
+    This dataclass encapsulates all performance metrics computed during
+    backtesting of a single strategy signal. It is used both for
+    individual strategy evaluation and for comparison/ranking.
+
+    Attributes:
+        name: Strategy identifier (e.g., "RSI_Oversold", "SMA_Cross")
+        profit_factor: Gross profit factor (gross profit / gross loss)
+        fee_adjusted_pf: Profit factor after deducting trading costs
+        win_rate: Percentage of profitable trades (0.0 to 1.0)
+        n_trades: Total number of completed trades
+        total_return: Total return as decimal (e.g., 0.15 = 15%)
+        sharpe: Annualized Sharpe ratio
+        status: Strategy status ("KEEP", "ELIMINATE", "INSUFFICIENT_DATA")
+        signal_column: DataFrame column name for the signal
+
+    Methods:
+        is_valid(): Returns True if strategy status is "KEEP"
+
+    Example:
+        --------
+        result = StrategyResult(
+            name="RSI_Oversold",
+            profit_factor=1.85,
+            fee_adjusted_pf=1.62,
+            win_rate=0.58,
+            n_trades=45,
+            total_return=0.12,
+            sharpe=1.34,
+            status="KEEP",
+            signal_column="_sig_RSI_Oversold"
+        )
+
+        if result.is_valid():
+            print(f"Strategy {result.name} is valid with PF={result.profit_factor}")
+    """
+
     name: str
     profit_factor: float
     fee_adjusted_pf: float
@@ -48,6 +171,42 @@ class StrategyResult:
 
 @dataclass
 class EvolutionReport:
+    """
+    Complete evolution results with strategy rankings.
+
+    This dataclass contains the results of a complete evolution run,
+    including all strategies tested and their performance metrics.
+    It provides convenient methods for ranking and analyzing results.
+
+    Attributes:
+        results: List of StrategyResult objects, one per strategy tested
+        best_strategy: The top-performing strategy (highest fee-adjusted PF)
+        n_candles_used: Number of data points used for backtesting
+        timestamp: ISO timestamp of when evolution was run
+        config_path: Path to configuration file used
+
+    Properties:
+        ranking: List of strategies sorted by fee-adjusted profit factor (best first)
+
+    Methods:
+        to_dataframe(): Convert results to pandas DataFrame for analysis
+
+    Example:
+        --------
+        report = evolution_engine.evolve(market_data)
+
+        # Get best strategy
+        if report.best_strategy:
+            print(f"Best: {report.best_strategy.name}")
+
+        # View all strategies ranked
+        print(report.to_dataframe())
+
+        # Iterate through ranking
+        for result in report.ranking:
+            print(f"{result.name}: PF={result.fee_adjusted_pf:.2f}, {result.status}")
+    """
+
     results: List[StrategyResult]
     best_strategy: Optional[StrategyResult]
     n_candles_used: int
@@ -84,7 +243,50 @@ class EvolutionReport:
 
 
 class SignalBuilder:
+    """
+    Builds trading signals from technical indicators.
+
+    This class generates trading signals based on various technical
+    indicators configured in the strategy evolution config. It supports
+    multiple indicator types and automatically handles disabled strategies.
+
+    The builder uses a dispatch pattern: strategy names are mapped to
+    builder methods that generate the actual trading signals.
+
+    Attributes:
+        strategies_cfg: Dictionary of strategy configurations from YAML
+
+    Methods:
+        build_all(): Generate signals for all enabled strategies
+
+    Supported Strategies:
+    --------------------
+    1. RSI_Oversold: Buy when RSI < lower_threshold (mean reversion)
+    2. SMA_Cross: Buy when fast SMA > slow SMA (trend following)
+    3. Bollinger_Lower: Buy when price near lower Bollinger Band
+    4. MACD_Momentum: Buy when MACD histogram > 0 (momentum)
+    5. OU_MeanReversion: Buy when OU score < threshold (mean reversion)
+
+    Example:
+        --------
+        builder = SignalBuilder(config.get("strategies", {}))
+
+        # Generate all signals
+        df_with_signals, signal_cols = builder.build_all(market_data)
+
+        # Use specific signal
+        if "_sig_RSI_Oversold" in signal_cols:
+            signal = df_with_signals["_sig_RSI_Oversold"]
+    """
+
     def __init__(self, strategies_cfg: dict):
+        """
+        Initialize the SignalBuilder with strategy configurations.
+
+        Parameters:
+            strategies_cfg: Dictionary mapping strategy names to their
+                          configuration dictionaries from YAML.
+        """
         self._cfg = strategies_cfg
 
     def build_all(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
@@ -158,7 +360,56 @@ class SignalBuilder:
 
 
 class SignalBacktester:
+    """
+    Backtests signal-based trading strategies.
+
+    This class computes performance metrics for trading strategies that
+    generate binary signals (buy/hold/sell). It handles signal alignment,
+    cost modeling, and comprehensive metric calculation.
+
+    The backtester accounts for:
+    - Signal shift: Avoiding look-ahead bias by shifting signals
+    - Trading costs: Fees and slippage deducted from returns
+    - Trade detection: Identifying when positions change
+
+    Attributes:
+        fee_bps: Fee in basis points per trade (default: 10 bps)
+        slippage_bps: Slippage in basis points (default: 3 bps)
+        signal_shift: Number of bars to shift signal (default: 1)
+                      1 means use previous bar's signal for current return
+        total_cost_pct: Combined cost as decimal fraction
+
+    Methods:
+        backtest(): Run backtest on a signal column
+        _empty_result(): Return empty result for insufficient data
+
+    Example:
+        --------
+        backtester = SignalBacktester(
+            fee_bps=10,      # 0.1% fee per trade
+            slippage_bps=3,  # 0.03% slippage
+            signal_shift=1   # Use previous bar signal
+        )
+
+        results = backtester.backtest(
+            market_data,
+            signal_column="_sig_RSI_Oversold",
+            min_trades=20
+        )
+
+        print(f"Profit Factor: {results['profit_factor']:.2f}")
+        print(f"Sharpe: {results['sharpe']:.2f}")
+    """
+
     def __init__(self, fee_bps=10.0, slippage_bps=3.0, signal_shift=1):
+        """
+        Initialize the SignalBacktester.
+
+        Parameters:
+            fee_bps: Trading fee in basis points (default: 10)
+            slippage_bps: Expected slippage in basis points (default: 3)
+            signal_shift: Number of bars to shift signals (default: 1)
+        """
         self.fee_bps, self.slippage_bps, self.signal_shift = (
             fee_bps,
             slippage_bps,
@@ -220,6 +471,53 @@ class SignalBacktester:
 
 
 class StrategyEvolution:
+    """
+    Main strategy evolution engine implementing the Darwinian selection process.
+
+    This class orchestrates the complete strategy evolution process:
+    1. Loads strategy configurations from YAML
+    2. Generates signals for all enabled strategies
+    3. Backtests each strategy
+    4. Selects the best-performing strategy
+    5. Provides adaptive re-evaluation for live trading
+
+    The evolution maintains state between runs, allowing for continuous
+    operation where strategies are periodically re-evaluated and
+    replaced if better alternatives are found.
+
+    Attributes:
+        min_candles: Minimum data points required for valid backtest
+        min_trades: Minimum trades required for valid backtest
+        pf_threshold: Minimum profit factor for strategy to be kept
+        fee_pf_thresh: Minimum fee-adjusted profit factor
+        lookback: Number of candles to use for backtesting
+        reeval_interval: Candles between re-evaluations (0 = disabled)
+
+    Methods:
+        evolve(): Run one evolution iteration
+        should_reeval(): Check if re-evaluation is due
+        get_current_signal(): Get signal from best strategy for live trading
+
+    Example:
+        --------
+        evo = StrategyEvolution(cfg_path="config/strategy_evolution.yaml")
+
+        # Run initial evolution
+        report = evo.evolve(market_data)
+
+        print(f"Best strategy: {report.best_strategy.name}")
+        print(report.to_dataframe())
+
+        # In live trading loop
+        while True:
+            if evo.should_reeval():
+                report = evo.evolve(market_data)
+                print(f"New best: {report.best_strategy.name}")
+
+            signal = evo.get_current_signal(live_data)
+            execute_trade(signal)
+    """
+
     def __init__(self, cfg_path=_DEFAULT_CFG_PATH):
         self._raw_cfg = load_evolution_config(cfg_path)
         self._cfg_path = cfg_path

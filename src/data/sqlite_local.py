@@ -1,32 +1,85 @@
 """
-SQLite Local Database - Local Master Storage
-=============================================
-Local SQLite database for the Linux Local Master.
+SQLite Local Database - High-Performance Local Storage
+======================================================
+Lightweight SQLite database optimized for the Linux Local Master.
+
+This module provides a fast, embedded database solution for storing trading
+data locally. It is designed for scenarios where PostgreSQL is not available
+or where maximum performance is required for large-scale data operations.
 
 Why SQLite instead of PostgreSQL?
-- No server installation required (zero-config)
-- Millions of price rows retrievable in milliseconds
-- No network overhead (file on local NVMe/SSD)
-- Full SQL functionality via SQLAlchemy
+    - No server installation required (zero-config)
+    - Millions of price rows retrievable in milliseconds
+    - No network overhead (file on local NVMe/SSD)
+    - Full SQL functionality via SQLAlchemy
+    - Single-file portability for backup and migration
 
 Why not CSV/Parquet?
-- SQLite supports complex queries (JOINs, aggregations)
-- Concurrent-safe (multiple processes can write simultaneously)
-- Integrated indexes: query of 1 million bars in <10ms
+    - SQLite supports complex queries (JOINs, aggregations)
+    - Concurrent-safe (multiple processes can write simultaneously)
+    - Integrated indexes: query of 1 million bars in <10ms
+    - ACID compliance ensures data integrity
 
 Architecture:
     Local Master:   SQLite (local file, fast, no limits)
     GitHub Actions: Cache (actions/cache, max 10GB)
     Google Colab:   Drive-Sync or download from Binance
 
-Usage:
-    from src.data.sqlite_local import LocalDB
+Database Tables:
+    - market_data: OHLCV candlestick data (primary table, millions of rows)
+    - champion_history: Historical champion model metadata
+    - trades: Executed trade records
+    - portfolio_snapshots: Hourly portfolio performance snapshots
+    - heartbeat: System health monitoring log
 
-    db = LocalDB()                          # Automatic path detection
-    db.save_ohlcv(df, symbol="BTC/USDT")   # Save price data
-    df = db.load_ohlcv("BTC/USDT", days=90)  # Load last 90 days
-    db.save_champion(champion_meta)          # Save champion entry
-    db.save_trade(trade_dict)               # Save trade
+Configuration:
+    Database path can be configured via SQLITE_DB_PATH environment variable.
+    Default location: <repo_root>/data/sqlite/trading.db
+
+Performance Optimizations:
+    - WAL (Write-Ahead Logging) mode for concurrent reads
+    - 64MB in-memory page cache
+    - Synchronous=NORMAL for fast writes without full fsync
+    - UNIQUE index on (symbol, timeframe, timestamp) prevents duplicates
+
+Usage:
+    from src.data.sqlite_local import LocalDB, get_local_db
+
+    # Using singleton instance (recommended)
+    db = get_local_db()
+
+    # Save OHLCV data
+    df = pd.DataFrame({
+        'open': [50000, 50100],
+        'high': [50200, 50300],
+        'low': [49900, 50000],
+        'close': [50100, 50200],
+        'volume': [1000, 1100]
+    }, index=pd.date_range('2024-01-01', periods=2, freq='1h', tz='UTC'))
+    db.save_ohlcv(df, symbol='BTC/USDT', timeframe='1h')
+
+    # Load last 90 days of data
+    df = db.load_ohlcv('BTC/USDT', '1h', days=90)
+
+    # Archive champion model
+    db.save_champion(champion_meta)
+
+    # Check database stats
+    stats = db.stats()
+    print(f"Database size: {stats['db_size_mb']} MB")
+    print(f"Total bars: {stats['market_data_rows']}")
+
+CLI Usage:
+    python -m src.data.sqlite_local --test  # Run with test data
+
+Dependencies:
+    - sqlite3: Built-in Python module
+    - pandas: DataFrame support
+    - loguru: Logging
+
+Warning:
+    SQLite is not designed for concurrent writes from multiple processes.
+    For multi-process scenarios, use PostgreSQL instead.
 """
 
 import os
@@ -59,8 +112,82 @@ _DEFAULT_DB = Path(
 
 class LocalDB:
     """
-    Local SQLite database for the Linux Local Master.
-    Thread-safe via check_same_thread=False + WAL mode.
+    High-performance SQLite database for local trading data storage.
+
+    This class provides a complete local database solution optimized for
+    trading applications. It offers fast read/write operations with proper
+    concurrency handling and automatic index management.
+
+    Attributes:
+        db_path: Path to the SQLite database file
+
+    Thread Safety:
+        Uses check_same_thread=False to allow multi-threaded access.
+        WAL mode enables concurrent reads while writing.
+        Timeout of 30 seconds prevents write failures under load.
+
+    Database Schema:
+        market_data:
+            - id (INTEGER PRIMARY KEY)
+            - symbol (TEXT) - e.g., "BTC/USDT"
+            - timestamp (INTEGER) - Unix ms
+            - open, high, low, close, volume (REAL)
+            - timeframe (TEXT) - "1h", "4h", "1d", etc.
+            - UNIQUE INDEX: (symbol, timeframe, timestamp)
+
+        champion_history:
+            - id, timestamp, name, strategy
+            - sharpe, calmar, sortino, profit_factor
+            - total_return, win_rate, max_drawdown, n_trades
+            - source, meta_json (full metadata as JSON)
+
+        trades:
+            - id, trade_id (UNIQUE), symbol, side
+            - order_type, quantity, price, total_value
+            - fee, exchange, strategy, timestamp
+
+        portfolio_snapshots:
+            - id, timestamp, total_value, cash
+            - exposure, daily_pnl, total_pnl
+            - sharpe_ratio, max_drawdown
+
+        heartbeat:
+            - id, timestamp, source, status
+            - signal, champion
+
+    Example:
+        >>> db = LocalDB()  # Creates db at default location
+        >>>
+        >>> # Save OHLCV data
+        >>> df = pd.DataFrame({
+        ...     'open': [50000, 50100],
+        ...     'high': [50200, 50300],
+        ...     'low': [49900, 50000],
+        ...     'close': [50100, 50200],
+        ...     'volume': [1000, 1100]
+        ... }, index=pd.date_range('2024-01-01', periods=2, freq='1h', tz='UTC'))
+        >>>
+        >>> saved = db.save_ohlcv(df, 'BTC/USDT', '1h')
+        >>> print(f"Saved {saved} rows")
+        Saved 2 rows
+
+        >>> # Load data
+        >>> df = db.load_ohlcv('BTC/USDT', '1h', days=30)
+        >>> print(f"Loaded {len(df)} bars")
+
+        >>> # Get database statistics
+        >>> stats = db.stats()
+        >>> print(f"DB size: {stats['db_size_mb']} MB")
+
+    Performance Tips:
+        - Use load_ohlcv() with limit parameter for recent data only
+        - Call vacuum() periodically after many deletions
+        - Use delete_old_data() to manage database size
+        - Monitor stats() to track growth
+
+    Note:
+        The database is created automatically on first access. Parent
+        directories are created if they don't exist.
     """
 
     def __init__(self, db_path: Optional[Path] = None):
@@ -76,6 +203,17 @@ class LocalDB:
     # ------------------------------------------------------------------
 
     def _connect(self) -> sqlite3.Connection:
+        """
+        Create a new SQLite connection with optimized settings.
+
+        Configures the connection for high-performance concurrent access:
+        - check_same_thread=False: Allows multi-threaded access
+        - timeout=30: Waits up to 30s for locked database
+        - WAL mode: Write-Ahead Logging for concurrent reads
+        - synchronous=NORMAL: Fast + safe without full fsync
+        - cache_size=-64000: 64MB in-memory page cache
+        - row_factory=Row: Enables column-name access on rows
+        """
         conn = sqlite3.connect(
             str(self.db_path),
             check_same_thread=False,  # Allow multi-threaded access

@@ -1,11 +1,75 @@
 """
 Database Models and Persistence Layer
-======================================
-PostgreSQL storage for trades, orders, and market data.
+=====================================
+PostgreSQL storage for trades, orders, positions, and market data.
 
-Connection is configured via the DATABASE_URL environment variable.
-Set it in your .env file (see .env.example for the format):
-  DATABASE_URL=postgresql://user:password@host:port/dbname
+This module provides the data persistence layer for the trading system using
+SQLAlchemy ORM with PostgreSQL. It defines all database models and provides
+a DatabaseManager class for common CRUD operations.
+
+Database Configuration:
+    Connection is configured via the DATABASE_URL environment variable.
+    Set it in your .env file (see .env.example for the format):
+        DATABASE_URL=postgresql://user:password@host:port/dbname
+
+    Example:
+        DATABASE_URL=postgresql://trader:securepass@localhost:5432/trading_db
+
+Database Models:
+    Trade: Executed trade records with fees and strategy attribution
+    Order: Order history with fills and status tracking
+    Position: Position snapshots for portfolio tracking
+    MarketData: OHLCV candlestick data for backtesting
+    PortfolioSnapshot: Historical portfolio performance metrics
+
+Key Features:
+    - SQLAlchemy ORM for database-agnostic queries
+    - Automatic table creation with create_tables()
+    - Efficient bulk operations for market data
+    - Pandas DataFrame integration for analysis
+    - Automatic timestamps with server-side defaults
+    - Index optimization for common queries
+
+Usage:
+    from src.data.database import DatabaseManager, init_database
+
+    # Initialize database with tables
+    db = init_database()
+
+    # Save a trade
+    db.save_trade({
+        'trade_id': 'trade_001',
+        'symbol': 'BTCUSDT',
+        'side': 'BUY',
+        'quantity': 0.001,
+        'price': 50000,
+        'total_value': 50,
+        'fee': 0.05,
+        'exchange': 'binance',
+    })
+
+    # Query market data
+    df = db.get_market_data(
+        symbol='BTCUSDT',
+        start_date=datetime(2024, 1, 1),
+        end_date=datetime(2024, 12, 31)
+    )
+
+Performance Considerations:
+    - Use bulk_save_objects() for batch inserts (100x faster than individual)
+    - Indexes are created automatically on foreign keys and common filters
+    - Consider partitioning for large market_data tables (>10M rows)
+    - Use connection pooling for high-throughput applications
+
+Dependencies:
+    - sqlalchemy: Database ORM
+    - psycopg2: PostgreSQL driver
+    - pandas: DataFrame support
+    - loguru: Logging
+
+Warning:
+    Ensure DATABASE_URL is set before using DatabaseManager. Operations will
+    fail gracefully but won't work without a valid connection string.
 """
 
 import os
@@ -171,7 +235,51 @@ class PortfolioSnapshot(Base):
 
 
 class DatabaseManager:
-    """Manage database operations."""
+    """
+    Database operations manager for trading system persistence.
+
+    Provides a high-level interface for all database operations including
+    trade recording, order history, market data storage, and portfolio
+    tracking. Uses SQLAlchemy ORM for database-agnostic operations.
+
+    Attributes:
+        engine: SQLAlchemy engine instance for database connections
+        SessionLocal: Session factory for creating database sessions
+
+    Database Tables:
+        - trades: Executed trade records
+        - orders: Order history with status tracking
+        - positions: Current position snapshots
+        - market_data: OHLCV candlestick data
+        - portfolio_snapshots: Historical portfolio performance
+
+    Connection Management:
+        Creates a connection pool automatically. For production, consider
+        adjusting pool_size and max_overflow parameters in create_engine.
+
+    Example:
+        >>> db = DatabaseManager()  # Uses DATABASE_URL env var
+        >>> db.create_tables()  # Create all tables
+
+        >>> # Save market data
+        >>> df = pd.DataFrame({
+        ...     'open': [50000, 50100],
+        ...     'high': [50200, 50300],
+        ...     'low': [49900, 50000],
+        ...     'close': [50100, 50200],
+        ...     'volume': [1000, 1100]
+        ... }, index=pd.date_range('2024-01-01', periods=2, freq='1h'))
+        >>> db.save_market_data(df, 'BTCUSDT', '1h')
+
+        >>> # Query trades
+        >>> trades = db.get_trades(symbol='BTCUSDT')
+        >>> print(trades.head())
+
+    Note:
+        All methods handle their own session lifecycle - no need to manage
+        sessions manually. Sessions are created, used, and closed within
+        each method call.
+    """
 
     def __init__(self, database_url: str = DATABASE_URL):
         self.engine = create_engine(database_url)

@@ -1,13 +1,71 @@
 """
-Ensemble Methods for DRL Agents
-================================
-Combine multiple DRL agents for robust trading decisions.
+Ensemble Methods for DRL Trading Agents
+========================================
+Combine multiple Deep Reinforcement Learning agents for robust trading decisions.
 
-Methods:
-1. Voting Ensemble: Majority vote from agents
-2. Weighted Ensemble: Weighted average of agent actions
-3. Stacking Ensemble: Meta-learner on agent outputs
-4. Bagging Ensemble: Bootstrap aggregating
+This module provides various ensemble techniques to improve trading system
+reliability and performance by combining multiple DRL agents. Ensemble methods
+reduce variance, improve stability, and can adapt to changing market conditions.
+
+Ensemble Methods Implemented:
+    1. Voting Ensemble: Majority vote from discrete-action agents
+       - Best for classification-style trading decisions
+       - Simple and robust baseline
+
+    2. Weighted Ensemble: Weighted average of agent actions
+       - Weights can be static or dynamically adjusted
+       - Supports both discrete and continuous actions
+
+    3. Stacking Ensemble: Meta-learner on agent outputs
+      ns optimal combination of agent - Lear predictions
+       - More sophisticated than simple averaging
+
+    4. Bagging Ensemble: Bootstrap aggregating
+       - Random sampling with replacement
+       - Reduces overfitting variance
+
+Additional Features:
+    - DynamicEnsemble: Regime-aware agent switching
+    - ModelSelector: Best model selection based on validation
+    - Adaptive weight updating based on performance
+
+Architecture:
+    AgentEnsemble
+    ├── Voting Ensemble
+    ├── Weighted Ensemble
+    ├── Stacking Ensemble
+    └── Bagging Ensemble
+
+    DynamicEnsemble (regime-based switching)
+
+    ModelSelector (best agent selection)
+
+Usage:
+    from src.ensemble.ensemble_agents import AgentEnsemble, EnsembleConfig, create_ensemble
+
+    # Create ensemble from trained agents
+    config = EnsembleConfig(
+        method="voting",
+        window_size=10,
+        temperature=1.0
+    )
+    ensemble = AgentEnsemble(agents=[agent1, agent2, agent3], config=config)
+
+    # Get prediction
+    action = ensemble.predict(state, deterministic=True)
+
+    # Update weights based on performance
+    ensemble.update_weights({0: 0.5, 1: 0.8, 2: 0.3})
+
+Dependencies:
+    - numpy: Numerical operations
+    - torch: Neural network agents
+    - scipy: Statistical functions
+
+Note:
+    All agents must produce compatible action outputs. For mixed agent types,
+    ensure they either all have select_action() method or can be called as
+    PyTorch models with forward() returning action tensors.
 """
 
 import numpy as np
@@ -29,10 +87,60 @@ class EnsembleConfig:
 
 class AgentEnsemble:
     """
-    Ensemble of DRL agents for robust trading.
+    Ensemble of DRL agents for robust trading predictions.
 
-    Reduces variance and improves stability by combining
-    multiple agents with different architectures or seeds.
+    Combines multiple trained Deep Reinforcement Learning agents to reduce
+    prediction variance and improve stability. The ensemble maintains rolling
+    performance history for adaptive weighting.
+
+    Attributes:
+        agents: List of trained DRL agent instances
+        config: EnsembleConfiguration with method and parameters
+        n_agents: Number of agents in ensemble
+        performance_history: Rolling reward history per agent
+        weights: Current ensemble weights (updated adaptively if configured)
+
+    Ensemble Methods:
+        voting: Majority vote (for discrete actions)
+            - Each agent votes for an action
+            - Most-voted action wins
+            - Best for classification-style decisions
+
+        weighted: Weighted average (for continuous/discrete actions)
+            - Actions weighted by performance-based weights
+            - Supports multi-dimensional action spaces
+
+        stacking: Meta-learner combination
+            - Concatenates all agent predictions
+            - Applies weighted sum via meta-learner
+            - Can learn non-linear combinations
+
+        bagging: Bootstrap aggregating
+            - Randomly samples agents with replacement
+            - Averages predictions from sampled agents
+            - Reduces overfitting variance
+
+    Adaptive Weighting:
+        Weights can be updated based on recent performance using update_weights().
+        Uses Sharpe-like ratio (mean/std) for risk-adjusted scoring.
+        Temperature parameter controls softmax sharpness.
+
+    Example:
+        >>> config = EnsembleConfig(method="voting", window_size=20)
+        >>> ensemble = AgentEnsemble(agents=[a1, a2, a3], config=config)
+        >>>
+        >>> # Get prediction
+        >>> action = ensemble.predict(state, deterministic=True)
+        >>>
+        >>> # Update weights based on episode rewards
+        >>> ensemble.update_weights({0: 0.5, 1: 0.8, 2: 0.3})
+        >>>
+        >>> # Evaluate all agents
+        >>> performances = ensemble.evaluate_agents(env, n_episodes=10)
+
+    Note:
+        Agents must either have a select_action(state, deterministic) method
+        or be callable PyTorch models returning action tensors.
     """
 
     def __init__(self, agents: List, config: EnsembleConfig):

@@ -1,13 +1,80 @@
 """
 ANTI-BIAS FRAMEWORK – Statistical Validation
-=============================================
-Full validation suite: CPCV + Permutation Test + DSR + MTRL.
+============================================
+Comprehensive validation suite for trading strategy backtests.
 
-Four independent checks to confirm a strategy is real and not overfitted:
-1. CPCV (Combinatorial Purged CV): tests stability across time periods
-2. Permutation Test: confirms performance is not due to random chance
-3. DSR (Deflated Sharpe Ratio): corrects Sharpe for multiple testing bias
-4. MTRL (Min Track Record Length): how much data is needed for significance
+This module implements four independent statistical tests to confirm
+that a trading strategy's performance is genuine and not the result
+of overfitting or random chance. A strategy must pass ALL tests to
+be considered viable for live trading.
+
+The Four Validation Tests:
+---------------------------
+1. CPCV (Combinatorial Purged Cross-Validation)
+   - Tests stability across different time periods
+   - Strategy should perform consistently in all folds
+   - Failure indicates regime dependency or overfitting
+
+2. Permutation Test (Monte Carlo)
+   - Tests whether performance is due to skill or chance
+   - Shuffles trade signals and compares to original
+   - Failure indicates results may be random
+
+3. DSR (Deflated Sharpe Ratio)
+   - Corrects Sharpe ratio for multiple testing bias
+   - Accounts for the "lucky" strategy problem
+   - Failure indicates Sharpe may be inflated by selection bias
+
+4. MTRL (Minimum Track Record Length)
+   - How much data is needed for statistical significance?
+   - Calculates minimum trades/bars required
+   - Failure indicates insufficient data for conclusions
+
+Why All Four Tests?
+------------------
+Each test catches different types of overfitting:
+- CPCV: Temporal overfitting (works in some periods, not others)
+- Permutation: Random chance (no real edge)
+- DSR: Multiple testing (found strategy by luck among many trials)
+- MTRL: Insufficient sample (not enough data to be confident)
+
+A strategy is only considered valid if it passes ALL tests.
+
+Usage:
+------
+    from evaluation.antibias_validator import BacktestValidator
+
+    # Initialize validator
+    validator = BacktestValidator(
+        n_cpcv_splits=6,
+        n_permutations=1000,
+        n_trials_tested=1,
+    )
+
+    # Run full validation
+    report = validator.validate(returns, positions)
+
+    # Check results
+    print(report)
+
+    if report.passes_all:
+        print("✅ Strategy passes all validation tests!")
+    else:
+        print("❌ Strategy fails validation - do not go live!")
+
+    # Individual test results
+    print(f"CPCV robust: {report.cpcv.is_robust()}")
+    print(f"Permutation significant: {report.perm.is_significant}")
+    print(f"DSR acceptable: {report.dsr.is_acceptable}")
+
+Reference:
+---------
+- Lopez de Prado, M. (2018): "Advances in Financial Machine Learning"
+  - Chapter 7: Cross-Validation in Financial ML
+  - Chapter 9: The DSR Formula
+  - Chapter 16: Backtesting without Overfitting
+- Bailey & Lopez de Prado (2014): "The Deflated Sharpe Ratio"
+- Bailey et al. (2015): "Optimal Trading Rules"
 """
 
 from __future__ import annotations
@@ -24,7 +91,50 @@ logger = logging.getLogger("antibias.evaluation")
 
 @dataclass
 class PerformanceMetrics:
-    """Complete set of performance metrics for a trading strategy."""
+    """
+    Complete set of performance metrics for a trading strategy.
+
+    This dataclass encapsulates all key performance indicators computed
+    from a strategy's return series. It serves as the foundation for
+    all validation tests in the Anti-Bias Framework.
+
+    Attributes:
+        sharpe: Daily Sharpe ratio (not annualized in this class)
+        sortino: Sortino ratio using downside deviation
+        calmar: Calmar ratio (return / max drawdown)
+        max_drawdown: Maximum drawdown as positive decimal
+        win_rate: Fraction of profitable periods
+        profit_factor: Gross profit / gross loss
+        total_return: Total return as decimal
+        n_trades: Number of completed trades
+        avg_trade_return: Mean return per trade
+        std_trade_return: Standard deviation of trade returns
+        skewness: Return distribution skewness (0 = symmetric)
+        kurtosis: Return distribution excess kurtosis (0 = normal)
+
+    Methods:
+        __repr__(): Formatted string with key metrics
+
+    Example:
+        --------
+        metrics = PerformanceMetrics(
+            sharpe=0.85,
+            sortino=1.12,
+            calmar=1.45,
+            max_drawdown=0.08,
+            win_rate=0.55,
+            profit_factor=1.8,
+            total_return=0.15,
+            n_trades=120,
+            avg_trade_return=0.0012,
+            std_trade_return=0.015,
+            skewness=-0.3,
+            kurtosis=2.5
+        )
+
+        print(metrics)
+        # Output: Sharpe=0.850 Sortino=1.120 Calmar=1.450 MaxDD=8.00% ...
+    """
 
     sharpe: float
     sortino: float
@@ -115,7 +225,39 @@ def compute_metrics(
 
 @dataclass
 class CPCVResult:
-    """Result container for Combinatorial Purged Cross-Validation."""
+    """
+    Result container for Combinatorial Purged Cross-Validation.
+
+    CPCV tests strategy stability by splitting data into multiple folds
+    and computing performance metrics for each. A robust strategy should
+    have consistent performance across all folds.
+
+    Attributes:
+        fold_metrics: List of PerformanceMetrics, one per fold
+        n_splits: Number of folds used
+
+    Properties:
+        sharpe_distribution: NumPy array of Sharpe ratios per fold
+        mean_sharpe: Average Sharpe across folds
+        sharpe_stability: Fraction of folds with positive Sharpe
+
+    Methods:
+        is_robust(): Check if strategy passes robustness thresholds
+        __repr__(): Formatted summary string
+
+    Example:
+        --------
+        cpcv_result = CPCVResult(
+            fold_metrics=[m1, m2, m3, m4, m5, m6],
+            n_splits=6
+        )
+
+        print(f"Mean Sharpe: {cpcv_result.mean_sharpe:.3f}")
+        print(f"Stability: {cpcv_result.sharpe_stability:.1%}")
+
+        if cpcv_result.is_robust(min_mean_sharpe=0.3, min_stability=0.7):
+            print("Strategy passes CPCV!")
+    """
 
     fold_metrics: List[PerformanceMetrics]
     n_splits: int
@@ -155,7 +297,32 @@ class CPCVResult:
 
 
 class CPCVEvaluator:
-    """Combinatorial Purged Cross-Validation."""
+    """
+    Combinatorial Purged Cross-Validation implementation.
+
+    This evaluator splits returns into n_splits groups and computes
+    performance metrics for each group. It uses purging (removing
+    samples near the train/test boundary) to prevent look-ahead bias.
+
+    The key metric is "stability": the fraction of folds with positive
+    Sharpe. A stable strategy should have positive Sharpe in most/all folds.
+
+    Attributes:
+        n_splits: Number of folds to create (default: 6)
+        purge_pct: Fraction to purge around each fold boundary (default: 0.02)
+
+    Methods:
+        evaluate(): Run CPCV and return results
+
+    Example:
+        --------
+        evaluator = CPCVEvaluator(n_splits=6, purge_pct=0.02)
+
+        result = evaluator.evaluate(returns, positions)
+
+        print(result)
+        # Output: CPCV (6 folds): Sharpe mean=0.85 std=0.23 min=0.41 stability=100% ✅ ROBUST
+    """
 
     def __init__(self, n_splits: int = 6, purge_pct: float = 0.02):
         self.n_splits = n_splits
@@ -196,7 +363,48 @@ class CPCVEvaluator:
 
 @dataclass
 class PermutationResult:
-    """Result of the Monte Carlo permutation test."""
+    """
+    Result of the Monte Carlo permutation test.
+
+    The permutation test determines whether observed performance could
+    have occurred by random chance. It compares the actual strategy
+    Sharpe to a null distribution created by shuffling trades randomly.
+
+    If the observed metric is significantly better than random, the
+    test passes (p < 0.05).
+
+    Attributes:
+        observed: Actual strategy metric value
+        null_mean: Mean of null (random) distribution
+        null_std: Standard deviation of null distribution
+        null_p95: 95th percentile of null distribution
+        p_value: Probability of observing this result by chance
+        n_permutations: Number of Monte Carlo iterations
+        metric: Which metric was tested ("sharpe", "sortino", etc.)
+
+    Properties:
+        is_significant: True if p_value < 0.05
+        z_score: Standardized score (observed - null_mean) / null_std
+
+    Methods:
+        __repr__(): Formatted summary string
+
+    Example:
+        --------
+        result = PermutationResult(
+            observed=1.25,
+            null_mean=0.15,
+            null_std=0.35,
+            null_p95=0.72,
+            p_value=0.02,
+            n_permutations=1000,
+            metric="sharpe"
+        )
+
+        print(result)
+        # Output: Permutation Test (sharpe): Observed=1.25 Null mean=0.15±0.35 p=0.0200 z=3.14
+        #         ✅ SIGNIFICANT (p<0.05)
+    """
 
     observed: float
     null_mean: float
@@ -228,7 +436,37 @@ class PermutationResult:
 
 
 class PermutationTest:
-    """Monte Carlo Permutation Test."""
+    """
+    Monte Carlo Permutation Test for statistical significance.
+
+    This test answers: "Could the observed performance be due to luck?"
+
+    It works by:
+    1. Computing the actual strategy metric
+    2. Randomly shuffling the positions many times
+    3. Computing the metric for each shuffled version
+    4. Comparing actual to the null distribution
+
+    If the actual metric exceeds ~95% of random results (p < 0.05),
+    the strategy passes the test.
+
+    Attributes:
+        n_permutations: Number of shuffles to perform (default: 1000)
+
+    Methods:
+        test(): Run permutation test on returns/positions
+
+    Example:
+        --------
+        tester = PermutationTest(n_permutations=1000)
+
+        result = tester.test(returns, positions, metric="sharpe")
+
+        if result.is_significant:
+            print("Strategy is statistically significant!")
+        else:
+            print("Strategy may be due to random chance")
+    """
 
     def __init__(self, n_permutations: int = 1000):
         self.n_permutations = n_permutations
@@ -273,7 +511,48 @@ class PermutationTest:
 
 @dataclass
 class DSRResult:
-    """Result of the Deflated Sharpe Ratio computation."""
+    """
+    Result of the Deflated Sharpe Ratio computation.
+
+    The Deflated Sharpe Ratio (DSR) corrects the observed Sharpe for:
+    1. Selection bias: Trying many strategies, one will look good by chance
+    2. Non-normality: Returns often have skewness and excess kurtosis
+
+    DSR > 0.64 means there's 64% probability the true Sharpe exceeds
+    the benchmark (usually 0 for risk-free rate).
+
+    Attributes:
+        observed_sr: The raw (inflated) Sharpe ratio
+        sr_benchmark: Adjusted benchmark after accounting for trials
+        sr_std: Standard error of the Sharpe estimate
+        dsr: Deflated Sharpe Ratio (probability of true SR > benchmark)
+        skewness: Return distribution skewness
+        kurtosis: Return distribution excess kurtosis
+        n_trials: Number of trials tested (for multiple testing adjustment)
+
+    Properties:
+        is_acceptable: True if DSR > 0.64
+
+    Methods:
+        __repr__(): Formatted summary string
+
+    Example:
+        --------
+        result = DSRResult(
+            observed_sr=1.5,
+            sr_benchmark=0.3,
+            sr_std=0.2,
+            dsr=0.85,
+            skewness=-0.5,
+            kurtosis=3.2,
+            n_trials=50
+        )
+
+        print(result)
+        # Output: DSR=0.8500 (✅ ACCEPTABLE)
+        #         SR_observed=1.5000 SR_benchmark=0.3000 SR_std=0.2000
+        #         Skew=-0.500 Kurt=3.200 n_trials=50
+    """
 
     observed_sr: float
     sr_benchmark: float
@@ -302,8 +581,40 @@ class DSRResult:
 class DeflatedSharpeRatio:
     """
     Bailey & Lopez de Prado (2014) Deflated Sharpe Ratio.
-    Corrects the Sharpe ratio for multiple testing (strategy selection bias).
-    The more strategies you test, the higher the chance of finding a spurious winner.
+
+    The DSR corrects the Sharpe ratio for multiple testing bias - the
+    tendency to find good-looking strategies by chance when testing many.
+
+    When you test N strategies, the best one will likely be better than
+    the true average. DSR adjusts for this by:
+    1. Estimating the expected maximum Sharpe across N trials
+    2. Using this as a higher benchmark
+    3. Computing probability that true Sharpe exceeds benchmark
+
+    Formula accounts for:
+    - Number of trials tested
+    - Skewness of returns
+    - Excess kurtosis (fat tails)
+
+    Attributes:
+        None - all methods are static
+
+    Methods:
+        compute(): Calculate DSR for a return series
+
+    Example:
+        --------
+        result = DeflatedSharpeRatio.compute(
+            returns=strategy_returns,
+            n_trials=50,       # Tested 50 strategies
+            benchmark_sr=0.0  # Compare to zero (risk-free)
+        )
+
+        print(f"Observed Sharpe: {result.observed_sr:.3f}")
+        print(f"Deflated Sharpe: {result.dsr:.3f}")
+
+        if result.is_acceptable:
+            print("Sharpe is acceptable after adjusting for multiple testing!")
     """
 
     @staticmethod
@@ -356,7 +667,45 @@ class DeflatedSharpeRatio:
 
 @dataclass
 class MTRLResult:
-    """Result of the Minimum Track Record Length calculation."""
+    """
+    Result of the Minimum Track Record Length calculation.
+
+    MTRL answers: "How much data do I need to be confident this
+    strategy's performance is real?"
+
+    It calculates the minimum number of observations required for
+    the observed Sharpe to be statistically significant at the
+    given confidence level.
+
+    Attributes:
+        n_min: Minimum observations needed for significance
+        sharpe: Observed Sharpe ratio
+        confidence: Confidence level used (e.g., 0.95 = 95%)
+        skewness: Return distribution skewness
+        kurtosis: Return distribution excess kurtosis
+
+    Methods:
+        in_hours(): Convert to hours given bars per hour
+        __repr__(): Formatted summary with time conversions
+
+    Example:
+        --------
+        result = MTRLResult(
+            n_min=250,
+            sharpe=1.2,
+            confidence=0.95,
+            skewness=-0.3,
+            kurtosis=2.1
+        )
+
+        print(result)
+        # Output: Min Track Record: 250 bars
+        #         @ 1h bars:  10.4 days (0.3 months)
+        #         @ 5m bars:  125.0 days (4.2 months)
+        #         SR=1.200 confidence=95%
+
+        print(f"Need at least {result.n_min} observations")
+    """
 
     n_min: float
     sharpe: float
@@ -380,7 +729,48 @@ class MTRLResult:
 
 
 class MinTrackRecordLength:
-    """Computes the minimum number of observations required for statistical significance."""
+    """
+    Computes minimum observations needed for statistical significance.
+
+    MTRL calculates how much data is required for the observed Sharpe
+    ratio to be statistically significant. It accounts for:
+    - Target Sharpe threshold (what "good enough" means)
+    - Desired confidence level
+    - Return distribution characteristics (skewness, kurtosis)
+
+    If your actual track record is shorter than MTRL, the observed
+    performance may be due to luck rather than skill.
+
+    Attributes:
+        None - all methods are static
+
+    Methods:
+        compute(): Calculate MTRL for given Sharpe
+
+    Example:
+        --------
+        result = MinTrackRecordLength.compute(
+            sharpe=1.5,
+            target_sr=0.0,
+            confidence=0.95,
+            skewness=0.0,
+            kurtosis=0.0
+        )
+
+        print(f"Minimum track record: {result.n_min:.0f} bars")
+
+        # With realistic market data (fat tails, skew)
+        result = MinTrackRecordLength.compute(
+            sharpe=1.5,
+            target_sr=0.0,
+            confidence=0.95,
+            skewness=-0.5,  # Negative skew
+            kurtosis=3.0    # Fat tails
+        )
+
+        print(f"Min track record: {result.n_min:.0f} bars")
+        print(f"At hourly bars: {result.in_hours(bars_per_hour=1):.0f} hours")
+    """
 
     @staticmethod
     def compute(
@@ -418,7 +808,40 @@ class MinTrackRecordLength:
 
 @dataclass
 class ValidationReport:
-    """Complete validation report combining all four statistical checks."""
+    """
+    Complete validation report combining all four statistical checks.
+
+    This is the main output of the BacktestValidator. It contains
+    results from all four validation tests and provides an overall
+    pass/fail verdict.
+
+    Attributes:
+        metrics: Full-sample performance metrics
+        cpcv: CPCV stability test results
+        perm: Permutation test results
+        dsr: Deflated Sharpe Ratio results
+        mtrl: Minimum Track Record Length results
+
+    Properties:
+        passes_all: True if strategy passes CPCV, Permutation, AND DSR
+
+    Methods:
+        __repr__(): Formatted multi-line report
+
+    Example:
+        --------
+        validator = BacktestValidator(n_cpcv_splits=6, n_permutations=1000)
+        report = validator.validate(returns, positions)
+
+        print(report)
+
+        if report.passes_all:
+            print("\n✅ STRATEGY PASSES ALL VALIDATION TESTS")
+            print("Ready for paper trading / live deployment")
+        else:
+            print("\n❌ STRATEGY FAILS VALIDATION")
+            print("Review individual test failures above")
+    """
 
     metrics: PerformanceMetrics
     cpcv: CPCVResult
@@ -464,7 +887,53 @@ class ValidationReport:
 class BacktestValidator:
     """
     Master validator that runs all four validation layers in sequence.
-    Returns a single ValidationReport with pass/fail verdict.
+
+    This is the main entry point for the Anti-Bias validation suite.
+    It coordinates all four tests and produces a comprehensive report
+    with pass/fail verdicts for each test and overall.
+
+    The validator runs:
+    1. Full-sample metrics computation
+    2. CPCV (Combinatorial Purged Cross-Validation)
+    3. Permutation Test (Monte Carlo)
+    4. Deflated Sharpe Ratio
+    5. Minimum Track Record Length
+
+    A strategy passes ONLY if it passes all tests.
+
+    Attributes:
+        cpcv: CPCVEvaluator instance
+        perm: PermutationTest instance
+        n_trials: Number of trials for DSR adjustment
+
+    Methods:
+        validate(): Run complete validation suite
+
+    Example:
+        --------
+        # Simple usage
+        validator = BacktestValidator()
+        report = validator.validate(returns, positions)
+
+        # With custom parameters
+        validator = BacktestValidator(
+            n_cpcv_splits=6,       # More folds = stricter
+            n_permutations=1000,   # More iterations = precise p-value
+            n_trials_tested=10,    # If testing 10 strategies
+        )
+
+        report = validator.validate(returns, positions)
+
+        # Access individual results
+        print(f"CPCV robust: {report.cpcv.is_robust()}")
+        print(f"Permutation p-value: {report.perm.p_value:.4f}")
+        print(f"DSR: {report.dsr.dsr:.3f}")
+
+        # Overall verdict
+        if report.passes_all:
+            launch_strategy()
+        else:
+            print("Strategy not ready - fix issues above")
     """
 
     def __init__(

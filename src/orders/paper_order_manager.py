@@ -1,13 +1,71 @@
 """
-PAPER TRADING – SIMULATED ORDER MANAGER
-=========================================
-Drop-in replacement for OrderManager in dry_run mode.
-No real Binance REST calls – all orders are simulated locally.
+Paper Trading Order Manager - Simulated Order Execution
+========================================================
+Drop-in replacement for OrderManager for dry-run and backtesting.
 
-Fill logic:
-  - MARKET  → filled immediately at current mid-price
-  - LIMIT   → filled immediately (conservative: at limit price)
-  - Commission: 0.1% (Binance standard)
+This module provides a simulated order management system that mimics the
+real OrderManager API but executes orders locally without connecting to
+the Binance exchange. It is designed for:
+    - Paper trading (trading with fake money)
+    - Backtesting strategies with realistic fill simulation
+    - Development and testing without risking real capital
+    - Strategy validation before live deployment
+
+Key Features:
+    - Identical API to OrderManager for seamless switching
+    - Simulated order fills at realistic prices
+    - Account balance tracking with virtual cash
+    - Configurable commission rates (default: 0.1% = Binance taker fee)
+    - Trade logging for performance analysis
+    - No network dependencies - runs completely offline
+
+Fill Simulation Logic:
+    - MARKET orders: Filled immediately at current price (requires price data)
+    - LIMIT orders: Filled immediately at limit price (conservative assumption)
+    - The fill price must be provided or available - MARKET orders without
+      price data will not be filled and will return early with a warning
+
+Commission Structure:
+    - Default: 0.1% (matching Binance standard taker fee)
+    - Applied to both BUY and SELL orders
+    - Deducted from cash for BUY orders
+    - Subtracted from proceeds for SELL orders
+
+Usage:
+    from src.orders.paper_order_manager import PaperOrderManager
+    from src.orders.order_manager import Order, OrderSide, OrderType
+
+    # Initialize with virtual capital
+    pom = PaperOrderManager(
+        api_key="dummy",
+        api_secret="dummy",
+        initial_cash=Decimal("10000")  # $10,000 starting capital
+    )
+    await pom.start()
+
+    # Submit orders just like with real OrderManager
+    order = Order(
+        symbol="BTCUSDT",
+        side=OrderSide.BUY,
+        type=OrderType.MARKET,
+        quantity=Decimal("0.001")
+    )
+    await pom.submit_order(order)
+
+    # Check virtual cash balance
+    print(f"Remaining cash: ${pom.cash}")
+
+    await pom.stop()  # Prints trade log summary
+
+Architecture:
+    PaperOrderManager maintains identical internal data structures to OrderManager
+    for maximum compatibility. The key difference is that submit_order() simulates
+    exchange behavior locally rather than making API calls.
+
+Warning:
+    Paper trading results do not guarantee similar live trading performance.
+    Market conditions, slippage, and liquidity may differ significantly between
+    simulated and live execution.
 """
 
 from __future__ import annotations
@@ -36,8 +94,50 @@ COMMISSION_RATE = Decimal("0.001")  # 0.1% Binance taker fee
 
 class PaperOrderManager:
     """
-    Simulated OMS for paper trading.
-    Identical public API to OrderManager.
+    Simulated Order Manager for paper trading and testing.
+
+    This class provides a complete drop-in replacement for OrderManager that
+    simulates order execution locally. It maintains identical public API and
+    data structures, allowing seamless switching between paper and live trading.
+
+    Attributes:
+        cash: Virtual cash balance in quote currency (e.g., USDT)
+        trade_log: List of executed trade records with timestamps
+        _orders: Dict mapping client_order_id -> Order objects
+        _exchange_id_map: Dict mapping simulated exchange IDs -> client IDs
+        _on_fill_cbs: List of fill event callbacks
+        _on_status_cbs: List of status change callbacks
+
+    Account Balance:
+        - Initial cash defaults to $10,000 USDT
+        - BUY orders deduct (price * quantity + commission) from cash
+        - SELL orders add (price * quantity - commission) to cash
+        - Cash balance updates immediately upon order fill
+
+    Trade Log:
+        Each executed trade records:
+        - Time, symbol, side, quantity, price
+        - Notional value, commission paid
+        - Cash balance after trade
+
+    Example:
+        >>> from decimal import Decimal
+        >>> pom = PaperOrderManager(
+        ...     api_key="test",
+        ...     api_secret="test",
+        ...     initial_cash=Decimal("50000")
+        ... )
+        >>> import asyncio
+        >>> asyncio.run(pom.start())
+        >>> # ... submit orders ...
+        >>> asyncio.run(pom.stop())
+        [PAPER] ══ TRADE LOG ════════════════════════════
+        ...
+
+    Note:
+        PaperOrderManager does NOT require price data for LIMIT orders - it will
+        fill at the specified limit price. For MARKET orders, you must ensure
+        price data is available or provide it via the order's limit_price field.
     """
 
     def __init__(

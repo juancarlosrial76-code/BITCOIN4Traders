@@ -1,16 +1,72 @@
 """
 Institutional Execution Algorithms
-===================================
-SOTA feature: Production-grade execution algorithms used by hedge funds.
+==================================
+SOTA feature: Production-grade execution algorithms used by hedge funds
+and proprietary trading firms.
 
-Includes:
-- TWAP (Time-Weighted Average Price)
-- VWAP (Volume-Weighted Average Price)
-- Implementation Shortfall
-- Smart Order Routing
-- Market Impact Modeling
+This module implements professional-grade order execution algorithms that
+minimize market impact, reduce trading costs, and optimize fill quality.
 
-Used by: Citadel, Jane Street, Two Sigma
+ALGORITHMS INCLUDED:
+-------------------
+1. TWAP (Time-Weighted Average Price)
+   - Executes orders evenly over time period
+   - Best for: Low urgency, minimizing timing risk
+   - Simple and predictable execution pattern
+
+2. VWAP (Volume-Weighted Average Price)
+   - Executes proportional to historical volume profile
+   - Best for: Tracking market volume, minimizing tracking error
+   - U-shaped volume profile (high at open/close)
+
+3. POV (Percentage of Volume)
+   - Executes at specified participation rate
+   - Best for: Balancing execution speed vs market impact
+
+4. IMPLEMENTATION SHORTFALL
+   - Optimizes for arrival price execution
+   - Balances urgency vs impact
+
+5. ADAPTIVE
+   - Dynamically switches between TWAP/VWAP based on conditions
+
+ADVANCED FEATURES:
+----------------
+- Market Impact Modeling (Almgren-Chriss framework)
+- Smart Order Routing (SOR)
+- Dark Pool Routing
+- Multi-venue allocation
+
+Usage:
+    from src.execution.execution_algorithms import (
+        ExecutionEngine,
+        AlgoType,
+        execute_twap,
+        execute_vwap
+    )
+
+    # Initialize execution engine
+    engine = ExecutionEngine()
+
+    # Configure execution
+    config = ExecutionConfig(
+        algo_type=AlgoType.VWAP,
+        duration_minutes=60,
+        max_participation_rate=0.1
+    )
+
+    # Submit order
+    result = engine.submit_order(
+        order_id="order_001",
+        symbol="BTC",
+        side="buy",
+        total_size=1.0,
+        config=config,
+        current_price=50000.0
+    )
+
+Author: BITCOIN4Traders Team
+License: Proprietary - Internal Use Only
 """
 
 import numpy as np
@@ -25,7 +81,11 @@ from loguru import logger
 
 
 class AlgoType(Enum):
-    """Execution algorithm types."""
+    """Execution algorithm types.
+
+    Defines available execution strategies with different optimization
+    objectives and execution profiles.
+    """
 
     TWAP = "twap"  # Time-Weighted Average Price
     VWAP = "vwap"  # Volume-Weighted Average Price
@@ -36,7 +96,28 @@ class AlgoType(Enum):
 
 @dataclass
 class OrderSlice:
-    """Single slice of a parent order."""
+    """
+    Single slice of a parent order for algorithmic execution.
+
+    Represents one portion of a larger order to be executed at
+    a specific time with expected price.
+
+    Attributes:
+        timestamp: When this slice should be executed
+        size: Quantity for this slice
+        side: Trade direction - 'buy' or 'sell'
+        expected_price: Anticipated execution price
+        urgency: Urgency level 0-1 (higher = more urgent)
+
+    Example:
+        >>> order_slice = OrderSlice(
+        ...     timestamp=datetime.now() + timedelta(minutes=15),
+        ...     size=0.25,
+        ...     side="buy",
+        ...     expected_price=50000.0,
+        ...     urgency=0.5
+        ... )
+    """
 
     timestamp: datetime
     size: float
@@ -47,7 +128,31 @@ class OrderSlice:
 
 @dataclass
 class ExecutionConfig:
-    """Configuration for execution algorithms."""
+    """
+    Configuration for execution algorithms.
+
+    Controls all aspects of algorithmic order execution including
+    timing, participation rates, and venue selection.
+
+    Attributes:
+        algo_type: Algorithm to use (TWAP, VWAP, POV, IS, ADAPTIVE)
+        duration_minutes: Total execution window
+        max_participation_rate: Maximum fraction of market volume
+        min_slice_size: Minimum order size per slice
+        max_slice_size: Maximum order size per slice
+        price_limit: Limit price (None = market)
+        urgency: Urgency level 0-1
+        allow_dark_pools: Whether to use dark venues
+        smart_routing: Whether to route intelligently
+
+    Example:
+        >>> config = ExecutionConfig(
+        ...     algo_type=AlgoType.VWAP,
+        ...     duration_minutes=60,
+        ...     max_participation_rate=0.1,
+        ...     urgency=0.5
+        ... )
+    """
 
     algo_type: AlgoType = AlgoType.VWAP
     duration_minutes: int = 60
@@ -64,11 +169,37 @@ class MarketImpactModel:
     """
     Market impact model for execution optimization.
 
-    Models temporary and permanent price impact of large orders.
-    Based on Almgren-Chriss and Kissell-Glantz frameworks.
+    Models the price impact of large orders based on the Almgren-Chriss
+    and Kissell-Glantz frameworks. Distinguishes between temporary
+    impact (which reverses) and permanent impact (which persists).
+
+    IMPACT COMPONENTS:
+    -----------------
+    1. TEMPORARY IMPACT
+       - Caused by order taking liquidity
+       - Reverses after execution
+       - Modeled as: η * σ * (X/V)^0.6 * sqrt(participation)
+
+    2. PERMANENT IMPACT
+       - Caused by information leakage
+       - Persists in price
+       - Modeled as: γ * σ * (X/V)
+
+    MODEL PARAMETERS:
+    ---------------
+    - eta: Impact coefficient (empirical from historical data)
+    - gamma: Permanent impact decay rate
+    - sigma: Annualized price volatility
+    - V: Average daily volume
+
+    Example:
+        >>> model = MarketImpactModel()
+        >>> model.calibrate(historical_trades)
+        >>> temp_impact, perm_impact = model.calculate_impact(1.0, 0.1, 0.5)
     """
 
     def __init__(self):
+        """Initialize the market impact model with default parameters."""
         self.eta = 0.142  # Impact coefficient (empirical from historical data)
         self.gamma = 0.5  # Permanent impact decay rate
         self.sigma = None  # Annualized price volatility (calibrated from data)
@@ -76,7 +207,15 @@ class MarketImpactModel:
         logger.info("MarketImpactModel initialized")
 
     def calibrate(self, trades: pd.DataFrame):
-        """Calibrate model from historical trade data."""
+        """
+        Calibrate model parameters from historical trade data.
+
+        Estimates volatility and average volume from historical execution
+        data for accurate impact prediction.
+
+        Args:
+            trades: DataFrame with 'price' and 'volume' columns
+        """
         self.sigma = trades["price"].pct_change().std() * np.sqrt(
             252
         )  # Annualize daily vol
@@ -87,10 +226,22 @@ class MarketImpactModel:
         self, order_size: float, participation_rate: float, urgency: float = 0.5
     ) -> Tuple[float, float]:
         """
-        Calculate market impact.
+        Calculate expected market impact for an order.
+
+        Computes both temporary and permanent impact based on order
+        size, participation rate, and execution urgency.
+
+        Args:
+            order_size: Order quantity in base currency
+            participation_rate: Fraction of market volume (0-1)
+            urgency: Execution urgency 0-1 (higher = faster)
 
         Returns:
-            (temporary_impact, permanent_impact)
+            Tuple of (temporary_impact, permanent_impact) as fractions
+
+        Example:
+            >>> temp, perm = model.calculate_impact(1.0, 0.1, 0.5)
+            >>> print(f"Total impact: {(temp + perm) * 100:.3f}%")
         """
         if self.sigma is None or self.V is None:
             return 0.0, 0.0  # Cannot compute without calibrated parameters
@@ -118,7 +269,16 @@ class MarketImpactModel:
         """
         Calculate optimal execution schedule to minimize impact.
 
-        Uses dynamic programming to find optimal trade trajectory.
+        Uses historical volume profile to allocate more volume during
+        high-liquidity periods, reducing market impact.
+
+        Args:
+            total_size: Total order size
+            duration_hours: Execution duration in hours
+            volume_profile: Series of hourly volume weights
+
+        Returns:
+            List of slice sizes for each time period
         """
         n_slices = min(duration_hours, 24)  # Max 1 slice per hour
 
@@ -142,13 +302,31 @@ class MarketImpactModel:
 
 class TWAPExecutor:
     """
-    Time-Weighted Average Price execution.
+    Time-Weighted Average Price (TWAP) execution algorithm.
 
-    Executes order evenly over time period.
-    Best for: Low urgency, minimizing timing risk
+    Executes orders in equal time intervals over the specified duration.
+    Best suited for low-urgency orders where minimizing timing risk
+    is more important than execution speed.
+
+    CHARACTERISTICS:
+    --------------
+    - Predictable execution pattern
+    - Low market impact
+    - Suitable for large orders with time flexibility
+    - Equal allocation across time slices
+
+    LIMITATIONS:
+    -----------
+    - May miss optimal execution windows
+    - Doesn't adapt to changing conditions
+
+    Example:
+        >>> executor = TWAPExecutor(config)
+        >>> schedule = executor.generate_schedule(1.0, "buy", 50000.0)
     """
 
     def __init__(self, config: ExecutionConfig):
+        """Initialize TWAP executor with configuration."""
         self.config = config
         self.slices: List[OrderSlice] = []
         self.completed_slices = []
@@ -158,7 +336,20 @@ class TWAPExecutor:
     def generate_schedule(
         self, total_size: float, side: str, current_price: float
     ) -> List[OrderSlice]:
-        """Generate TWAP execution schedule."""
+        """
+        Generate TWAP execution schedule.
+
+        Creates equal-sized slices distributed evenly over the
+        execution duration.
+
+        Args:
+            total_size: Total order quantity
+            side: Trade direction ('buy' or 'sell')
+            current_price: Reference price for execution
+
+        Returns:
+            List of OrderSlice objects for execution
+        """
         n_slices = max(4, self.config.duration_minutes // 15)  # Min 15-min intervals
         slice_size = total_size / n_slices  # Equal size per slice
 
@@ -182,7 +373,15 @@ class TWAPExecutor:
         return schedule
 
     def get_next_slice(self, current_time: datetime) -> Optional[OrderSlice]:
-        """Get next slice to execute."""
+        """
+        Get the next slice ready for execution.
+
+        Args:
+            current_time: Current timestamp
+
+        Returns:
+            Next OrderSlice to execute, or None if all complete
+        """
         for slice_order in self.slices:
             if (
                 slice_order.timestamp <= current_time
@@ -192,7 +391,13 @@ class TWAPExecutor:
         return None
 
     def mark_completed(self, slice_order: OrderSlice, actual_price: float):
-        """Mark slice as completed."""
+        """
+        Record execution of a slice.
+
+        Args:
+            slice_order: The executed slice
+            actual_price: Actual execution price
+        """
         self.completed_slices.append(
             {
                 "slice": slice_order,
@@ -206,13 +411,29 @@ class TWAPExecutor:
 
 class VWAPExecutor:
     """
-    Volume-Weighted Average Price execution.
+    Volume-Weighted Average Price (VWAP) execution algorithm.
 
-    Executes proportional to historical volume profile.
-    Best for: Tracking market volume, minimizing tracking error
+    Executes orders proportional to historical volume patterns,
+    trading more during high-volume periods to minimize impact.
+
+    CHARACTERISTICS:
+    --------------
+    - Adapts to intraday volume patterns
+    - Lower tracking error vs market VWAP
+    - Typically U-shaped volume profile (high at open/close)
+
+    VOLUME PROFILE:
+    -------------
+    - Default: U-shaped with 8-10% at open, 6% midday, 10% at close
+    - Can be customized with historical data
+
+    Example:
+        >>> executor = VWAPExecutor(config, volume_profile)
+        >>> schedule = executor.generate_schedule(1.0, "buy", 50000.0)
     """
 
     def __init__(self, config: ExecutionConfig, volume_profile: pd.Series = None):
+        """Initialize VWAP executor with optional custom volume profile."""
         self.config = config
         self.volume_profile = volume_profile or self._default_volume_profile()
         self.slices = []
@@ -220,7 +441,15 @@ class VWAPExecutor:
         logger.info("VWAPExecutor initialized")
 
     def _default_volume_profile(self) -> pd.Series:
-        """Default intraday volume profile (U-shape)."""
+        """
+        Generate default intraday volume profile.
+
+        Returns a U-shaped profile reflecting typical market patterns
+        with higher volume at open and close, lower during midday.
+
+        Returns:
+            Series with hour (0-23) as index and volume fraction as values
+        """
         hours = range(24)
         # U-shaped volume pattern (higher at open and close, lower midday)
         profile = [
@@ -258,7 +487,21 @@ class VWAPExecutor:
         current_price: float,
         start_time: datetime = None,
     ) -> List[OrderSlice]:
-        """Generate VWAP execution schedule."""
+        """
+        Generate VWAP execution schedule.
+
+        Allocates more order size to high-volume periods based on
+        the configured volume profile.
+
+        Args:
+            total_size: Total order quantity
+            side: Trade direction
+            current_price: Reference price
+            start_time: Execution start time (default: now)
+
+        Returns:
+            List of OrderSlice objects
+        """
         if start_time is None:
             start_time = datetime.now()
 
@@ -302,7 +545,14 @@ class VWAPExecutor:
         """
         Calculate VWAP tracking error.
 
-        Measures how well we tracked the market VWAP.
+        Measures how well the execution tracked the market VWAP,
+        a key metric for VWAP algorithm performance.
+
+        Args:
+            execution_prices: List of actual fill prices
+
+        Returns:
+            Tracking error as fraction of market VWAP
         """
         if len(execution_prices) == 0:
             return 0.0
@@ -322,16 +572,30 @@ class SmartOrderRouter:
     """
     Smart Order Routing (SOR) system.
 
-    Routes orders to optimal venues based on:
-    - Price
-    - Liquidity
-    - Fees
-    - Latency
+    Routes orders to optimal venues based on real-time assessment of
+    price, liquidity, fees, and latency.
 
-    Used by: All major hedge funds and banks
+    ROUTING STRATEGIES:
+    ------------------
+    1. COST: Minimize total cost (fees + impact + slippage)
+    2. SPEED: Minimize latency for time-sensitive orders
+    3. LIQUIDITY: Maximize fill probability for large orders
+
+    FEATURES:
+    --------
+    - Multi-venue order splitting
+    - Dark pool routing
+    - Venue health monitoring
+    - Failure handling
+
+    Example:
+        >>> router = SmartOrderRouter()
+        >>> router.add_venue("binance", fees_bps=1.0, latency_ms=50, liquidity_score=0.9)
+        >>> venue = router.route_order(1.0, "buy", urgency=0.5, priority="cost")
     """
 
     def __init__(self):
+        """Initialize the smart order router."""
         self.venues: Dict[str, Dict] = {}
         self.route_history = []
         logger.info("SmartOrderRouter initialized")
@@ -344,7 +608,16 @@ class SmartOrderRouter:
         liquidity_score: float,
         supports_dark_pool: bool = False,
     ):
-        """Add execution venue."""
+        """
+        Add an execution venue to the router.
+
+        Args:
+            venue_id: Unique venue identifier
+            fees_bps: Fees in basis points
+            latency_ms: Typical latency in milliseconds
+            liquidity_score: Liquidity score 0-1
+            supports_dark_pool: Whether venue has dark pool
+        """
         self.venues[venue_id] = {
             "fees_bps": fees_bps,
             "latency_ms": latency_ms,
@@ -360,10 +633,19 @@ class SmartOrderRouter:
         self, order_size: float, side: str, urgency: float = 0.5, priority: str = "cost"
     ) -> str:
         """
-             Route order to best venue.
+        Route order to best venue based on priority.
 
-             Args:
-        priority: 'cost', 'speed', 'liquidity'
+        Evaluates all venues using weighted scoring and returns
+        the highest-scoring venue.
+
+        Args:
+            order_size: Order quantity
+            side: Trade direction
+            urgency: Urgency level 0-1
+            priority: Optimization priority ('cost', 'speed', 'liquidity')
+
+        Returns:
+            Venue ID of selected venue
         """
         if not self.venues:
             return "default"  # Fallback when no venues have been registered
@@ -411,7 +693,16 @@ class SmartOrderRouter:
         """
         Split large order across multiple venues.
 
-        Reduces market impact and increases fill probability.
+        Reduces market impact by distributing order across venues
+        proportional to their liquidity scores.
+
+        Args:
+            order_size: Total order size
+            side: Trade direction
+            n_venues: Number of venues to use
+
+        Returns:
+            Dictionary mapping venue IDs to allocated sizes
         """
         if len(self.venues) < n_venues:
             n_venues = len(self.venues)  # Can't split across more venues than exist
@@ -438,10 +729,32 @@ class ExecutionEngine:
     """
     Main execution engine combining all algorithms.
 
-    Professional-grade execution management system.
+    Professional-grade execution management system that integrates
+    market impact modeling, algorithmic execution, and smart routing.
+
+    FEATURES:
+    --------
+    - Multiple algorithm support (TWAP, VWAP, IS, etc.)
+    - Market impact estimation
+    - Smart order routing
+    - Execution quality metrics
+    - Real-time monitoring
+
+    METRICS TRACKED:
+    ---------------
+    - Fill percentage
+    - Average execution price
+    - Implementation shortfall (bps)
+    - Slippage vs expectation
+
+    Example:
+        >>> engine = ExecutionEngine()
+        >>> config = ExecutionConfig(algo_type=AlgoType.VWAP, duration_minutes=60)
+        >>> result = engine.submit_order("order_001", "BTC", "buy", 1.0, config, 50000.0)
     """
 
     def __init__(self):
+        """Initialize the execution engine with all components."""
         self.impact_model = MarketImpactModel()
         self.router = SmartOrderRouter()
         self.active_orders = {}
@@ -461,7 +774,24 @@ class ExecutionEngine:
         """
         Submit order for algorithmic execution.
 
-        Returns execution plan.
+        Creates an execution plan with scheduled slices, routes
+        to optimal venues, and estimates market impact.
+
+        Args:
+            order_id: Unique order identifier
+            symbol: Trading symbol
+            side: Trade direction ('buy' or 'sell')
+            total_size: Order quantity
+            config: Execution configuration
+            current_price: Current market price
+            market_data: Optional historical data for impact calibration
+
+        Returns:
+            Dictionary containing:
+                - order_id: Order identifier
+                - schedule: List of OrderSlice objects
+                - expected_impact_bps: Expected impact in basis points
+                - first_venue: Initial routing destination
         """
         # Calibrate impact model with latest market data if provided
         if market_data is not None:
@@ -527,7 +857,23 @@ class ExecutionEngine:
         }
 
     def get_execution_metrics(self, order_id: str) -> Dict:
-        """Get execution quality metrics."""
+        """
+        Get execution quality metrics for an order.
+
+        Calculates key execution quality indicators including
+        implementation shortfall vs expected impact.
+
+        Args:
+            order_id: Order identifier
+
+        Returns:
+            Dictionary with metrics:
+                - filled_percentage: Completion ratio
+                - average_price: VWAP of fills
+                - implementation_shortfall_bps: Cost vs arrival price
+                - expected_impact_bps: Predicted impact
+                - slippage_bps: Unexpected cost component
+        """
         if order_id not in self.active_orders:
             return {}
 
@@ -561,7 +907,20 @@ def execute_twap(
     duration_minutes: int = 60,
     max_participation: float = 0.1,
 ) -> Dict:
-    """Simple TWAP execution wrapper."""
+    """
+    Simple TWAP execution wrapper.
+
+    Quick-access function for basic TWAP execution.
+
+    Args:
+        order_size: Order quantity
+        side: Trade direction
+        duration_minutes: Execution duration
+        max_participation: Maximum volume participation
+
+    Returns:
+        Execution schedule dictionary
+    """
     config = ExecutionConfig(
         algo_type=AlgoType.TWAP,
         duration_minutes=duration_minutes,
@@ -578,7 +937,20 @@ def execute_vwap(
     volume_profile: pd.Series = None,
     duration_minutes: int = 60,
 ) -> Dict:
-    """Simple VWAP execution wrapper."""
+    """
+    Simple VWAP execution wrapper.
+
+    Quick-access function for VWAP execution.
+
+    Args:
+        order_size: Order quantity
+        side: Trade direction
+        volume_profile: Custom volume profile (optional)
+        duration_minutes: Execution duration
+
+    Returns:
+        Execution schedule dictionary
+    """
     config = ExecutionConfig(algo_type=AlgoType.VWAP, duration_minutes=duration_minutes)
 
     executor = VWAPExecutor(config, volume_profile)
