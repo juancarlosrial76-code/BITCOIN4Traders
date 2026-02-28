@@ -8,8 +8,11 @@ initial_capital: 100000
 max_position_size: 0.30  # Maximum 30% of capital per position
 
 # Episode Parameters
-max_steps: 1000
-lookback_window: 60
+# max_steps=500: ~3 Wochen Handelsdaten (500h @ 1h-Candles)
+# → jede 2048-Step-Iteration enthält ~4 vollständige Episoden
+# → GRU-Hidden-States werden ~4x zurückgesetzt → gesunde Gradienten
+max_steps: 500
+lookback_window: 50
 
 # Transaction Costs (in basis points)
 transaction_costs:
@@ -31,40 +34,50 @@ orderbook:
   spread_bps: 2              # Bid-ask spread: 0.02%
   depth_multiplier: 2.0      # Volume per level
 
-# Market Regimes
-regime:
-  low_volatility:
-    volatility: 0.01
-    volume: 500
-    trend: 0.0005
-  
-  high_volatility_bull:
-    volatility: 0.03
-    volume: 1500
-    trend: 0.002
-  
-  high_volatility_bear:
-    volatility: 0.04
-    volume: 2000
-    trend: -0.001
+# Market Regimes (key must be 'market' to match config_system.py)
+market:
+  vol_regimes:
+    low_volatility:
+      volatility: 0.01
+      volume: 500
+      trend: 0.0005
+    
+    high_volatility_bull:
+      volatility: 0.03
+      volume: 1500
+      trend: 0.002
+    
+    high_volatility_bear:
+      volatility: 0.04
+      volume: 2000
+      trend: -0.001
 
 # Reward Function Configuration
+# MODIFIED V2: Force Trading - Penalty for Neutral, Reward for Positions
 reward:
   components:
     - name: return
       weight: 2.0
-      description: "Portfolio return (higher weight for profits)"
+      description: "Portfolio return"
     
     - name: sharpe
       weight: 0.5
       description: "Risk-adjusted return"
     
+    - name: position_bonus
+      weight: 1.5
+      description: "NEW: Reward for having ANY position (not neutral)"
+    
+    - name: position_change
+      weight: 0.5
+      description: "NEW: Reward for changing positions"
+    
     - name: drawdown
       weight: -0.5
-      description: "Drawdown penalty (reduced)"
+      description: "Drawdown penalty"
     
     - name: transaction_cost
-      weight: -0.3
+      weight: -0.2  # REDUZIERT: weniger bestrafen
       description: "Trading cost penalty (reduced)"
   
   normalization:
@@ -72,8 +85,10 @@ reward:
     clip_range: [-10, 10]
 
 # Risk Management
-max_drawdown: 0.70              # 70% maximum drawdown (more learning room)
-max_consecutive_losses: 20       # More tolerance for losses
+# TRAINING: bewusst locker – Agent soll aus langen Episoden lernen können.
+# Für Live-Trading: max_drawdown auf 0.15, max_consecutive_losses auf 10 setzen.
+max_drawdown: 0.80              # 80% für Training – Agent braucht Raum zum Lernen
+max_consecutive_losses: 200     # kein vorzeitiger Abbruch während Training
 
 # Data Requirements
 required_features:

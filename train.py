@@ -17,6 +17,11 @@ python train.py --resume data/models/adversarial/checkpoint_iter_100.pth
 
 import argparse
 import sys
+import os
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
+
 import yaml
 from pathlib import Path
 
@@ -75,20 +80,20 @@ def load_data(args):
             if feature_files:
                 logger.info(f"Loading cached features from {feature_files[0]}")
                 features = pd.read_parquet(feature_files[0])
-                
+
                 # Check for feature mismatch (e.g. we added RSI/MACD but cache is old)
                 # Ideally we check columns, but for now let's just warn or refresh if requested.
                 # If force_refresh is False, we assume cache is good.
                 # BUT, main expects a split dict now, not a tuple.
-                
+
                 logger.success(
                     f"Data loaded from cache: {len(price_data)} candles, {len(features.columns)} features"
                 )
-                
+
                 # We must split the cached data too!
                 # Reuse the splitting logic which we'll define below or duplicate for now.
                 # Let's duplicate strictly for safety in this restricted context edit.
-                
+
                 common = price_data.index.intersection(features.index)
                 price_data = price_data.loc[common]
                 features = features.loc[common]
@@ -100,7 +105,7 @@ def load_data(args):
                 return {
                     "train": (price_data.iloc[:train_idx], features.iloc[:train_idx]),
                     "val": (price_data.iloc[train_idx:val_idx], features.iloc[train_idx:val_idx]),
-                    "test": (price_data.iloc[val_idx:], features.iloc[val_idx:])
+                    "test": (price_data.iloc[val_idx:], features.iloc[val_idx:]),
                 }
 
     # Download from exchange using CCXTDataLoader
@@ -183,7 +188,7 @@ def load_data(args):
     # 1. Fit on TRAIN data only
     logger.info("Fitting FeatureEngine on TRAINING set...")
     train_features = engine.fit_transform(train_data)
-    
+
     # 2. Transform Val and Test using Train statistics
     logger.info("Transforming Validation and Test sets...")
     val_features = engine.transform(val_data)
@@ -192,34 +197,32 @@ def load_data(args):
     # Align indexes after feature engine processing (dropping NaNs etc)
     # The engine returns a new dataframe with potentially fewer rows
     # We need to ensure price_data aligns with features for the environment
-    
-    # Common splitting logic
-    def split_data(price_df, feature_df):
-        # Align indexes first
-        common = price_df.index.intersection(feature_df.index)
-        price_df = price_df.loc[common]
-        feature_df = feature_df.loc[common]
 
-        n = len(price_df)
-        train_idx = int(n * 0.70)
-        val_idx = int(n * 0.85)
+    # Build splits dict from already-computed, leakage-free splits
+    splits = {
+        "train": (
+            train_data.loc[train_data.index.intersection(train_features.index)],
+            train_features,
+        ),
+        "val": (val_data.loc[val_data.index.intersection(val_features.index)], val_features),
+        "test": (test_data.loc[test_data.index.intersection(test_features.index)], test_features),
+    }
 
-        return {
-            "train": (price_df.iloc[:train_idx], feature_df.iloc[:train_idx]),
-            "val": (price_df.iloc[train_idx:val_idx], feature_df.iloc[train_idx:val_idx]),
-            "test": (price_df.iloc[val_idx:], feature_df.iloc[val_idx:])
-        }
-
-    splits = split_data(price_data, features)
-
-
-    # Save features if requested (optional)
-    if not train_features.empty:
-        # Saving scaler was handled by engine.fit_transform if save_scaler=True
-        pass
+    # Combine all splits back for the split_data function
+    # (split_data will re-split, but we use pre-split features to avoid leakage)
+    # Instead: directly build the splits dict from already-split data
+    splits = {
+        "train": (
+            train_data.loc[train_data.index.intersection(train_features.index)],
+            train_features,
+        ),
+        "val": (val_data.loc[val_data.index.intersection(val_features.index)], val_features),
+        "test": (test_data.loc[test_data.index.intersection(test_features.index)], test_features),
+    }
 
     logger.success(
-        f"Data prepared: {len(train_features)} train samples"
+        f"Data prepared: {len(train_features)} train, "
+        f"{len(val_features)} val, {len(test_features)} test samples"
     )
 
     return splits
@@ -251,7 +254,7 @@ def create_trainer(env, args):
 
     # Load training config
     config_path = Path(args.config) if args.config else Path("config/training/adversarial.yaml")
-    
+
     if config_path.exists():
         logger.info(f"Loading training config from {config_path}")
         with open(config_path, "r") as f:
@@ -333,10 +336,16 @@ def main():
 
     # Training arguments
     parser.add_argument(
-        "--config", type=str, default="config/training/adversarial.yaml", help="Path to training config"
+        "--config",
+        type=str,
+        default="config/training/adversarial.yaml",
+        help="Path to training config",
     )
     parser.add_argument(
-        "--iterations", type=int, default=None, help="Number of training iterations (overrides config)"
+        "--iterations",
+        type=int,
+        default=None,
+        help="Number of training iterations (overrides config)",
     )
     parser.add_argument(
         "--device",
@@ -345,12 +354,8 @@ def main():
         choices=["cpu", "cuda"],
         help="Device to use",
     )
-    parser.add_argument(
-        "--resume", type=str, default=None, help="Resume from checkpoint"
-    )
-    parser.add_argument(
-        "--eval-only", action="store_true", help="Only evaluate, don't train"
-    )
+    parser.add_argument("--resume", type=str, default=None, help="Resume from checkpoint")
+    parser.add_argument("--eval-only", action="store_true", help="Only evaluate, don't train")
     parser.add_argument(
         "--eval-episodes", type=int, default=100, help="Number of evaluation episodes"
     )

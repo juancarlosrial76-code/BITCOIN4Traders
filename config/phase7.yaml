@@ -14,9 +14,10 @@ symbols:
 api_key:    ""
 api_secret: ""
 
-# ── Model Paths (Phase 5 output) ────────────
-model_checkpoint:      "data/models/ppo_best.pt"
-feature_scaler_path:   "data/features/scaler.pkl"
+# ── Model Paths ─────────────────────────────
+# Phase 3 (data/models/largenet): best raw return (+68.75%, 86% win rate)
+# Phase 4 (data/models/best):     best risk-adjusted (Sharpe 3.33, DD 6.59%)
+model_checkpoint:      "data/models/best"
 
 # ── Risk Management ─────────────────────────
 max_position_usd:       10000    # Max total notional per symbol

@@ -58,9 +58,7 @@ class PPOConfig:
     # Training
     n_epochs: int = 10
     batch_size: int = 64
-    seq_len: int = (
-        10  # Sequence length for recurrent training (if implemented sequentially)
-    )
+    seq_len: int = 10  # Sequence length for recurrent training (if implemented sequentially)
 
     # Regularization
     entropy_coef: float = 0.01
@@ -137,9 +135,7 @@ class BaseNetwork(nn.Module):
                 elif "bias" in name:
                     nn.init.constant_(param.data, 0)
 
-    def forward(
-        self, x: torch.Tensor, hidden: Optional[Union[Tuple, torch.Tensor]] = None
-    ):
+    def forward(self, x: torch.Tensor, hidden: Optional[Union[Tuple, torch.Tensor]] = None):
         """
         Forward pass.
         x: (batch_size, state_dim) or (batch_size, seq_len, state_dim)
@@ -207,17 +203,13 @@ class PPOAgent:
 
         # Optimizers & Schedulers
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=config.actor_lr)
-        self.critic_optimizer = optim.Adam(
-            self.critic.parameters(), lr=config.critic_lr
-        )
+        self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=config.critic_lr)
 
         self.actor_scheduler = None
         self.critic_scheduler = None
 
         if config.use_lr_decay:
-            self.actor_scheduler = ExponentialLR(
-                self.actor_optimizer, gamma=config.lr_decay_gamma
-            )
+            self.actor_scheduler = ExponentialLR(self.actor_optimizer, gamma=config.lr_decay_gamma)
             self.critic_scheduler = ExponentialLR(
                 self.critic_optimizer, gamma=config.lr_decay_gamma
             )
@@ -250,17 +242,17 @@ class PPOAgent:
 
         if self.config.rnn_type == "LSTM":
             return (
-                torch.zeros(
-                    self.config.rnn_layers, batch_size, self.config.hidden_dim
-                ).to(self.device),
-                torch.zeros(
-                    self.config.rnn_layers, batch_size, self.config.hidden_dim
-                ).to(self.device),
+                torch.zeros(self.config.rnn_layers, batch_size, self.config.hidden_dim).to(
+                    self.device
+                ),
+                torch.zeros(self.config.rnn_layers, batch_size, self.config.hidden_dim).to(
+                    self.device
+                ),
             )
         else:  # GRU
-            return torch.zeros(
-                self.config.rnn_layers, batch_size, self.config.hidden_dim
-            ).to(self.device)
+            return torch.zeros(self.config.rnn_layers, batch_size, self.config.hidden_dim).to(
+                self.device
+            )
 
     def select_action(
         self,
@@ -272,9 +264,7 @@ class PPOAgent:
         Select action given state.
         Returns: action, log_prob, value, next_hidden
         """
-        state_tensor = (
-            torch.FloatTensor(state).unsqueeze(0).to(self.device)
-        )  # (1, state_dim)
+        state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)  # (1, state_dim)
 
         # Switch to eval mode for deterministic inference (disables dropout)
         training_mode = self.actor.training
@@ -364,10 +354,7 @@ class PPOAgent:
                 + self.config.gamma * values[t + 1] * (1 - self.dones[t])
                 - values[t]
             )
-            gae = (
-                delta
-                + self.config.gamma * self.config.gae_lambda * (1 - self.dones[t]) * gae
-            )
+            gae = delta + self.config.gamma * self.config.gae_lambda * (1 - self.dones[t]) * gae
             advantages.insert(0, gae)
 
         advantages = np.array(advantages)
@@ -411,6 +398,7 @@ class PPOAgent:
 
         for epoch in range(self.config.n_epochs):
             np.random.shuffle(indices)
+            epoch_kls = []  # KL nur für diese Epoche messen
 
             for start_idx in range(0, dataset_size, self.config.batch_size):
                 end_idx = min(start_idx + self.config.batch_size, dataset_size)
@@ -489,12 +477,8 @@ class PPOAgent:
                 self.critic_optimizer.zero_grad()
                 loss.backward()
 
-                nn.utils.clip_grad_norm_(
-                    self.actor.parameters(), self.config.max_grad_norm
-                )
-                nn.utils.clip_grad_norm_(
-                    self.critic.parameters(), self.config.max_grad_norm
-                )
+                nn.utils.clip_grad_norm_(self.actor.parameters(), self.config.max_grad_norm)
+                nn.utils.clip_grad_norm_(self.critic.parameters(), self.config.max_grad_norm)
 
                 self.actor_optimizer.step()
                 self.critic_optimizer.step()
@@ -506,9 +490,11 @@ class PPOAgent:
                 with torch.no_grad():
                     kl = (batch_old_log_probs - log_probs).mean()
                     kl_divergences.append(kl.item())
+                    epoch_kls.append(kl.item())
 
-            if np.mean(kl_divergences) > self.config.target_kl:
-                logger.info(f"Early stopping at epoch {epoch + 1}")
+            # Early stopping nur auf KL dieser Epoche prüfen (nicht kumulativ)
+            if np.mean(epoch_kls) > self.config.target_kl:
+                logger.debug(f"Early stopping at epoch {epoch + 1} (KL={np.mean(epoch_kls):.4f})")
                 break
 
         # Step Schedulers
@@ -543,9 +529,7 @@ class PPOAgent:
         checkpoint = torch.load(path, map_location=self.device)
 
         # Adapt weights if dimensions changed (e.g. removed reserved features)
-        actor_state = self._adapt_state_dict(
-            checkpoint["actor"], self.actor.state_dict(), "actor"
-        )
+        actor_state = self._adapt_state_dict(checkpoint["actor"], self.actor.state_dict(), "actor")
         critic_state = self._adapt_state_dict(
             checkpoint["critic"], self.critic.state_dict(), "critic"
         )
@@ -554,9 +538,7 @@ class PPOAgent:
         self.critic.load_state_dict(critic_state)
         logger.info(f"Agent loaded from {path}")
 
-    def _adapt_state_dict(
-        self, saved_state: Dict, current_state: Dict, name: str
-    ) -> Dict:
+    def _adapt_state_dict(self, saved_state: Dict, current_state: Dict, name: str) -> Dict:
         """Adapt state dict if input dimensions match (handling removed features)."""
         adapted_state = saved_state.copy()
 

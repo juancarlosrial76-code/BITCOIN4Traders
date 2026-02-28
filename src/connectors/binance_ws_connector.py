@@ -31,17 +31,22 @@ logger = logging.getLogger("phase7.ws_connector")
 #  Error Taxonomy
 # ─────────────────────────────────────────────
 
+
 class ConnectorError(Exception):
     """Base class for all connector errors."""
+
 
 class AuthenticationError(ConnectorError):
     """Invalid API key or signature."""
 
+
 class RateLimitError(ConnectorError):
     """429 / 418 from Binance – back off immediately."""
 
+
 class SubscriptionError(ConnectorError):
     """Failed to subscribe/unsubscribe a stream."""
+
 
 class ConnectionLostError(ConnectorError):
     """WebSocket connection unexpectedly closed."""
@@ -51,30 +56,33 @@ class ConnectionLostError(ConnectorError):
 #  Connection State Machine
 # ─────────────────────────────────────────────
 
+
 class ConnState(Enum):
     DISCONNECTED = auto()
-    CONNECTING   = auto()
-    CONNECTED    = auto()
+    CONNECTING = auto()
+    CONNECTED = auto()
     RECONNECTING = auto()
-    CLOSING      = auto()
-    CLOSED       = auto()
+    CLOSING = auto()
+    CLOSED = auto()
 
 
 # ─────────────────────────────────────────────
 #  Reconnect Config
 # ─────────────────────────────────────────────
 
+
 @dataclass
 class ReconnectPolicy:
-    max_attempts:   int   = 10
-    base_delay_s:   float = 1.0
-    max_delay_s:    float = 60.0
+    max_attempts: int = 10
+    base_delay_s: float = 1.0
+    max_delay_s: float = 60.0
     backoff_factor: float = 2.0
-    jitter:         bool  = True           # add ±20 % random jitter
+    jitter: bool = True  # add ±20 % random jitter
 
     def delay(self, attempt: int) -> float:
         import random
-        d = min(self.base_delay_s * (self.backoff_factor ** attempt), self.max_delay_s)
+
+        d = min(self.base_delay_s * (self.backoff_factor**attempt), self.max_delay_s)
         if self.jitter:
             d *= random.uniform(0.8, 1.2)
         return d
@@ -85,6 +93,7 @@ class ReconnectPolicy:
 # ─────────────────────────────────────────────
 
 Handler = Callable[[dict], Coroutine]
+
 
 class HandlerRegistry:
     def __init__(self):
@@ -110,40 +119,43 @@ class HandlerRegistry:
 #  Core Connector
 # ─────────────────────────────────────────────
 
+
 class BinanceWSConnector:
     """
     Single multiplexed WebSocket to Binance combined stream endpoint.
     Manages: connection lifecycle, subscriptions, reconnect, heartbeat.
     """
 
-    _BASE_URL    = "wss://stream.binance.com:9443/stream"
-    _REST_BASE   = "https://api.binance.com"
-    _LISTEN_KEY_REFRESH_INTERVAL = 1_800        # 30 min in seconds
+    _BASE_URL = "wss://stream.binance.com:9443/stream"
+    _REST_BASE = "https://api.binance.com"
+    _LISTEN_KEY_REFRESH_INTERVAL = 1_800  # 30 min in seconds
 
     def __init__(
         self,
-        api_key:          str,
-        api_secret:       str,
+        api_key: str,
+        api_secret: str,
         reconnect_policy: Optional[ReconnectPolicy] = None,
+        paper_trading: bool = False,
     ):
-        self._api_key    = api_key
+        self._api_key = api_key
         self._api_secret = api_secret
-        self._policy     = reconnect_policy or ReconnectPolicy()
+        self._policy = reconnect_policy or ReconnectPolicy()
+        self._paper = paper_trading
 
-        self._state      = ConnState.DISCONNECTED
+        self._state = ConnState.DISCONNECTED
         self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
-        self._session: Optional[aiohttp.ClientSession]      = None
+        self._session: Optional[aiohttp.ClientSession] = None
 
         self._subscriptions: Set[str] = set()
         self._registry = HandlerRegistry()
 
         self._reconnect_attempts = 0
         self._listen_key: Optional[str] = None
-        self._req_id   = 0
+        self._req_id = 0
 
-        self._recv_task:  Optional[asyncio.Task] = None
-        self._hb_task:    Optional[asyncio.Task] = None
-        self._lk_task:    Optional[asyncio.Task] = None
+        self._recv_task: Optional[asyncio.Task] = None
+        self._hb_task: Optional[asyncio.Task] = None
+        self._lk_task: Optional[asyncio.Task] = None
 
     # ── Properties ──────────────────────────
 
@@ -208,7 +220,7 @@ class BinanceWSConnector:
         try:
             self._ws = await self._session.ws_connect(
                 url,
-                heartbeat=20,           # aiohttp sends ping every 20 s
+                heartbeat=20,  # aiohttp sends ping every 20 s
                 receive_timeout=30,
             )
             self._state = ConnState.CONNECTED
@@ -217,7 +229,7 @@ class BinanceWSConnector:
 
             # (Re-)start background tasks
             self._recv_task = asyncio.create_task(self._recv_loop(), name="ws_recv")
-            self._hb_task   = asyncio.create_task(self._heartbeat_loop(), name="ws_hb")
+            self._hb_task = asyncio.create_task(self._heartbeat_loop(), name="ws_hb")
 
             # User data stream
             await self._start_user_stream()
@@ -231,7 +243,9 @@ class BinanceWSConnector:
             return
         if self._reconnect_attempts >= self._policy.max_attempts:
             self._state = ConnState.CLOSED
-            logger.critical("Max reconnect attempts (%d) reached. Giving up.", self._policy.max_attempts)
+            logger.critical(
+                "Max reconnect attempts (%d) reached. Giving up.", self._policy.max_attempts
+            )
             raise ConnectionLostError("Exceeded max reconnect attempts.")
 
         self._state = ConnState.RECONNECTING
@@ -239,7 +253,9 @@ class BinanceWSConnector:
         self._reconnect_attempts += 1
         logger.warning(
             "Reconnecting in %.1f s (attempt %d/%d)…",
-            delay, self._reconnect_attempts, self._policy.max_attempts
+            delay,
+            self._reconnect_attempts,
+            self._policy.max_attempts,
         )
         await asyncio.sleep(delay)
         await self._do_connect()
@@ -290,13 +306,18 @@ class BinanceWSConnector:
         while self._state == ConnState.CONNECTED:
             try:
                 await asyncio.sleep(60)
-                logger.debug("Heartbeat OK – state=%s, subs=%d", self._state, len(self._subscriptions))
+                logger.debug(
+                    "Heartbeat OK – state=%s, subs=%d", self._state, len(self._subscriptions)
+                )
             except asyncio.CancelledError:
                 return
 
     # ── Private: User Data Stream ───────────
 
     async def _start_user_stream(self) -> None:
+        if self._paper:
+            logger.info("[PAPER] User data stream übersprungen (Paper-Trading-Modus).")
+            return
         try:
             self._listen_key = await self._create_listen_key()
             await self.subscribe([self._listen_key])
@@ -322,11 +343,11 @@ class BinanceWSConnector:
 
     def _sign(self, params: dict) -> str:
         query = urllib.parse.urlencode(params)
-        return hmac.new(
-            self._api_secret.encode(), query.encode(), hashlib.sha256
-        ).hexdigest()
+        return hmac.new(self._api_secret.encode(), query.encode(), hashlib.sha256).hexdigest()
 
-    async def _rest_post(self, path: str, params: Optional[dict] = None, signed: bool = False) -> dict:
+    async def _rest_post(
+        self, path: str, params: Optional[dict] = None, signed: bool = False
+    ) -> dict:
         params = params or {}
         headers = {"X-MBX-APIKEY": self._api_key}
         if signed:

@@ -74,9 +74,7 @@ class ConfigIntegratedTradingEnv(gym.Env):
         self.price_data = price_data.loc[common_index]
         self.features = features.loc[common_index]
 
-        logger.info(
-            f"ConfigIntegratedTradingEnv initialized: {len(self.price_data)} steps"
-        )
+        logger.info(f"ConfigIntegratedTradingEnv initialized: {len(self.price_data)} steps")
         logger.info(f"  Type: {config.type}")
         logger.info(f"  Maker Fee: {config.transaction_costs.maker_fee_bps} bps")
         logger.info(f"  Taker Fee: {config.transaction_costs.taker_fee_bps} bps")
@@ -130,9 +128,7 @@ class ConfigIntegratedTradingEnv(gym.Env):
         self.risk_metrics = RiskMetricsLogger(lookback=50, risk_free_rate=0.0)
 
         logger.info("Risk Management initialized")
-        logger.info(
-            f"  Max drawdown: {risk_config.max_drawdown_per_session * 100:.1f}%"
-        )
+        logger.info(f"  Max drawdown: {risk_config.max_drawdown_per_session * 100:.1f}%")
         logger.info(f"  Max position: {risk_config.max_position_size * 100:.0f}%")
 
     def _init_spaces(self):
@@ -171,20 +167,18 @@ class ConfigIntegratedTradingEnv(gym.Env):
         """Reset environment."""
         super().reset(seed=seed)
 
-        # Random start
-        max_start = (
-            len(self.price_data) - self.config.max_steps - self.config.lookback_window
-        )
+        # Random start – Episode endet nach max_steps Schritten
+        max_start = len(self.price_data) - self.config.max_steps - self.config.lookback_window
         self.current_step = np.random.randint(
             self.config.lookback_window, max(self.config.lookback_window + 1, max_start)
         )
+        self._episode_start_step = self.current_step  # für max_steps-Terminierung
 
         # Reset state
         self.position = 0.0
         self.cash = self.config.initial_capital
         self.shares = 0.0
         self.equity_history = [self.config.initial_capital]
-        self.trade_history = []
         self.trade_history = []
         # self.consecutive_losses is now tracked by self.risk_manager
 
@@ -275,10 +269,14 @@ class ConfigIntegratedTradingEnv(gym.Env):
         # Move to next step
         self.current_step += 1
 
-        # Check episode end
+        # Check episode end: Dateiende ODER max_steps erreicht
+        steps_in_episode = self.current_step - self._episode_start_step
         if self.current_step >= len(self.price_data) - 1:
             terminated = True
             truncated = False
+        elif steps_in_episode >= self.config.max_steps:
+            terminated = False
+            truncated = True  # Episode zeitlich begrenzt (nicht durch Verlust)
         else:
             terminated = False
             truncated = False
@@ -394,9 +392,7 @@ class ConfigIntegratedTradingEnv(gym.Env):
             )
             position_value = adjusted_position_value
             # Recalculate target position based on adjusted value
-            adjusted_target = np.sign(target_position) * (
-                adjusted_position_value / current_equity
-            )
+            adjusted_target = np.sign(target_position) * (adjusted_position_value / current_equity)
             target_position = adjusted_target
             position_change = target_position - self.position
 
@@ -430,9 +426,7 @@ class ConfigIntegratedTradingEnv(gym.Env):
         # Generate order book if enabled
         if self.config.orderbook.enabled and self.orderbook_sim:
             bid_prices, bid_volumes, ask_prices, ask_volumes = (
-                self.orderbook_sim.generate_order_book(
-                    current_price, volatility, current_volume
-                )
+                self.orderbook_sim.generate_order_book(current_price, volatility, current_volume)
             )
 
             costs = self.cost_model.calculate_total_cost_enhanced(
@@ -525,9 +519,7 @@ class ConfigIntegratedTradingEnv(gym.Env):
                         self.equity_history[-lookback:-1]
                     )
                     sharpe = np.mean(returns) / (np.std(returns) + 1e-8) * np.sqrt(252)
-                    components_values["sharpe"] = np.clip(
-                        sharpe * comp.weight, -0.5, 0.5
-                    )
+                    components_values["sharpe"] = np.clip(sharpe * comp.weight, -0.5, 0.5)
                 else:
                     components_values["sharpe"] = 0.0
 
@@ -538,10 +530,35 @@ class ConfigIntegratedTradingEnv(gym.Env):
 
             elif comp.name == "transaction_cost":
                 # Cost penalty
-                cost_penalty = (
-                    trade_info.get("cost", 0.0) / old_equity if old_equity > 0 else 0.0
-                )
+                cost_penalty = trade_info.get("cost", 0.0) / old_equity if old_equity > 0 else 0.0
                 components_values["transaction_cost"] = -cost_penalty * comp.weight
+
+            elif comp.name == "direction_change":
+                # Symmetric reward for position changes (regardless of direction)
+                old_position = trade_info.get("old_position", 0)
+                new_position = trade_info.get("new_position", 0)
+                position_change = abs(new_position - old_position)
+                components_values["direction_change"] = position_change * comp.weight * 0.1
+
+            elif comp.name == "position_bonus":
+                # NEW: Reward for having ANY position (not neutral)
+                # This forces the agent to trade!
+                current_position = trade_info.get("new_position", 0)
+                if abs(current_position) > 0.1:  # If position > 10%
+                    components_values["position_bonus"] = abs(current_position) * comp.weight
+                else:
+                    components_values["position_bonus"] = -0.5 * comp.weight  # Penalty for neutral
+
+            elif comp.name == "position_change":
+                # NEW: Reward for changing positions
+                old_position = trade_info.get("old_position", 0)
+                new_position = trade_info.get("new_position", 0)
+                if abs(new_position - old_position) > 0.1:
+                    components_values["position_change"] = (
+                        abs(new_position - old_position) * comp.weight
+                    )
+                else:
+                    components_values["position_change"] = 0
 
         # Sum all components
         reward = sum(components_values.values())
@@ -635,8 +652,7 @@ class ConfigIntegratedTradingEnv(gym.Env):
             "position": self.position,
             "equity": current_equity,
             "cash": self.cash,
-            "return": (current_equity - self.config.initial_capital)
-            / self.config.initial_capital,
+            "return": (current_equity - self.config.initial_capital) / self.config.initial_capital,
             "n_trades": len(self.trade_history),
             "drawdown": self._calculate_drawdown(),
             "regime": self.current_regime.name,
@@ -720,10 +736,7 @@ if __name__ == "__main__":
     from environment.config_system import load_environment_config_from_yaml
 
     config_path = (
-        Path(__file__).parent.parent.parent
-        / "config"
-        / "environment"
-        / "realistic_env.yaml"
+        Path(__file__).parent.parent.parent / "config" / "environment" / "realistic_env.yaml"
     )
 
     if config_path.exists():

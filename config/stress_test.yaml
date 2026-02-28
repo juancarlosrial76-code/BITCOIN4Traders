@@ -1,0 +1,18 @@
+scenarios:
+  flash_crash:
+    enabled: true
+    drop_pct: 0.20
+    duration_candles: 5
+    v_shaped_recovery: true
+  volatility_spike:
+    enabled: true
+    multiplier: 3.0
+  liquidity_crunch:
+    enabled: true
+    slippage_multiplier: 10.0
+elite_criteria:
+  max_drawdown_limit: -0.15
+  min_sharpe_ratio: 1.0
+  min_profit_factor: 1.1
+application:
+  stress_data_pct: 0.10

@@ -152,21 +152,23 @@ class EngineMonitor:
         telegram: Optional[TelegramNotifier] = None,
         metrics_port: int = 9090,
         dashboard_interval_s: int = 30,
+        paper_trading: bool = False,
     ):
         self._telegram = telegram
         self._metrics = EngineMetrics()
         self._dashboard_interval = dashboard_interval_s
         self._dashboard_task: Optional[asyncio.Task] = None
         self._metrics_task: Optional[asyncio.Task] = None
+        self._paper = paper_trading
+        # Wird vom Engine gesetzt nach dem Start
+        self._engine_ref = None
 
     # ── Lifecycle ───────────────────────────
 
     async def start(self) -> None:
         if self._telegram:
             await self._telegram.start()
-        self._dashboard_task = asyncio.create_task(
-            self._dashboard_loop(), name="dashboard"
-        )
+        self._dashboard_task = asyncio.create_task(self._dashboard_loop(), name="dashboard")
         logger.info("Monitor started.")
         self.alert(AlertLevel.INFO, "Phase 7 Live Engine started ✅")
 
@@ -218,11 +220,7 @@ class EngineMonitor:
     # ── Alerting ─────────────────────────────
 
     def alert(self, level: str, message: str) -> None:
-        log_fn = (
-            logger.info
-            if level in (AlertLevel.INFO, AlertLevel.FILL)
-            else logger.warning
-        )
+        log_fn = logger.info if level in (AlertLevel.INFO, AlertLevel.FILL) else logger.warning
         log_fn("[ALERT %s] %s", level, message)
         if self._telegram:
             self._telegram.send(level, message)
@@ -243,9 +241,12 @@ class EngineMonitor:
         m = self._metrics
         total_pnl = m.realized_pnl_usd + m.unrealized_pnl_usd
         pnl_sign = "+" if total_pnl >= 0 else ""
+
+        mode_label = "[PAPER] " if self._paper else ""
+
         logger.info(
             "\n┌─────────────────────────────────────────┐\n"
-            "│         PHASE 7  │  LIVE DASHBOARD       │\n"
+            "│    PHASE 7  │  %sLIVE DASHBOARD       │\n"
             "├─────────────────────────────────────────┤\n"
             "│ Ticks:    %-8d  Orders:  %-10d │\n"
             "│ Fills:    %-8d  Cancels: %-10d │\n"
@@ -253,6 +254,7 @@ class EngineMonitor:
             "│ Total PnL: %s$%-9.2f  CB Trips: %-6d│\n"
             "│ WS Reconnects: %-6d                    │\n"
             "└─────────────────────────────────────────┘",
+            mode_label,
             m.ticks_processed,
             m.orders_submitted,
             m.total_fills,
@@ -264,6 +266,44 @@ class EngineMonitor:
             m.circuit_breaker_trips,
             m.ws_reconnects,
         )
+
+        # Positionen aus Engine ausgeben (Paper-Trading)
+        if self._paper and self._engine_ref is not None:
+            self._print_paper_positions()
+
+    def attach_engine(self, engine) -> None:
+        """Referenz auf den Engine für Positions-Reporting."""
+        self._engine_ref = engine
+
+    def _print_paper_positions(self) -> None:
+        try:
+            from src.orders.paper_order_manager import PaperOrderManager
+
+            engine = self._engine_ref
+            oms = engine._oms
+            if not isinstance(oms, PaperOrderManager):
+                return
+            cash = float(oms.cash)
+            lines = ["\n[PAPER] ══ POSITIONEN ══════════════════════"]
+            lines.append(f"  Kasse:   ${cash:>12.2f}")
+            total_pos_value = 0.0
+            for symbol, pos in engine._positions.items():
+                if pos.qty != 0:
+                    px = float(engine._last_prices.get(symbol, 0))
+                    unreal = float(pos.unrealized_pnl(engine._last_prices.get(symbol, Decimal(0))))
+                    real = float(pos.realized_pnl)
+                    val = float(pos.qty) * px
+                    total_pos_value += val
+                    lines.append(
+                        f"  {symbol:<10} qty={float(pos.qty):>+10.5f}  "
+                        f"@avg={float(pos.avg_cost):>10.2f}  "
+                        f"unreal={unreal:>+8.2f}  real={real:>+8.2f}"
+                    )
+            lines.append(f"  Gesamt-Equity: ${cash + total_pos_value:>10.2f}")
+            lines.append("[PAPER] ════════════════════════════════════")
+            logger.info("\n".join(lines))
+        except Exception as exc:
+            logger.debug("Paper position print Fehler: %s", exc)
 
     @property
     def metrics(self) -> EngineMetrics:

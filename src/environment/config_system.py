@@ -171,15 +171,34 @@ class MarketConfig:
 
     def get_regime(self, regime_name: str) -> MarketRegime:
         """Get market regime by name."""
+        # Fallback: first available regime, then hardcoded defaults
+        _first_vol = next(iter(self.vol_regimes.values()), 0.02) if self.vol_regimes else 0.02
+        _first_vol = (
+            _first_vol if not isinstance(_first_vol, dict) else _first_vol.get("volatility", 0.02)
+        )
+        _first_vol_full = self.vol_regimes.get(
+            regime_name, next(iter(self.vol_regimes.values()), {})
+        )
+        if isinstance(_first_vol_full, dict):
+            vol = _first_vol_full.get("volatility", 0.02)
+        else:
+            vol = float(_first_vol_full) if _first_vol_full else 0.02
+
+        _first_vol_map = self.vol_regimes.get(
+            regime_name, next(iter(self.vol_regimes.values()), {})
+        )
+        volume = (
+            _first_vol_map.get("volume", 500.0)
+            if isinstance(_first_vol_map, dict)
+            else self.volume_patterns.get(regime_name, 500.0)
+        )
+        spread = self.spread_patterns.get(regime_name, 5.0)
+
         return MarketRegime(
             name=regime_name,
-            volatility=self.vol_regimes.get(regime_name, self.vol_regimes["normal"]),
-            volume=self.volume_patterns.get(
-                regime_name, self.volume_patterns["normal"]
-            ),
-            spread=self.spread_patterns.get(
-                regime_name, self.spread_patterns["normal"]
-            ),
+            volatility=vol,
+            volume=volume,
+            spread=spread,
         )
 
 
@@ -211,9 +230,7 @@ class EnvironmentConfig:
     normalize_observations: bool = True
 
     # Sub-configs (NEW!)
-    transaction_costs: TransactionCostConfig = field(
-        default_factory=TransactionCostConfig
-    )
+    transaction_costs: TransactionCostConfig = field(default_factory=TransactionCostConfig)
     slippage: SlippageConfig = field(default_factory=SlippageConfig)
     orderbook: OrderBookConfig = field(default_factory=OrderBookConfig)
     reward: RewardConfig = field(default_factory=RewardConfig)
@@ -338,10 +355,7 @@ if __name__ == "__main__":
 
     # Test loading from YAML
     config_path = (
-        Path(__file__).parent.parent.parent
-        / "config"
-        / "environment"
-        / "realistic_env.yaml"
+        Path(__file__).parent.parent.parent / "config" / "environment" / "realistic_env.yaml"
     )
 
     if config_path.exists():
