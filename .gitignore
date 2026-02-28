@@ -82,6 +82,11 @@ tmp/
 temp/
 *.tmp
 
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
 # German documentation (local only, never push to GitHub)
 BITCOIN4Traders-DE-DOKU/
 ../BITCOIN4Traders-DE-DOKU/

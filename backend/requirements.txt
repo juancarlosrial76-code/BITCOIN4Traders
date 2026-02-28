@@ -1,0 +1,27 @@
+# Backend API
+fastapi==0.109.0
+uvicorn==0.27.0
+websockets==12.0
+pydantic==2.5.3
+python-dotenv==1.0.0
+python-multipart==0.0.6
+
+# Auth
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# System-Metriken (echte CPU/RAM Werte)
+psutil>=5.9.0
+
+# Darwin Engine Dependencies
+numpy>=1.24.0
+pandas>=2.0.0
+scipy>=1.10.0
+scikit-learn>=1.3.0
+torch>=2.0.0
+loguru>=0.7.0
+tqdm>=4.65.0
+joblib>=1.3.0
+
+# Binance (optional - für Live-Trading)
+ccxt>=4.0.0
