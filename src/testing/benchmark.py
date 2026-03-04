@@ -268,6 +268,8 @@ class ModelBenchmark:
         self.model = model
         self.n_actions = n_actions
         self.deterministic = deterministic
+        # Per-episode recurrent hidden state (set in _run_episode)
+        self._hidden: Any = None
 
     # ------------------------------------------------------------------ #
     # Public API                                                           #
@@ -405,6 +407,9 @@ class ModelBenchmark:
 
         obs, _ = self._safe_reset(**reset_kwargs)
 
+        # Reset recurrent hidden state for PPOAgent-style models
+        self._hidden = self._get_initial_hidden()
+
         initial_equity = self._get_equity()
         peak_equity = initial_equity
         min_equity = initial_equity
@@ -441,27 +446,50 @@ class ModelBenchmark:
             "action_counts": action_counts,
         }
 
+    def _get_initial_hidden(self) -> Any:
+        """Return initial hidden state for recurrent models, or None."""
+        if hasattr(self.model, "get_initial_hidden_state"):
+            try:
+                return self.model.get_initial_hidden_state()
+            except Exception:
+                pass
+        return None
+
     def _predict(self, obs: Any) -> int:
         """
-        Call model.predict() with graceful fallback for different APIs.
+        Call model with graceful fallback for different agent APIs.
 
         Supports:
+        - PPOAgent (BITCOIN4Traders): select_action(obs, hidden, deterministic)
+          → (action, log_prob, value, hidden)
         - SB3-style: model.predict(obs, deterministic=True) → (action, state)
         - Simple:    model.predict(obs) → action (int or array)
         """
+        # ── PPOAgent (select_action API) ──────────────────────────────────
+        if hasattr(self.model, "select_action"):
+            try:
+                action, _log_prob, _value, self._hidden = self.model.select_action(
+                    obs,
+                    hidden=self._hidden,
+                    deterministic=self.deterministic,
+                )
+                if hasattr(action, "item"):
+                    action = action.item()
+                return int(action)
+            except Exception:
+                pass  # Fall through to generic path
+
+        # ── Generic predict() API (SB3, custom) ───────────────────────────
         try:
             result = self.model.predict(obs, deterministic=self.deterministic)
-            # SB3 returns (action, state) tuple
             if isinstance(result, tuple):
                 action = result[0]
             else:
                 action = result
         except TypeError:
-            # Model doesn't accept deterministic kwarg
             result = self.model.predict(obs)
             action = result[0] if isinstance(result, tuple) else result
 
-        # Unwrap numpy scalars / arrays
         if hasattr(action, "item"):
             action = action.item()
         return int(action)
