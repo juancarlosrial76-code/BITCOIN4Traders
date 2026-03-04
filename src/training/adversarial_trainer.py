@@ -814,10 +814,13 @@ class AdversarialTrainer:
         """
         logger.info("Starting adversarial training...")
         _use_vec = vec_env is not None
-        if _use_vec:
-            _steps_per_env = steps_per_env or (
-                self.config.steps_per_iteration // vec_env.n_envs
-            )
+        # _steps_per_env: always defined before the loop so Pyright doesn't complain
+        _n_envs: int = vec_env.n_envs if (_use_vec and vec_env is not None) else 1
+        _steps_per_env: int = (
+            (steps_per_env or (self.config.steps_per_iteration // _n_envs))
+            if _use_vec
+            else self.config.steps_per_iteration
+        )
             logger.warning(
                 f"VecEnv mode: {vec_env.n_envs} envs x {_steps_per_env} steps "
                 f"= {vec_env.n_envs * _steps_per_env} steps/iter | adversary DISABLED"
