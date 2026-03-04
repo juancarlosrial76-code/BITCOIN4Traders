@@ -342,6 +342,83 @@ class FeatureEngine:
 
         return df
 
+    def transform_single(
+        self,
+        symbol: str,
+        price: float,
+        buffer_size: int = 100,
+    ) -> Optional[np.ndarray]:
+        """
+        Live-Tick-Transform: puffert eingehende Preise und gibt den neuesten
+        Feature-Vektor zurueck sobald genug History vorhanden ist.
+
+        Wird von LiveExecutionEngine._on_tick() aufgerufen — ein Preis-Tick
+        auf einmal.  Der interne Ringpuffer haelt die letzten ``buffer_size``
+        Schluss-Preise und konstruiert daraus einen minimalen OHLCV-DataFrame
+        (Open=High=Low=Close=price, Volume=0) fuer transform().
+
+        Parameters
+        ----------
+        symbol : str
+            Handelspaar (z.B. 'BTCUSDT') — trennt Buffer pro Symbol.
+        price : float
+            Aktueller Mid-Preis des Ticks.
+        buffer_size : int
+            Mindest-History fuer eine valide Feature-Berechnung.
+            Muss groesser sein als das laengste rolling-Fenster (50).
+
+        Returns
+        -------
+        np.ndarray  shape (n_features,)  — Feature-Vektor des aktuellen Ticks,
+                    oder None wenn noch nicht genug History gesammelt wurde.
+        """
+        if not self.is_fitted:
+            raise RuntimeError("FeatureEngine not fitted. Call fit_transform() first.")
+
+        # Pro-Symbol Ringpuffer initialisieren
+        if not hasattr(self, "_live_buffers"):
+            self._live_buffers: Dict[str, list] = {}
+        buf = self._live_buffers.setdefault(symbol, [])
+        buf.append(float(price))
+
+        # Noch nicht genug History
+        if len(buf) < buffer_size:
+            return None
+
+        # Nur die letzten buffer_size Preise behalten (Speicher begrenzen)
+        if len(buf) > buffer_size:
+            self._live_buffers[symbol] = buf[-buffer_size:]
+            buf = self._live_buffers[symbol]
+
+        # Minimalen OHLCV-DataFrame aus Close-Prices konstruieren
+        prices = np.array(buf, dtype=np.float64)
+        df_live = pd.DataFrame(
+            {
+                "open": prices,
+                "high": prices,
+                "low": prices,
+                "close": prices,
+                "volume": np.zeros(len(prices)),
+            }
+        )
+
+        # Durch den normalen transform()-Pfad schicken (nutzt Train-Statistiken)
+        try:
+            df_feat = self.transform(df_live)
+        except Exception as e:
+            logger.debug(f"transform_single({symbol}): transform failed: {e}")
+            return None
+
+        # Letzten Feature-Vektor (aktueller Tick) als numpy-Array zurueckgeben
+        feature_cols = self._get_feature_columns(df_feat)
+        last_row = df_feat[feature_cols].iloc[-1].values.astype(np.float32)
+
+        # NaN-Check: falls noch Indikatoren warm laufen
+        if np.any(np.isnan(last_row)):
+            return None
+
+        return last_row
+
     def _compute_raw_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Compute raw technical indicators from OHLCV data.
@@ -538,7 +615,7 @@ class FeatureEngine:
             df = df.iloc[max_window:]
 
         elif self.config.dropna_strategy == "forward_fill":
-            df = df.fillna(method="ffill")
+            df = df.ffill()  # Fix #9: fillna(method='ffill') deprecated in Pandas 2.x
 
         elif self.config.dropna_strategy == "drop_all":
             df = df.dropna()

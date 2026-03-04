@@ -416,6 +416,26 @@ class LiveExecutionEngine:
         logger.info("═══ PHASE 7 LIVE ENGINE STARTING ═══")
         await self._oms.start()  # Initialize order manager (REST session, etc.)
 
+        # Fix #8: Fetch initial cash balance from exchange so circuit breaker
+        # has a correct starting equity instead of always reading 0.
+        if not self._paper:
+            try:
+                balances = self._connector.get_account_balance()
+                usdt = balances.get("USDT")
+                if usdt is not None:
+                    self._cash = Decimal(str(usdt.free))
+                    logger.info(
+                        "Initial USDT balance fetched: $%.2f", float(self._cash)
+                    )
+                else:
+                    logger.warning("USDT balance not found in account – cash stays 0.")
+            except Exception as exc:
+                logger.error(
+                    "Could not fetch initial balance: %s – circuit breaker will "
+                    "activate only after first fill updates cash.",
+                    exc,
+                )
+
         # Wire callbacks
         self._oms.on_fill(self._on_fill)
         self._oms.on_status_change(self._on_status_change)
@@ -635,13 +655,30 @@ class LiveExecutionEngine:
         if pos is None:
             return
         realized = pos.update_fill(order.side, fill)
+
+        # Fix #8: Keep self._cash accurate so _compute_equity() works in live mode.
+        # BUY  → cash decreases by (fill.price * fill.qty + commission_in_usdt)
+        # SELL → cash increases by (fill.price * fill.qty - commission_in_usdt)
+        if not self._paper:
+            notional = fill.price * fill.qty
+            commission_usdt = (
+                fill.commission
+                if fill.commission_asset in ("USDT", "BUSD")
+                else Decimal(0)
+            )
+            if order.side == OrderSide.BUY:
+                self._cash -= notional + commission_usdt
+            else:
+                self._cash += notional - commission_usdt
+
         logger.info(
-            "FILL: %s %s qty=%s @%s | realized_pnl=$%.4f",
+            "FILL: %s %s qty=%s @%s | realized_pnl=$%.4f | cash=$%.2f",
             order.symbol,
             order.side.value,
             fill.qty,
             fill.price,
             float(realized),
+            float(self._cash),
         )
 
     def _on_status_change(self, order: Order, new_status: OrderStatus) -> None:

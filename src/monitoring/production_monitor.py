@@ -326,11 +326,13 @@ class ProductionMonitor:
         self.alerts.append(alert)
 
         # Log alert
-        log_func = (
-            logger.warning  # WARNING and CRITICAL → loguru warning level
-            if level in [AlertLevel.WARNING, AlertLevel.CRITICAL]
-            else logger.info  # INFO and EMERGENCY → info level (EMERGENCY is separately handled via emergency_stop flag)
-        )
+        # Fix #7: EMERGENCY bekommt eigenes logger.critical Level
+        if level == AlertLevel.EMERGENCY:
+            log_func = logger.critical
+        elif level in [AlertLevel.WARNING, AlertLevel.CRITICAL]:
+            log_func = logger.warning
+        else:
+            log_func = logger.info
         log_func(f"ALERT [{level.value.upper()}] {type.value}: {message}")
 
         # Call handlers
@@ -469,6 +471,11 @@ class LiveTrader:
         self.is_trading = False
         self.trades_today = 0
 
+        # Fix #6: echte Metrik-History
+        self._trade_history: list = []  # Liste von dicts mit pnl, size, timestamp
+        self._equity_history: list = []  # Equity-Werte fuer Drawdown-Berechnung
+        self._last_latency_ms: float = 0.0  # letzter gemessener Order-Latency
+
         # Safety flags
         self.emergency_stop = False
         self.circuit_breaker_triggered = False
@@ -547,21 +554,40 @@ class LiveTrader:
 
     def _execute_trade(self, signal: Dict):
         """Execute a trade with safety checks."""
+        import time as _time
+
         try:
             # Pre-trade checks
             if not self._pre_trade_checks(signal):
                 return
 
-            # Send order (placeholder)
-            logger.info(f"Executing: {signal}")
+            _t0 = _time.monotonic()
 
-            # Wait for confirmation (placeholder)
-            confirmed = True
+            # Send order (placeholder — wird in echter Integration durch ccxt ersetzt)
+            logger.info(f"Executing: {signal}")
+            confirmed = True  # placeholder
+
+            self._last_latency_ms = (
+                _time.monotonic() - _t0
+            ) * 1000  # Fix #6: echte Latency
 
             if confirmed:
-                # Update positions
                 self.positions[signal["symbol"]] = signal
                 self.trades_today += 1
+
+                # Fix #6: Trade in History eintragen
+                self._trade_history.append(
+                    {
+                        "timestamp": _time.time(),
+                        "symbol": signal.get("symbol"),
+                        "side": signal.get("side"),
+                        "size": signal.get("size", 0),
+                        "pnl": signal.get("pnl"),  # None bei Entry, Wert bei Exit
+                    }
+                )
+                # Equity nach Trade aktualisieren
+                _equity = (self.starting_capital or 0) + self.total_pnl
+                self._equity_history.append(_equity)
 
                 logger.success(f"Trade executed: {signal['symbol']} {signal['side']}")
             else:
@@ -586,20 +612,57 @@ class LiveTrader:
         return True
 
     def _record_metrics(self):
-        """Record current trading metrics."""
+        """Record current trading metrics — echte Werte aus Trade-History."""
+        import numpy as _np
+
+        # ── Echte Win-Rate aus abgeschlossenen Trades ────────────────────────
+        _closed = [
+            t for t in getattr(self, "_trade_history", []) if t.get("pnl") is not None
+        ]
+        _wins = [t for t in _closed if t.get("pnl", 0) > 0]
+        win_rate = len(_wins) / len(_closed) if _closed else 0.0
+
+        # ── Echte Average Trade Size ─────────────────────────────────────────
+        _sizes = [abs(t.get("size", 0)) for t in _closed]
+        avg_trade_size = float(_np.mean(_sizes)) if _sizes else 0.0
+
+        # ── Echter Max Drawdown aus Equity-Kurve ─────────────────────────────
+        _equity_history = getattr(self, "_equity_history", [])
+        if len(_equity_history) >= 2:
+            _eq = _np.array(_equity_history, dtype=float)
+            _peak = _np.maximum.accumulate(_eq)
+            _dd = (_peak - _eq) / (_peak + 1e-8)
+            max_drawdown_pct = float(_dd.max())
+        else:
+            max_drawdown_pct = 0.0
+
+        # ── Echter Sharpe (24h, annualisiert) aus PnL-Returns ────────────────
+        _pnl_series = [t.get("pnl", 0) for t in _closed[-24:]]  # letzte 24 Trades
+        if len(_pnl_series) >= 2:
+            _r = _np.array(_pnl_series) / (self.starting_capital + 1e-8)
+            sharpe_24h = float(_r.mean() / (_r.std() + 1e-8) * _np.sqrt(252 * 24))
+        else:
+            sharpe_24h = 0.0
+
+        # ── Exposure ─────────────────────────────────────────────────────────
+        exposure_pct = sum(abs(p.get("size", 0)) for p in self.positions.values()) / (
+            self.starting_capital + 1e-8
+        )
+
         metrics = TradingMetrics(
             timestamp=datetime.now(),
             total_pnl=self.total_pnl,
             daily_pnl=self.daily_pnl,
             open_positions=len(self.positions),
-            exposure_pct=sum(abs(p.get("size", 0)) for p in self.positions.values())
-            / self.starting_capital,  # gross exposure = sum of |position sizes| / capital
-            margin_used_pct=0.1,  # Placeholder
-            sharpe_24h=1.5,  # Placeholder
-            max_drawdown_pct=0.05,  # Placeholder
-            win_rate=0.55 if self.trades_today > 0 else 0.0,
-            avg_trade_size=self.starting_capital * 0.1,  # Placeholder
-            latency_ms=50.0,  # Placeholder
+            exposure_pct=exposure_pct,
+            margin_used_pct=exposure_pct,  # Spot: margin = exposure
+            sharpe_24h=sharpe_24h,  # Fix #6: echt berechnet
+            max_drawdown_pct=max_drawdown_pct,  # Fix #6: echt berechnet
+            win_rate=win_rate,  # Fix #6: echt berechnet
+            avg_trade_size=avg_trade_size,  # Fix #6: echt berechnet
+            latency_ms=getattr(
+                self, "_last_latency_ms", 0.0
+            ),  # wird von execute_trade gesetzt
             uptime_seconds=(datetime.now() - self.monitor.start_time).total_seconds(),
         )
 

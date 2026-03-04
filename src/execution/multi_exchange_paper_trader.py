@@ -189,11 +189,25 @@ class PaperPortfolio:
         self.equity_curve: List[Tuple[datetime, float]] = []
 
     @property
-    def equity(self, price: float = 0.0) -> float:
-        """Aktuelles Eigenkapital (Cash + Positionswert)."""
-        return self.cash + self.position * price
+    def equity(self) -> float:
+        """Letzter bekannter Eigenkapital-Wert (aus equity_curve).
+        Fuer den aktuellen Wert current_equity(price) verwenden."""
+        if self.equity_curve:
+            return self.equity_curve[-1][1]
+        return self.cash  # Noch kein Tick: nur Cash
 
     def current_equity(self, price: float) -> float:
+        """Aktuelles Eigenkapital: Cash + offene Position zum aktuellen Preis.
+
+        Für Short-Positionen (position < 0):
+          cash enthält bereits die Short-Proceeds.
+          Der unrealisierte Verlust = (aktueller Preis - entry) * abs(qty)
+          → equity = cash - (price - entry_price) * abs(position)
+          Dies ist äquivalent zu: cash + position * price (da position negativ)
+          und entry_price wurde bereits beim Open eingepreist.
+        """
+        # position < 0 für Shorts: cash enthält Short-Proceeds,
+        # position * price subtrahiert den aktuellen Rückkaufwert → korrekt.
         return self.cash + self.position * price
 
     @property
@@ -223,18 +237,42 @@ class PaperPortfolio:
         exchange    : Exchange-Name (für Gebühren)
         symbol      : Handelspaar
         risk_pct    : Anteil des Kapitals das eingesetzt wird
+
+        Position-Logik (Fix #11 – Short-Trading):
+        - position > 0 : Long offen
+        - position == 0: Flat
+        - position < 0 : Short offen (qty negativ gespeichert)
+
+        BUY  + position >= 0  → Long eröffnen
+        BUY  + position <  0  → Short schließen (Cover)
+        SELL + position <= 0  → Short eröffnen
+        SELL + position >  0  → Long schließen
         """
-        fee_cfg = self.fee_cfg  # globale fee config wird pro-call überschrieben
+        fee_cfg = self.fee_cfg
         fee_rate = fee_cfg.taker_fee
         slip = fee_cfg.slippage
 
-        # Slippage-angepasster Preis
+        # Slippage-angepasster Ausführungspreis
         fill_price = price * (1 + slip) if side == "buy" else price * (1 - slip)
 
-        if side == "buy" and self.position <= 0:
-            # Kaufen: max risk_pct des Kapitals
+        pnl = 0.0
+
+        if side == "buy" and self.position < 0:
+            # ── Short Cover ──────────────────────────────────────────────────
+            qty = abs(self.position)
+            cost = qty * fill_price
+            fee = cost * fee_rate
+            total_cost = cost + fee
+            # P&L für Short: (entry - exit) * qty – fees
+            pnl = (self.entry_price - fill_price) * qty - fee
+            self.cash -= total_cost  # kaufe zurück
+            self.position = 0.0
+            self.entry_price = 0.0
+
+        elif side == "buy" and self.position >= 0:
+            # ── Long eröffnen ────────────────────────────────────────────────
             spend = self.cash * risk_pct
-            if spend < 10:  # Mindestbetrag
+            if spend < 10:
                 return None
             qty = spend / fill_price
             fee = qty * fill_price * fee_rate
@@ -244,19 +282,36 @@ class PaperPortfolio:
             self.cash -= total_cost
             self.position = qty
             self.entry_price = fill_price
-            pnl = 0.0
 
         elif side == "sell" and self.position > 0:
+            # ── Long schließen ───────────────────────────────────────────────
             qty = self.position
             proceeds = qty * fill_price
             fee = proceeds * fee_rate
             net = proceeds - fee
-            pnl = net - (self.entry_price * qty)  # realisierter P&L
+            pnl = net - (self.entry_price * qty)
             self.cash += net
             self.position = 0.0
             self.entry_price = 0.0
+
+        elif side == "sell" and self.position <= 0:
+            # ── Short eröffnen (Fix #11) ─────────────────────────────────────
+            # Margin-Simulation: blockiere risk_pct als Margin-Reserve
+            margin = self.cash * risk_pct
+            if margin < 10:
+                return None
+            qty = margin / fill_price
+            fee = qty * fill_price * fee_rate
+            # Bei einem Short erhöhen die Proceeds zunächst den Cash,
+            # aber wir merken uns die Verpflichtung als negative Position.
+            proceeds = qty * fill_price
+            net = proceeds - fee
+            self.cash += net  # Short-Erlöse gutschreiben (Margin simuliert)
+            self.position = -qty  # Negativ = Short
+            self.entry_price = fill_price
+
         else:
-            return None  # Kein Signal oder Position falsch
+            return None
 
         trade = PaperTrade(
             timestamp=datetime.now(timezone.utc),
@@ -267,7 +322,7 @@ class PaperPortfolio:
             price=fill_price,
             fee=fee,
             slippage=slip * price,
-            pnl=pnl if side == "sell" else 0.0,
+            pnl=pnl,
         )
         self.trades.append(trade)
         return trade
@@ -611,8 +666,14 @@ class MultiExchangePaperTrader:
                 f"{self.cfg.max_drawdown * 100:.1f}%"
             )
             if pf.position > 0:
+                # Long schließen
                 pf.execute(
                     "sell", price, ex_id, symbol, risk_pct=self.cfg.risk_per_trade
+                )
+            elif pf.position < 0:
+                # Short schließen (Cover) – Fix #11
+                pf.execute(
+                    "buy", price, ex_id, symbol, risk_pct=self.cfg.risk_per_trade
                 )
             return
 
@@ -637,25 +698,29 @@ class MultiExchangePaperTrader:
                 price=price,
             )
 
-        # 6. Order ausführen
-        if signal == 1 and pf.position <= 0:
+        # 6. Order ausführen (Fix #11: signal=-1 öffnet Short wenn keine Long-Position)
+        if signal == 1:
+            # BUY: schließt Short (Cover) ODER eröffnet Long — execute() entscheidet
             trade = pf.execute(
                 "buy", price, ex_id, symbol, risk_pct=self.cfg.risk_per_trade
             )
             if trade:
+                action = "COVER" if trade.pnl != 0.0 else "BUY"
                 logger.info(
-                    f"[{ex_id}] BUY  {trade.qty:.6f} BTC @ ${trade.price:,.2f} "
-                    f"| Fee=${trade.fee:.2f}"
+                    f"[{ex_id}] {action} {trade.qty:.6f} BTC @ ${trade.price:,.2f} "
+                    f"| Fee=${trade.fee:.2f} | P&L=${trade.pnl:+.2f}"
                 )
 
-        elif signal == -1 and pf.position > 0:
+        elif signal == -1:
+            # SELL: schließt Long ODER eröffnet Short — execute() entscheidet
             trade = pf.execute(
                 "sell", price, ex_id, symbol, risk_pct=self.cfg.risk_per_trade
             )
             if trade:
+                action = "SHORT" if pf.position < 0 else "SELL"
                 logger.info(
-                    f"[{ex_id}] SELL {trade.qty:.6f} BTC @ ${trade.price:,.2f} "
-                    f"| P&L=${trade.pnl:+.2f}"
+                    f"[{ex_id}] {action} {trade.qty:.6f} BTC @ ${trade.price:,.2f} "
+                    f"| Fee=${trade.fee:.2f} | P&L=${trade.pnl:+.2f}"
                 )
 
         # 7. Periodisches Status-Log

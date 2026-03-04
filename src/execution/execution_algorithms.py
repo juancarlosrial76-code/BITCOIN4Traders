@@ -541,7 +541,11 @@ class VWAPExecutor:
 
         return schedule
 
-    def calculate_tracking_error(self, execution_prices: List[float]) -> float:
+    def calculate_tracking_error(
+        self,
+        execution_prices: List[float],
+        market_vwap: Optional[float] = None,
+    ) -> float:
         """
         Calculate VWAP tracking error.
 
@@ -549,23 +553,24 @@ class VWAPExecutor:
         a key metric for VWAP algorithm performance.
 
         Args:
-            execution_prices: List of actual fill prices
+            execution_prices: List of actual fill prices.
+            market_vwap: True market VWAP for the same period, obtained from
+                real market data (e.g. volume-weighted price from the order book
+                or a data feed). If None (not yet available), returns 0.0 rather
+                than fabricating a number with random noise.
 
         Returns:
-            Tracking error as fraction of market VWAP
+            Tracking error as fraction of market VWAP (positive = we paid more,
+            negative = we received less than market). Returns 0.0 when
+            market_vwap is unavailable.
         """
-        if len(execution_prices) == 0:
+        # Fix #10: previously used np.random.randn() to "simulate" market VWAP,
+        # which produced meaningless random noise masquerading as a metric.
+        if len(execution_prices) == 0 or market_vwap is None or market_vwap == 0.0:
             return 0.0
 
-        our_vwap = np.average(execution_prices)  # Simple average of our fills
-
-        # Simulate market VWAP (would use actual market data in production)
-        market_vwap = our_vwap * (1 + np.random.randn() * 0.0001)
-
-        # Tracking error as fraction of market VWAP
-        tracking_error = (our_vwap - market_vwap) / market_vwap
-
-        return tracking_error
+        our_vwap = float(np.average(execution_prices))
+        return (our_vwap - market_vwap) / market_vwap
 
 
 class SmartOrderRouter:

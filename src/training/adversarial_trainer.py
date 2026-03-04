@@ -821,6 +821,7 @@ class AdversarialTrainer:
             if _use_vec
             else self.config.steps_per_iteration
         )
+        if _use_vec and vec_env is not None:
             logger.warning(
                 f"VecEnv mode: {vec_env.n_envs} envs x {_steps_per_env} steps "
                 f"= {vec_env.n_envs * _steps_per_env} steps/iter | adversary DISABLED"

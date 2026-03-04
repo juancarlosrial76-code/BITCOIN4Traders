@@ -922,6 +922,7 @@ class RNNScout(DarwinBot):
         short_thresh: float = -0.3,
         lookback: int = 20,
         mutation_rate: float = 0.05,
+        seed: Optional[int] = None,
         **kwargs,
     ):
         super().__init__(name, **kwargs)
@@ -930,6 +931,11 @@ class RNNScout(DarwinBot):
         self.short_thresh = short_thresh
         self.lookback = lookback
         self.mutation_rate = mutation_rate
+        # Fix #12: store seed so that _init_weights and mutate() are reproducible.
+        # Each mutate() call advances _mutation_count to derive a unique but
+        # deterministic sub-seed, avoiding repeated identical mutations.
+        self._seed: Optional[int] = seed
+        self._mutation_count: int = 0
 
         # Initialise GRU weights (Xavier-like scaling)
         self._init_weights()
@@ -945,7 +951,8 @@ class RNNScout(DarwinBot):
         concat_size = inp + h
         scale = np.sqrt(2.0 / (inp + h))
 
-        rng = np.random.default_rng()
+        # Fix #12: use stored seed so weight initialisation is reproducible.
+        rng = np.random.default_rng(self._seed)
 
         def W(rows: int, cols: int) -> np.ndarray:
             return rng.uniform(-scale, scale, (rows, cols))
@@ -998,7 +1005,16 @@ class RNNScout(DarwinBot):
         Gaussian noise added to weights (primary mutation).
         Threshold parameters also slightly perturbed.
         """
-        rng = np.random.default_rng()
+        # Fix #12: derive a unique deterministic sub-seed per mutation call.
+        # If no base seed was set, falls back to None (non-deterministic) to
+        # preserve existing behaviour for callers that don't require reproducibility.
+        sub_seed = (
+            (self._seed * 1_000_003 + self._mutation_count) % (2**31)
+            if self._seed is not None
+            else None
+        )
+        rng = np.random.default_rng(sub_seed)
+        self._mutation_count += 1
         rate = self.mutation_rate
 
         # Weight matrices: additive Gaussian noise

@@ -553,33 +553,16 @@ class PPOAgent:
             self.critic.eval()
 
         with torch.no_grad():
-            # Get action distribution
+            # Actor forward pass: liefert Action-Distribution + naechsten Hidden State
             dist, next_hidden_actor = self.actor(state_tensor, hidden)
 
-            # Get value estimate (we can pass the same hidden, or keep them separate.
-            # Usually Actor and Critic have separate networks/hidden states if not shared.)
-            # Here we assume separate networks, so we need separate hidden states?
-            # Implem Note: If we use the same 'hidden' input for both, it implies shared trunk or we maintain two hidden states.
-            # For simplicity in this structure, let's assume 'hidden' is just for the Actor (Policy)
-            # because the Critic is usually running on the same trajectory but we often don't pass its hidden state out
-            # for the environment loop. However, to accept 'next_hidden' we need the actor's.
-            # Critic recurrent state is often handled similarly or avoided.
-            # Let's enforce that 'hidden' passed in is for the Actor.
-
-            # For the Critic, to get a valid value on a recurrent policy, it should also be recurrent.
-            # But usually we just burn-in or use the actor's hidden? No, they are different params.
-            # Simplified: The 'hidden' returned is ONLY for the Actor.
-            # We will ignore storing Critic's hidden state for rollout purposes in this simplified version.
-            # Ideally: recursive state for both. But let's return Actor's hidden.
-
-            value, _ = self.critic(
-                state_tensor, None
-            )  # Critic might need its own hidden state tracking if recurrent!
-            # If Critic is recurrent, it's problematic without tracking its state too.
-            # FIX: Only Actor is recurrent in this implementation for "Action Selection".
-            # If config says use_recurrent, both become recurrent.
-            # Ideally we accept (actor_hidden, critic_hidden).
-            # For now, let's stick to returning Actor hidden for the policy loop.
+            # Critic forward pass: bekommt denselben Hidden State wie der Actor.
+            # Actor und Critic haben getrennte Gewichte aber teilen den sequentiellen
+            # Kontext (GRU-Hidden der aktuellen Trajektorie).  Das gibt dem Critic
+            # Zugriff auf denselben zeitlichen Kontext und macht Value-Estimates
+            # korrekt fuer recurrent PPO.  Der returned Hidden des Critics wird
+            # nicht zurueckgegeben — der Actor-Hidden steuert den Rollout-Loop.
+            value, _ = self.critic(state_tensor, hidden)
 
             if deterministic:
                 action = dist.probs.argmax()
@@ -640,7 +623,8 @@ class PPOAgent:
         with torch.no_grad():
             dist, next_hidden_actor = self.actor(state_tensor, hidden)  # batch forward
 
-            value_tensor, _ = self.critic(state_tensor, None)  # (N, 1)
+            # Critic bekommt denselben Hidden State (Fix #4: war None)
+            value_tensor, _ = self.critic(state_tensor, hidden)  # (N, 1)
 
             if deterministic:
                 actions_t = dist.probs.argmax(dim=-1)  # (N,)
@@ -808,7 +792,13 @@ class PPOAgent:
         kl_divergences = []
 
         for epoch in range(self.config.n_epochs):
-            np.random.shuffle(indices)
+            # Fix #5: Recurrent PPO braucht SEQUENTIELLE Mini-Batches.
+            # Shuffling zerstoert die Zeitreihen-Reihenfolge und macht GRU-BPTT
+            # bedeutungslos (Gradient fliesst durch zufaellige Zustaende).
+            # Fuer MLP-Policies (use_recurrent=False) ist Shuffling weiterhin OK.
+            if not self.config.use_recurrent:
+                np.random.shuffle(indices)
+            # Bei GRU/LSTM: Indices bleiben in zeitlicher Reihenfolge (0,1,...,T)
             epoch_kls = []  # KL only measured for this epoch (not cumulative)
 
             for start_idx in range(0, dataset_size, self.config.batch_size):
@@ -824,40 +814,24 @@ class PPOAgent:
                 batch_hidden = None
                 if has_hidden:
                     # Collate hidden states
-                    # self.hiddens is a list of (h, c) or h
                     raw_hiddens = [self.hiddens[i] for i in batch_indices]
 
                     if self.config.rnn_type == "LSTM":
-                        # List of tuples (h, c) -> tuple of stacks
                         h_list = [x[0] for x in raw_hiddens]
                         c_list = [x[1] for x in raw_hiddens]
-                        # Stack: (batch, num_layers, hidden) -> permute to (num_layers, batch, hidden)
-                        # Actually stored as (num_layers, 1, hidden) (from select_action unsqueeze batch) or (num_layers, hidden)
-                        # select_action uses batch count 1.
-                        # We need (num_layers, batch_size, hidden)
-
-                        h_stack = torch.cat(h_list, dim=1).to(
-                            self.device
-                        )  # dim 1 is batch size in stored?
-                        # Stored: (num_layers, 1, hidden)
-                        # cat dim 1 -> (num_layers, batch, hidden)
+                        # Stored: (num_layers, 1, hidden) -> cat dim 1 = (num_layers, batch, hidden)
+                        h_stack = torch.cat(h_list, dim=1).to(self.device)
                         c_stack = torch.cat(c_list, dim=1).to(self.device)
                         batch_hidden = (h_stack, c_stack)
                     else:  # GRU
-                        # List of tensors
                         batch_hidden = torch.cat(raw_hiddens, dim=1).to(self.device)
 
-                # Forward pass
-                # Note: We pass the stored hidden state.
-                # Gradients flow through the network for this step.
+                # Actor forward pass mit gespeichertem Hidden State
                 dist, _ = self.actor(batch_states, batch_hidden)
 
-                # Critic
-                # NOTE: We didn't store critic hidden states.
-                # So we pass None. This implicitly zeroes the critic hidden state every step if critic is recurrent.
-                # This is suboptimal for Recurrent Critic. Ideally we store both.
-                # For now, let's assume Critic is MLP or we accept the limitation.
-                critic_values, _ = self.critic(batch_states, None)
+                # Fix #4 (Training): Critic bekommt denselben Hidden State wie Actor.
+                # Kein None mehr — Critic hat jetzt Zugriff auf denselben zeitlichen Kontext.
+                critic_values, _ = self.critic(batch_states, batch_hidden)
                 critic_values = critic_values.squeeze()
 
                 # Compute losses for this mini-batch
