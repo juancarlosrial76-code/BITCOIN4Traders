@@ -3279,12 +3279,8 @@ class MultiverseArena:
         self.data = data.copy()
         self.cfg = config or MultiverseArenaConfig()
         self.verbose = verbose
-        # history is streamed to CSV — no in-memory list growth
-        self.history: List[Dict] = []  # kept for print_leaderboard compatibility
-        self._csv_path: str = str(
-            Path(self.cfg.champion_save_path).parent / "mv_history.csv"
-        )
-        self._csv_initialized: bool = False
+        # history: one dict per generation (~10 floats each) — 15 gens = ~1 KB, no issue
+        self.history: List[Dict] = []
         self.champion: Optional[DarwinBot] = None
         self.champion_mv_stats: Optional[MultiverseStats] = None
 
@@ -3455,25 +3451,7 @@ class MultiverseArena:
                 "eliminated": best_mv.eliminated,
             }
 
-            # Stream row to CSV immediately — no in-memory list growth
-            try:
-                import csv as _csv
-
-                write_header = not self._csv_initialized
-                Path(self._csv_path).parent.mkdir(parents=True, exist_ok=True)
-                with open(self._csv_path, "a", newline="") as fcsv:
-                    writer = _csv.DictWriter(fcsv, fieldnames=list(row.keys()))
-                    if write_header:
-                        writer.writeheader()
-                        self._csv_initialized = True
-                    writer.writerow(row)
-            except Exception as _csv_exc:
-                logger.debug(f"CSV history write failed: {_csv_exc}")
-
-            # Keep only last 5 rows in memory for print_leaderboard
             self.history.append(row)
-            if len(self.history) > 5:
-                self.history.pop(0)
 
             self.champion = best_bot
             self.champion_mv_stats = best_mv
@@ -3512,18 +3490,8 @@ class MultiverseArena:
         return self.champion  # type: ignore[return-value]
 
     def get_history_df(self) -> pd.DataFrame:
-        """Return generational history as a tidy DataFrame (reads from CSV if available)."""
-        csv_p = Path(self._csv_path)
-        if csv_p.exists():
-            try:
-                return pd.read_csv(csv_p).set_index("generation")
-            except Exception:
-                pass
-        return (
-            pd.DataFrame(self.history).set_index("generation")
-            if self.history
-            else pd.DataFrame()
-        )
+        """Return generational history as a tidy DataFrame."""
+        return pd.DataFrame(self.history).set_index("generation")
 
     def print_leaderboard(self, top_n: int = 5) -> None:
         """Print multiverse leaderboard."""
