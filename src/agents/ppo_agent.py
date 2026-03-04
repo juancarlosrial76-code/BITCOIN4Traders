@@ -174,6 +174,12 @@ class PPOConfig:
     # Early stopping
     target_kl: float = 0.01
 
+    # GPU Optimierungen (werden nur auf CUDA aktiv, ignoriert auf CPU)
+    use_amp: bool = True  # Mixed Precision (float16 forward, float32 grads)
+    use_compile: bool = False  # torch.compile() — PyTorch 2.x, ~20-40% schneller
+    # Deaktiviert by default (inkompatibel mit GRU auf
+    # aelterem CUDA; aktivieren wenn PyTorch >= 2.1)
+
 
 class BaseNetwork(nn.Module):
     """
@@ -475,6 +481,29 @@ class PPOAgent:
         self.actor = ActorNetwork(config).to(device)
         self.critic = CriticNetwork(config).to(device)
 
+        # ── GPU Optimierung: torch.compile() ────────────────────────────────
+        # Kompiliert den Computation-Graph einmalig → ~20-40% schneller auf T4/A100.
+        # Nur sinnvoll auf CUDA mit PyTorch >= 2.1. Beim ersten Call etwas langsamer
+        # (warmup), danach dauerhaft schneller.
+        _on_cuda = device.startswith("cuda") or device == "cuda"
+        if config.use_compile and _on_cuda:
+            try:
+                self.actor = torch.compile(self.actor, mode="reduce-overhead")
+                self.critic = torch.compile(self.critic, mode="reduce-overhead")
+                logger.info("  torch.compile() aktiv (mode='reduce-overhead')")
+            except Exception as e:
+                logger.warning(
+                    f"  torch.compile() fehlgeschlagen, fahre ohne fort: {e}"
+                )
+
+        # ── GPU Optimierung: AMP GradScaler ─────────────────────────────────
+        # GradScaler skaliert den Loss um numerische Underflows in float16 zu vermeiden.
+        # Automatisch deaktiviert wenn nicht auf CUDA oder use_amp=False.
+        self._amp_enabled = config.use_amp and _on_cuda
+        self._scaler = torch.cuda.amp.GradScaler(enabled=self._amp_enabled)
+        if self._amp_enabled:
+            logger.info("  Mixed Precision (AMP) aktiv — forward pass in float16")
+
         # Optimizers & Schedulers
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=config.actor_lr)
         self.critic_optimizer = optim.Adam(
@@ -766,12 +795,41 @@ class PPOAgent:
         # The small epsilon (1e-8) prevents division by zero
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-        # Convert to tensors
-        states = torch.FloatTensor(np.array(self.states)).to(self.device)
-        actions = torch.LongTensor(self.actions).to(self.device)
-        old_log_probs = torch.FloatTensor(self.log_probs).to(self.device)
-        advantages = torch.FloatTensor(advantages).to(self.device)
-        returns = torch.FloatTensor(returns).to(self.device)
+        # Convert to tensors — mit Pinned Memory für schnelleren CPU→GPU Transfer.
+        # pin_memory=True funktioniert nur auf CUDA; auf CPU wird es ignoriert.
+        _pin = self._amp_enabled  # True nur wenn CUDA + AMP aktiv
+        states = (
+            torch.tensor(np.array(self.states), dtype=torch.float32).pin_memory()
+            if _pin
+            else torch.FloatTensor(np.array(self.states))
+        )
+        actions = (
+            torch.tensor(np.array(self.actions), dtype=torch.long).pin_memory()
+            if _pin
+            else torch.LongTensor(self.actions)
+        )
+        old_log_probs = (
+            torch.tensor(np.array(self.log_probs), dtype=torch.float32).pin_memory()
+            if _pin
+            else torch.FloatTensor(self.log_probs)
+        )
+        advantages = (
+            torch.tensor(advantages, dtype=torch.float32).pin_memory()
+            if _pin
+            else torch.FloatTensor(advantages)
+        )
+        returns = (
+            torch.tensor(returns, dtype=torch.float32).pin_memory()
+            if _pin
+            else torch.FloatTensor(returns)
+        )
+
+        # Auf GPU verschieben (non_blocking=True: asynchroner Transfer, CPU blockiert nicht)
+        states = states.to(self.device, non_blocking=True)
+        actions = actions.to(self.device, non_blocking=True)
+        old_log_probs = old_log_probs.to(self.device, non_blocking=True)
+        advantages = advantages.to(self.device, non_blocking=True)
+        returns = returns.to(self.device, non_blocking=True)
 
         # For recurrent training, we need to handle hidden states.
         # Simplified approach: Train on shuffled batches but detach history (truncate) or use stored hidden states.
@@ -826,65 +884,76 @@ class PPOAgent:
                     else:  # GRU
                         batch_hidden = torch.cat(raw_hiddens, dim=1).to(self.device)
 
-                # Actor forward pass mit gespeichertem Hidden State
-                dist, _ = self.actor(batch_states, batch_hidden)
+                # ── Mixed Precision forward pass ─────────────────────────────
+                # autocast: Actor/Critic GRU + Linear laufen in float16 → halber
+                # VRAM-Bedarf, ~1.7× schnellere Matmul auf Tensor Cores (T4/A100).
+                # Auf CPU wird autocast automatisch zu float32 (kein Overhead).
+                with torch.cuda.amp.autocast(enabled=self._amp_enabled):
+                    # Actor forward pass mit gespeichertem Hidden State
+                    dist, _ = self.actor(batch_states, batch_hidden)
 
-                # Fix #4 (Training): Critic bekommt denselben Hidden State wie Actor.
-                # Kein None mehr — Critic hat jetzt Zugriff auf denselben zeitlichen Kontext.
-                critic_values, _ = self.critic(batch_states, batch_hidden)
-                critic_values = critic_values.squeeze()
+                    # Fix #4 (Training): Critic bekommt denselben Hidden State wie Actor.
+                    # Kein None mehr — Critic hat jetzt Zugriff auf denselben zeitlichen Kontext.
+                    critic_values, _ = self.critic(batch_states, batch_hidden)
+                    critic_values = critic_values.squeeze()
 
-                # Compute losses for this mini-batch
-                # --------------------------------------
+                    # Compute losses for this mini-batch
+                    # --------------------------------------
 
-                # Log probability of taken actions under current policy
-                log_probs = dist.log_prob(batch_actions)
+                    # Log probability of taken actions under current policy
+                    log_probs = dist.log_prob(batch_actions)
 
-                # Policy entropy - measures stochasticity of the policy
-                # Higher entropy = more exploration
-                entropy = dist.entropy().mean()
+                    # Policy entropy - measures stochasticity of the policy
+                    # Higher entropy = more exploration
+                    entropy = dist.entropy().mean()
 
-                # Importance sampling ratio: π_θ(a|s) / π_θ_old(a|s)
-                # Measures how much the probability of taking action a changed
-                ratio = torch.exp(log_probs - batch_old_log_probs)
+                    # Importance sampling ratio: π_θ(a|s) / π_θ_old(a|s)
+                    # Measures how much the probability of taking action a changed
+                    ratio = torch.exp(log_probs - batch_old_log_probs)
 
-                # PPO Clipped Surrogate Objective
-                # --------------------------------
-                # surr1: Unclipped objective (can lead to large updates)
-                # surr2: Clipped objective (constrained within [1-ε, 1+ε])
-                # Taking the minimum prevents overly large policy changes
-                surr1 = ratio * batch_advantages
-                surr2 = (
-                    torch.clamp(
-                        ratio,
-                        1 - self.config.clip_epsilon,
-                        1 + self.config.clip_epsilon,
+                    # PPO Clipped Surrogate Objective
+                    # --------------------------------
+                    # surr1: Unclipped objective (can lead to large updates)
+                    # surr2: Clipped objective (constrained within [1-ε, 1+ε])
+                    # Taking the minimum prevents overly large policy changes
+                    surr1 = ratio * batch_advantages
+                    surr2 = (
+                        torch.clamp(
+                            ratio,
+                            1 - self.config.clip_epsilon,
+                            1 + self.config.clip_epsilon,
+                        )
+                        * batch_advantages
                     )
-                    * batch_advantages
-                )
 
-                # Actor loss: negative of clipped objective (we maximize, so minimize negative)
-                # The min() ensures we take the less aggressive update
-                actor_loss = -torch.min(surr1, surr2).mean()
+                    # Actor loss: negative of clipped objective (we maximize, so minimize negative)
+                    # The min() ensures we take the less aggressive update
+                    actor_loss = -torch.min(surr1, surr2).mean()
 
-                # Critic loss: MSE between predicted values and target returns
-                # This learns the value function V(s) ≈ E[future rewards]
-                critic_loss = F.mse_loss(critic_values, batch_returns)
+                    # Critic loss: MSE between predicted values and target returns
+                    # This learns the value function V(s) ≈ E[future rewards]
+                    critic_loss = F.mse_loss(critic_values, batch_returns)
 
-                # Total loss: weighted combination of all components
-                # -actor_loss: We want to maximize this (via minimization)
-                # +critic_loss: Weighted value function loss
-                # -entropy: Entropy bonus (subtracted to maximize entropy)
-                loss = (
-                    actor_loss
-                    + self.config.value_loss_coef * critic_loss
-                    - self.config.entropy_coef * entropy
-                )
+                    # Total loss: weighted combination of all components
+                    # -actor_loss: We want to maximize this (via minimization)
+                    # +critic_loss: Weighted value function loss
+                    # -entropy: Entropy bonus (subtracted to maximize entropy)
+                    loss = (
+                        actor_loss
+                        + self.config.value_loss_coef * critic_loss
+                        - self.config.entropy_coef * entropy
+                    )
 
+                # ── Backward + Gradient Clipping mit GradScaler ─────────────
+                # GradScaler skaliert den Loss um float16 Underflow zu vermeiden,
+                # unscaled dann automatisch vor dem Grad-Clip und optimizer.step().
                 self.actor_optimizer.zero_grad()
                 self.critic_optimizer.zero_grad()
-                loss.backward()
+                self._scaler.scale(loss).backward()
 
+                # Grad-Clip: erst unscalen, dann clippen (Reihenfolge wichtig!)
+                self._scaler.unscale_(self.actor_optimizer)
+                self._scaler.unscale_(self.critic_optimizer)
                 nn.utils.clip_grad_norm_(
                     self.actor.parameters(), self.config.max_grad_norm
                 )
@@ -892,8 +961,9 @@ class PPOAgent:
                     self.critic.parameters(), self.config.max_grad_norm
                 )
 
-                self.actor_optimizer.step()
-                self.critic_optimizer.step()
+                self._scaler.step(self.actor_optimizer)
+                self._scaler.step(self.critic_optimizer)
+                self._scaler.update()  # Scale-Faktor anpassen (auto)
 
                 total_actor_loss += actor_loss.item()
                 total_critic_loss += critic_loss.item()
