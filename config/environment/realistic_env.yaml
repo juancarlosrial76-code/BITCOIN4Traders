@@ -70,6 +70,10 @@ reward:
     - name: transaction_cost
       weight: -0.3
       description: "Trading cost penalty (reduced)"
+
+    - name: regime_reward
+      weight: 1.0
+      description: "Regime-alignment bonus/penalty (RegimeAwareReward from antibias_rewards.py)"
   
   normalization:
     enabled: true
