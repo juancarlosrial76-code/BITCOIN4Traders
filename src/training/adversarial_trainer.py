@@ -683,9 +683,10 @@ class AdversarialTrainer:
             # Collect trajectories
             use_adversary = iteration >= self.config.adversary_start_iteration
 
-            logger.info(f"\n{'=' * 80}")
-            logger.info(f"Iteration {iteration + 1}/{self.config.n_iterations}")
-            logger.info(f"Adversary active: {use_adversary}")
+            # debug level: goes to log file only, not to Colab stdout
+            logger.debug(f"\n{'=' * 80}")
+            logger.debug(f"Iteration {iteration + 1}/{self.config.n_iterations}")
+            logger.debug(f"Adversary active: {use_adversary}")
 
             traj_metrics = self.collect_trajectories(
                 self.config.steps_per_iteration, use_adversary=use_adversary
@@ -823,26 +824,32 @@ class AdversarialTrainer:
         trader_stats: Dict,
         adversary_stats: Dict,
     ):
-        """Log iteration metrics."""
-        logger.info(f"\nIteration {iteration + 1} Results:")
-        logger.info(f"  Episodes: {len(traj_metrics['episode_rewards'])}")
-        logger.info(f"  Mean Reward: {traj_metrics['mean_reward']:.4f}")
-        logger.info(f"  Mean Return: {traj_metrics['mean_return'] * 100:.2f}%")
-        logger.info(f"  Mean Length: {traj_metrics['mean_length']:.0f}")
+        """Log iteration metrics (debug = file only, not Colab stdout)."""
+        logger.debug(f"\nIteration {iteration + 1} Results:")
+        logger.debug(f"  Episodes: {len(traj_metrics['episode_rewards'])}")
+        logger.debug(f"  Mean Reward: {traj_metrics['mean_reward']:.4f}")
+        logger.debug(f"  Mean Return: {traj_metrics['mean_return'] * 100:.2f}%")
+        logger.debug(f"  Mean Length: {traj_metrics['mean_length']:.0f}")
 
         if trader_stats:
-            logger.info(f"\nTrader Training:")
-            logger.info(f"  Actor Loss: {trader_stats['actor_loss']:.4f}")
-            logger.info(f"  Critic Loss: {trader_stats['critic_loss']:.4f}")
-            logger.info(f"  Entropy: {trader_stats['entropy']:.4f}")
-            logger.info(f"  KL: {trader_stats['mean_kl']:.4f}")
+            logger.debug(f"\nTrader Training:")
+            logger.debug(f"  Actor Loss: {trader_stats['actor_loss']:.4f}")
+            logger.debug(f"  Critic Loss: {trader_stats['critic_loss']:.4f}")
+            logger.debug(f"  Entropy: {trader_stats['entropy']:.4f}")
+            logger.debug(f"  KL: {trader_stats['mean_kl']:.4f}")
 
         if adversary_stats:
-            logger.info(f"\nAdversary Training:")
-            logger.info(f"  Loss: {adversary_stats.get('adversary_loss', 0):.4f}")
-            logger.info(
+            logger.debug(f"\nAdversary Training:")
+            logger.debug(f"  Loss: {adversary_stats.get('adversary_loss', 0):.4f}")
+            logger.debug(
                 f"  Success: {adversary_stats.get('adversary_success_rate', 0) * 100:.1f}%"
             )
+        # One-line WARNING summary visible on console every log_frequency iterations
+        logger.warning(
+            f"Iter {iteration + 1} | "
+            f"Return {traj_metrics['mean_return'] * 100:.1f}% | "
+            f"Reward {traj_metrics['mean_reward']:.3f}"
+        )
 
     def _save_checkpoint(self, iteration: int, mean_return: Optional[float] = None):
         """Save training checkpoint only if it's better than previous best."""
