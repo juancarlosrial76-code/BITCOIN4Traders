@@ -487,6 +487,238 @@ def _kernel_signals_ema_cross(
 
 
 # ---------------------------------------------------------------------------
+# RNN / GRU Kernels (Numba JIT — no PyTorch dependency)
+# ---------------------------------------------------------------------------
+
+
+@njit(cache=True)
+def _kernel_gru_step(
+    x: np.ndarray,  # input vector  shape (input_size,)
+    h: np.ndarray,  # hidden state  shape (hidden_size,)
+    Wz: np.ndarray,  # update gate weights  shape (hidden_size, input_size + hidden_size)
+    Wr: np.ndarray,  # reset gate weights   shape (hidden_size, input_size + hidden_size)
+    Wh: np.ndarray,  # candidate weights    shape (hidden_size, input_size + hidden_size)
+    bz: np.ndarray,  # update gate bias     shape (hidden_size,)
+    br: np.ndarray,  # reset gate bias      shape (hidden_size,)
+    bh: np.ndarray,  # candidate bias       shape (hidden_size,)
+) -> np.ndarray:
+    """
+    Single GRU cell forward step.
+    Fully implemented in Numba @njit — zero PyTorch dependency.
+
+    GRU equations:
+        xh   = concat(x, h)
+        z    = sigmoid(Wz @ xh + bz)      update gate
+        r    = sigmoid(Wr @ xh + br)      reset gate
+        xrh  = concat(x, r * h)
+        h_   = tanh(Wh @ xrh + bh)       candidate hidden state
+        h'   = (1 - z) * h + z * h_      new hidden state
+
+    Returns
+    -------
+    h_new : np.ndarray  shape (hidden_size,)
+    """
+    input_size = len(x)
+    hidden_size = len(h)
+
+    # Concatenate input + hidden state
+    xh = np.empty(input_size + hidden_size, dtype=np.float64)
+    for i in range(input_size):
+        xh[i] = x[i]
+    for i in range(hidden_size):
+        xh[input_size + i] = h[i]
+
+    # Update gate z
+    z = np.empty(hidden_size, dtype=np.float64)
+    for i in range(hidden_size):
+        val = bz[i]
+        for j in range(input_size + hidden_size):
+            val += Wz[i, j] * xh[j]
+        z[i] = 1.0 / (1.0 + np.exp(-val))  # sigmoid
+
+    # Reset gate r
+    r = np.empty(hidden_size, dtype=np.float64)
+    for i in range(hidden_size):
+        val = br[i]
+        for j in range(input_size + hidden_size):
+            val += Wr[i, j] * xh[j]
+        r[i] = 1.0 / (1.0 + np.exp(-val))  # sigmoid
+
+    # Gated concat: concat(x, r * h)
+    xrh = np.empty(input_size + hidden_size, dtype=np.float64)
+    for i in range(input_size):
+        xrh[i] = x[i]
+    for i in range(hidden_size):
+        xrh[input_size + i] = r[i] * h[i]
+
+    # Candidate hidden state h_
+    h_cand = np.empty(hidden_size, dtype=np.float64)
+    for i in range(hidden_size):
+        val = bh[i]
+        for j in range(input_size + hidden_size):
+            val += Wh[i, j] * xrh[j]
+        h_cand[i] = np.tanh(val)
+
+    # New hidden state
+    h_new = np.empty(hidden_size, dtype=np.float64)
+    for i in range(hidden_size):
+        h_new[i] = (1.0 - z[i]) * h[i] + z[i] * h_cand[i]
+
+    return h_new
+
+
+@njit(cache=True)
+def _kernel_rnn_forward(
+    features: np.ndarray,  # shape (n_bars, input_size)  — normalised feature matrix
+    Wz: np.ndarray,
+    Wr: np.ndarray,
+    Wh: np.ndarray,
+    bz: np.ndarray,
+    br: np.ndarray,
+    bh: np.ndarray,
+    Wo: np.ndarray,  # output weights  shape (1, hidden_size)
+    bo: float,  # output bias     scalar
+) -> np.ndarray:
+    """
+    Full GRU forward pass over T timesteps.
+
+    Parameters
+    ----------
+    features : np.ndarray  shape (T, input_size)
+        Normalised input features per bar.
+    Wz, Wr, Wh : gate weight matrices  shape (hidden_size, input_size + hidden_size)
+    bz, br, bh : gate bias vectors     shape (hidden_size,)
+    Wo         : output weight matrix  shape (1, hidden_size)
+    bo         : output scalar bias
+
+    Returns
+    -------
+    outputs : np.ndarray  shape (T,)  float64
+        Unbounded output score per bar. Thresholded externally to signals.
+    """
+    T = features.shape[0]
+    hidden_size = len(bz)
+
+    h = np.zeros(hidden_size, dtype=np.float64)
+    outputs = np.zeros(T, dtype=np.float64)
+
+    for t in range(T):
+        x = features[t]
+        h = _kernel_gru_step(x, h, Wz, Wr, Wh, bz, br, bh)
+        # Linear output: scalar = Wo @ h + bo
+        out = bo
+        for i in range(hidden_size):
+            out += Wo[0, i] * h[i]
+        outputs[t] = out
+
+    return outputs
+
+
+@njit(cache=True)
+def _kernel_signals_rnn(
+    outputs: np.ndarray,
+    long_thresh: float,
+    short_thresh: float,
+) -> np.ndarray:
+    """
+    Convert unbounded RNN outputs to trading signals.
+
+        output > long_thresh  -> Long  (+1)
+        output < short_thresh -> Short (-1)
+        otherwise             -> Flat  (0)
+
+    Parameters
+    ----------
+    outputs      : np.ndarray  shape (T,)  raw GRU outputs
+    long_thresh  : float  threshold above which to go long  (e.g. +0.3)
+    short_thresh : float  threshold below which to go short (e.g. -0.3)
+
+    Returns
+    -------
+    signals : np.ndarray  int8, shape (T,)
+    """
+    n = len(outputs)
+    signals = np.zeros(n, dtype=np.int8)
+    for i in range(n):
+        if outputs[i] > long_thresh:
+            signals[i] = np.int8(1)
+        elif outputs[i] < short_thresh:
+            signals[i] = np.int8(-1)
+    return signals
+
+
+@njit(cache=True)
+def _kernel_build_features(
+    closes: np.ndarray,
+    lookback: int,
+) -> np.ndarray:
+    """
+    Build normalised feature matrix from raw close prices.
+
+    Features per bar (input_size = 4):
+        0: log-return over 1 bar
+        1: log-return over 5 bars
+        2: 20-bar rolling z-score of close
+        3: 10-bar momentum (close[t] / close[t-10] - 1)
+
+    All features are clipped to [-3, 3] to prevent exploding gradients.
+    The first `lookback` bars are zeroed (warm-up).
+
+    Parameters
+    ----------
+    closes   : np.ndarray  shape (n,)
+    lookback : int         warm-up bars (GRU needs history to stabilise)
+
+    Returns
+    -------
+    features : np.ndarray  shape (n, 4)
+    """
+    n = len(closes)
+    features = np.zeros((n, 4), dtype=np.float64)
+
+    # Rolling mean/std for z-score (window=20)
+    win = 20
+    for i in range(win, n):
+        # Feature 0: 1-bar log-return
+        if closes[i - 1] > 0.0:
+            lr1 = np.log(closes[i] / closes[i - 1])
+        else:
+            lr1 = 0.0
+
+        # Feature 1: 5-bar log-return
+        if i >= 5 and closes[i - 5] > 0.0:
+            lr5 = np.log(closes[i] / closes[i - 5])
+        else:
+            lr5 = 0.0
+
+        # Feature 2: 20-bar rolling z-score
+        mu = 0.0
+        for k in range(i - win, i):
+            mu += closes[k]
+        mu /= win
+        var = 0.0
+        for k in range(i - win, i):
+            d = closes[k] - mu
+            var += d * d
+        sigma = (var / win) ** 0.5
+        zscore = (closes[i] - mu) / (sigma + 1e-9)
+
+        # Feature 3: 10-bar momentum
+        if i >= 10 and closes[i - 10] > 0.0:
+            mom = closes[i] / closes[i - 10] - 1.0
+        else:
+            mom = 0.0
+
+        # Clip all features to [-3, 3]
+        features[i, 0] = max(-3.0, min(3.0, lr1))
+        features[i, 1] = max(-3.0, min(3.0, lr5))
+        features[i, 2] = max(-3.0, min(3.0, zscore))
+        features[i, 3] = max(-3.0, min(3.0, mom))
+
+    return features
+
+
+# ---------------------------------------------------------------------------
 # Configuration Dataclass
 # ---------------------------------------------------------------------------
 
@@ -624,6 +856,197 @@ class DarwinBot(ABC):
 # ============================================================================
 # 2. STRATEGIES - GENE LIBRARY
 # ============================================================================
+
+
+class RNNScout(DarwinBot):
+    """
+    Recurrent Neural Network trading strategy using a GRU cell.
+
+    The GRU weights ARE the genes — evolution directly mutates the network
+    weights instead of hyperparameters. This gives the network "memory":
+    it can learn patterns across multiple past bars that static indicators
+    (RSI, MACD, Bollinger, EMA) cannot express.
+
+    Architecture
+    ------------
+    Input  : 4 normalised features per bar (log-returns, z-score, momentum)
+    GRU    : hidden_dim units, 1 layer, stateful across the full series
+    Output : 1 scalar per bar (thresholded to Long/Short/Flat)
+
+    Evolvable parameters (genes)
+    ----------------------------
+    hidden_dim   : GRU hidden state size     (4 – 32)
+    long_thresh  : Output threshold for Long  (0.05 – 0.8)
+    short_thresh : Output threshold for Short (-0.8 – -0.05)
+    lookback     : Warm-up bars before signals start (10 – 60)
+
+    Weight mutation
+    ---------------
+    Gaussian noise added to all weight matrices scaled by mutation_rate.
+    Weights are the primary carriers of learned structure — small perturbations
+    allow gradual fitness improvement without destroying learned patterns.
+
+    Anti-overfitting
+    ----------------
+    Random weight initialisation at spawn + Gaussian noise mutation ensures
+    diversity. The MultiverseArena eliminates any RNN that overfits to one
+    regime (DD > threshold in any of 155 scenarios).
+    """
+
+    # Feature dimensionality (must match _kernel_build_features output)
+    INPUT_SIZE: int = 4
+
+    def __init__(
+        self,
+        name: str,
+        hidden_dim: int = 8,
+        long_thresh: float = 0.3,
+        short_thresh: float = -0.3,
+        lookback: int = 20,
+        mutation_rate: float = 0.05,
+        **kwargs,
+    ):
+        super().__init__(name, **kwargs)
+        self.hidden_dim = hidden_dim
+        self.long_thresh = long_thresh
+        self.short_thresh = short_thresh
+        self.lookback = lookback
+        self.mutation_rate = mutation_rate
+
+        # Initialise GRU weights (Xavier-like scaling)
+        self._init_weights()
+
+    # ------------------------------------------------------------------
+    # Weight initialisation
+    # ------------------------------------------------------------------
+
+    def _init_weights(self) -> None:
+        """Xavier uniform initialisation for all GRU weight matrices."""
+        h = self.hidden_dim
+        inp = self.INPUT_SIZE
+        concat_size = inp + h
+        scale = np.sqrt(2.0 / (inp + h))
+
+        rng = np.random.default_rng()
+
+        def W(rows: int, cols: int) -> np.ndarray:
+            return rng.uniform(-scale, scale, (rows, cols))
+
+        def b(size: int) -> np.ndarray:
+            return np.zeros(size, dtype=np.float64)
+
+        self.Wz = W(h, concat_size)
+        self.Wr = W(h, concat_size)
+        self.Wh = W(h, concat_size)
+        self.bz = b(h)
+        self.br = b(h)
+        self.bh = b(h)
+        self.Wo = W(1, h)
+        self.bo = 0.0
+
+    # ------------------------------------------------------------------
+    # Signal computation (called by run_simulation)
+    # ------------------------------------------------------------------
+
+    def compute_signals(self, closes: np.ndarray) -> np.ndarray:
+        """
+        Build features → GRU forward pass → threshold to signals.
+        All hot loops are Numba JIT-compiled.
+        """
+        features = _kernel_build_features(closes, self.lookback)
+        outputs = _kernel_rnn_forward(
+            features,
+            self.Wz,
+            self.Wr,
+            self.Wh,
+            self.bz,
+            self.br,
+            self.bh,
+            self.Wo,
+            self.bo,
+        )
+        return _kernel_signals_rnn(outputs, self.long_thresh, self.short_thresh)
+
+    # ------------------------------------------------------------------
+    # Evolution: mutate (in-place weight perturbation)
+    # ------------------------------------------------------------------
+
+    def mutate(self) -> None:
+        """
+        Gaussian noise added to weights (primary mutation).
+        Threshold parameters also slightly perturbed.
+        """
+        rng = np.random.default_rng()
+        rate = self.mutation_rate
+
+        # Weight matrices: additive Gaussian noise
+        for attr in ("Wz", "Wr", "Wh", "Wo"):
+            W = getattr(self, attr)
+            setattr(self, attr, W + rng.normal(0, rate, W.shape))
+
+        # Bias vectors
+        for attr in ("bz", "br", "bh"):
+            b = getattr(self, attr)
+            setattr(self, attr, b + rng.normal(0, rate * 0.1, b.shape))
+
+        self.bo += float(rng.normal(0, rate * 0.1))
+
+        # Threshold parameters (small perturbation, enforce min gap)
+        self.long_thresh = float(
+            np.clip(self.long_thresh + rng.uniform(-0.05, 0.05), 0.05, 0.8)
+        )
+        self.short_thresh = float(
+            np.clip(self.short_thresh + rng.uniform(-0.05, 0.05), -0.8, -0.05)
+        )
+
+        # Occasionally resize hidden_dim (structural mutation, 5% chance)
+        if random.random() < 0.05:
+            delta = random.choice([-2, 2])
+            new_h = int(np.clip(self.hidden_dim + delta, 4, 32))
+            if new_h != self.hidden_dim:
+                self.hidden_dim = new_h
+                self._init_weights()  # fresh weights for new size
+
+        self.name = (
+            f"RNN_h{self.hidden_dim}_lt{self.long_thresh:.2f}_st{self.short_thresh:.2f}"
+        )
+
+    # ------------------------------------------------------------------
+    # Evolution: crossover (weight interpolation between two parents)
+    # ------------------------------------------------------------------
+
+    def crossover(self, other: "DarwinBot") -> "RNNScout":
+        """
+        Produce offspring by interpolating weights from two parents.
+        Each weight element independently drawn from either parent (uniform crossover).
+        """
+        assert isinstance(other, RNNScout)
+
+        # If hidden dims differ, use the larger parent's structure
+        if self.hidden_dim >= other.hidden_dim:
+            child = copy.deepcopy(self)
+        else:
+            child = copy.deepcopy(other)
+
+        # Uniform crossover on matching-size weight matrices
+        if self.hidden_dim == other.hidden_dim:
+            for attr in ("Wz", "Wr", "Wh", "Wo", "bz", "br", "bh"):
+                wa = getattr(self, attr)
+                wb = getattr(other, attr)
+                mask = np.random.random(wa.shape) < 0.5
+                new_w = np.where(mask, wa, wb)
+                setattr(child, attr, new_w)
+            child.bo = random.choice([self.bo, other.bo])
+
+        # Threshold crossover
+        child.long_thresh = random.choice([self.long_thresh, other.long_thresh])
+        child.short_thresh = random.choice([self.short_thresh, other.short_thresh])
+        child.lookback = random.choice([self.lookback, other.lookback])
+        child.name = "RNN_child"
+        return child
+
+
+# ---------------------------------------------------------------------------
 
 
 class RSIScout(DarwinBot):
@@ -985,6 +1408,7 @@ STRATEGY_REGISTRY: Dict[str, Type[DarwinBot]] = {
     "MACD": MACDScout,
     "Bollinger": BollingerScout,
     "EMA": EMAScout,
+    "RNN": RNNScout,
 }
 
 
@@ -1027,6 +1451,15 @@ def _spawn_random_bot(config: ArenaConfig, gen: int, idx: int) -> DarwinBot:
         return EMAScout(
             fast_period=fast,
             slow_period=random.randint(fast + 5, 50),
+            **common,
+        )
+    elif strategy_class is RNNScout:
+        return RNNScout(
+            hidden_dim=random.choice([4, 8, 12, 16]),
+            long_thresh=round(random.uniform(0.1, 0.6), 2),
+            short_thresh=round(random.uniform(-0.6, -0.1), 2),
+            lookback=random.randint(10, 40),
+            mutation_rate=round(random.uniform(0.02, 0.10), 3),
             **common,
         )
     raise ValueError(f"Unknown strategy class: {strategy_class}")
