@@ -845,9 +845,27 @@ class DarwinBot(ABC):
         )
 
         self.trade_count = trade_count
-        self.equity_curve = equity_arr.tolist()
+        # Do NOT store full equity curve on bot — saves RAM during MV evaluation
+        # (3100 curves × 2000 bars × 8 bytes = ~50 MB per generation).
+        # Callers that need the curve receive it as return value.
+        self.equity_curve: List[float] = []  # kept empty; populated only on demand
 
         return pd.Series(equity_arr, index=df.index)
+
+    def _run_simulation_np(self, closes: np.ndarray) -> np.ndarray:
+        """
+        RAM-efficient simulation path for MultiverseEvaluator.
+
+        Returns raw numpy array instead of pd.Series (no DatetimeIndex alloc).
+        Used internally by MultiverseEvaluator to avoid pd.Series overhead
+        across 3100+ scenario evaluations per generation.
+        """
+        signals = self.compute_signals(closes)
+        equity_arr, trade_count = _kernel_simulate(
+            signals, closes, self.fee_rate, self.slippage_rate
+        )
+        self.trade_count = trade_count
+        return equity_arr  # numpy float64, shape (n,)
 
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__} name={self.name}>"
@@ -1314,14 +1332,17 @@ class EliteEvaluator:
     def __init__(self, config: ArenaConfig):
         self.config = config
 
-    def evaluate(self, equity_curve: pd.Series, bot: DarwinBot) -> BotStats:
+    def evaluate(
+        self, equity_curve: "pd.Series | np.ndarray", bot: DarwinBot
+    ) -> BotStats:
         """
         Compute all metrics and composite score.
 
         Parameters
         ----------
-        equity_curve : pd.Series
-            Equity values from run_simulation()
+        equity_curve : pd.Series or np.ndarray
+            Equity values from run_simulation(). Accepts both types so the
+            MultiverseEvaluator can pass raw numpy arrays (zero copy, no index).
         bot : DarwinBot
             The evaluated bot (for trade_count, fee_rate)
 
@@ -1330,37 +1351,59 @@ class EliteEvaluator:
         BotStats
             Full performance profile
         """
-        returns = equity_curve.pct_change().dropna()
-        total_return = float((equity_curve.iloc[-1] / equity_curve.iloc[0]) - 1)
+        # ---- Pure-numpy path (RAM-efficient: no pd.Series alloc in hot loop) ----
+        eq: np.ndarray = (
+            equity_curve.values
+            if isinstance(equity_curve, pd.Series)
+            else np.asarray(equity_curve, dtype=np.float64)
+        )
 
-        # --- Drawdown ---
-        running_max = equity_curve.cummax()
-        drawdown = (equity_curve - running_max) / running_max
-        max_drawdown = float(abs(drawdown.min()))
-        if max_drawdown == 0:
-            max_drawdown = 1e-9  # Avoid division by zero
+        n = len(eq)
+        if n < 2:
+            return BotStats(
+                score=0.0,
+                total_return=0.0,
+                max_drawdown=1e-9,
+                sharpe_ratio=0.0,
+                calmar_ratio=0.0,
+                sortino_ratio=0.0,
+                recovery_factor=0.0,
+                profit_to_fee_ratio=0.0,
+                trade_count=0,
+                win_rate=0.0,
+            )
 
-        # --- Sharpe Ratio ---
-        mean_ret = returns.mean()
-        std_ret = returns.std()
+        total_return = float(eq[-1] / eq[0]) - 1.0
+
+        # --- Drawdown (pure numpy) ---
+        running_max = np.maximum.accumulate(eq)
+        drawdown = (eq - running_max) / (running_max + 1e-12)
+        max_drawdown = float(max(abs(drawdown.min()), 1e-9))
+
+        # --- Returns (diff on numpy, no pandas overhead) ---
+        rets = np.diff(eq) / (eq[:-1] + 1e-12)
+        mean_ret = float(rets.mean())
+        std_ret = float(rets.std())
+
+        # --- Sharpe ---
         sharpe = (
             mean_ret / std_ret * np.sqrt(self.config.sharpe_window)
             if std_ret > 0
             else 0.0
         )
 
-        # --- Sortino Ratio (penalises only downside volatility) ---
-        downside = returns[returns < 0]
-        downside_std = downside.std() if len(downside) > 1 else 1e-9
+        # --- Sortino ---
+        downside = rets[rets < 0]
+        downside_std = float(downside.std()) if len(downside) > 1 else 1e-9
         sortino = (
             mean_ret / downside_std * np.sqrt(self.config.sharpe_window)
             if downside_std > 0
             else 0.0
         )
 
-        # --- Calmar Ratio (annualised return / MDD) ---
-        years = len(equity_curve) / self.config.sharpe_window
-        annualised_return = (1 + total_return) ** (1 / max(years, 0.01)) - 1
+        # --- Calmar ---
+        years = n / self.config.sharpe_window
+        annualised_return = (1.0 + total_return) ** (1.0 / max(years, 0.01)) - 1.0
         calmar = annualised_return / max_drawdown
 
         # --- Recovery Factor ---
@@ -1374,16 +1417,12 @@ class EliteEvaluator:
             else 0.0
         )
 
-        # --- Win Rate (positive return bars while in position, proxy) ---
-        positive_returns = (returns > 0).sum()
-        win_rate = float(positive_returns / len(returns)) if len(returns) > 0 else 0.0
+        # --- Win Rate ---
+        win_rate = float((rets > 0).sum() / len(rets)) if len(rets) > 0 else 0.0
 
         # --- Composite Score ---
-        # Primary driver: Calmar (risk-adjusted, annualised)
-        # Modifier: Sharpe quality gate
-        # Penalty: Overtrading (PFR below threshold)
         pfr_modifier = 1.0 if pfr >= self.config.pfr_threshold else 0.1
-        sharpe_gate = max(0.0, sharpe)  # Negative Sharpe -> zero contribution
+        sharpe_gate = max(0.0, sharpe)
         score = (
             calmar * 0.5 + recovery_factor * 0.3 + sharpe_gate * 0.2
         ) * pfr_modifier
@@ -3072,7 +3111,12 @@ class MultiverseEvaluator:
         config: ArenaConfig,
         max_dd_threshold: float = 0.20,
     ):
-        self.scenarios = scenarios
+        # Pre-extract close arrays once — avoids re-extracting 155 DataFrames
+        # per bot per generation (pure numpy, zero pandas overhead in hot loop).
+        self._scenario_closes: Dict[str, np.ndarray] = {
+            name: df["close"].values.astype(np.float64)
+            for name, df in scenarios.items()
+        }
         self.config = config
         self.max_dd_threshold = max_dd_threshold
         self._evaluator = EliteEvaluator(config)
@@ -3081,6 +3125,8 @@ class MultiverseEvaluator:
         """
         Run bot across all scenarios and compute aggregated Multiverse fitness.
 
+        RAM-efficient path: uses _run_simulation_np() (no pd.Series alloc) and
+        pre-extracted close numpy arrays (no DataFrame access in hot loop).
         Early exit (elimination) if bot exceeds max_dd_threshold in any scenario.
         """
         scores: List[float] = []
@@ -3088,10 +3134,11 @@ class MultiverseEvaluator:
         sharpes: List[float] = []
         worst_dd = 0.0
         elimination_scenario = ""
+        n_scenarios = len(self._scenario_closes)
 
-        for name, scenario_df in self.scenarios.items():
+        for name, closes in self._scenario_closes.items():
             try:
-                curve = bot.run_simulation(scenario_df)
+                curve = bot._run_simulation_np(closes)  # numpy array, no pd.Series
                 stats = self._evaluator.evaluate(curve, bot)
             except Exception as exc:
                 logger.debug(f"  Bot {bot.name} failed on scenario '{name}': {exc}")
@@ -3099,7 +3146,7 @@ class MultiverseEvaluator:
                 return MultiverseStats(
                     bot_name=bot.name,
                     multiverse_score=0.0,
-                    scenarios_tested=len(self.scenarios),
+                    scenarios_tested=n_scenarios,
                     scenarios_survived=0,
                     survival_rate=0.0,
                     worst_drawdown=1.0,
@@ -3118,9 +3165,9 @@ class MultiverseEvaluator:
                 return MultiverseStats(
                     bot_name=bot.name,
                     multiverse_score=0.0,
-                    scenarios_tested=len(self.scenarios),
+                    scenarios_tested=n_scenarios,
                     scenarios_survived=len(scores),
-                    survival_rate=len(scores) / max(len(self.scenarios), 1),
+                    survival_rate=len(scores) / max(n_scenarios, 1),
                     worst_drawdown=worst_dd,
                     avg_return=float(np.mean(returns)) if returns else -1.0,
                     avg_sharpe=float(np.mean(sharpes)) if sharpes else -99.0,
@@ -3138,9 +3185,9 @@ class MultiverseEvaluator:
         return MultiverseStats(
             bot_name=bot.name,
             multiverse_score=multiverse_score,
-            scenarios_tested=len(self.scenarios),
+            scenarios_tested=n_scenarios,
             scenarios_survived=n_survived,
-            survival_rate=n_survived / max(len(self.scenarios), 1),
+            survival_rate=n_survived / max(n_scenarios, 1),
             worst_drawdown=worst_dd,
             avg_return=float(np.mean(returns)) if returns else -1.0,
             avg_sharpe=float(np.mean(sharpes)) if sharpes else -99.0,
@@ -3232,7 +3279,12 @@ class MultiverseArena:
         self.data = data.copy()
         self.cfg = config or MultiverseArenaConfig()
         self.verbose = verbose
-        self.history: List[Dict] = []
+        # history is streamed to CSV — no in-memory list growth
+        self.history: List[Dict] = []  # kept for print_leaderboard compatibility
+        self._csv_path: str = str(
+            Path(self.cfg.champion_save_path).parent / "mv_history.csv"
+        )
+        self._csv_initialized: bool = False
         self.champion: Optional[DarwinBot] = None
         self.champion_mv_stats: Optional[MultiverseStats] = None
 
@@ -3390,20 +3442,38 @@ class MultiverseArena:
                 f"MV Gen {gen:>3}/{self.cfg.generations - 1} | {best_mv.summary()}"
             )
 
-            self.history.append(
-                {
-                    "generation": gen,
-                    "champion": best_bot.name,
-                    "mv_score": best_mv.multiverse_score,
-                    "survival_rate": best_mv.survival_rate,
-                    "scenarios_survived": best_mv.scenarios_survived,
-                    "scenarios_tested": best_mv.scenarios_tested,
-                    "worst_dd": best_mv.worst_drawdown,
-                    "avg_return": best_mv.avg_return,
-                    "avg_sharpe": best_mv.avg_sharpe,
-                    "eliminated": best_mv.eliminated,
-                }
-            )
+            row = {
+                "generation": gen,
+                "champion": best_bot.name,
+                "mv_score": best_mv.multiverse_score,
+                "survival_rate": best_mv.survival_rate,
+                "scenarios_survived": best_mv.scenarios_survived,
+                "scenarios_tested": best_mv.scenarios_tested,
+                "worst_dd": best_mv.worst_drawdown,
+                "avg_return": best_mv.avg_return,
+                "avg_sharpe": best_mv.avg_sharpe,
+                "eliminated": best_mv.eliminated,
+            }
+
+            # Stream row to CSV immediately — no in-memory list growth
+            try:
+                import csv as _csv
+
+                write_header = not self._csv_initialized
+                Path(self._csv_path).parent.mkdir(parents=True, exist_ok=True)
+                with open(self._csv_path, "a", newline="") as fcsv:
+                    writer = _csv.DictWriter(fcsv, fieldnames=list(row.keys()))
+                    if write_header:
+                        writer.writeheader()
+                        self._csv_initialized = True
+                    writer.writerow(row)
+            except Exception as _csv_exc:
+                logger.debug(f"CSV history write failed: {_csv_exc}")
+
+            # Keep only last 5 rows in memory for print_leaderboard
+            self.history.append(row)
+            if len(self.history) > 5:
+                self.history.pop(0)
 
             self.champion = best_bot
             self.champion_mv_stats = best_mv
@@ -3442,8 +3512,18 @@ class MultiverseArena:
         return self.champion  # type: ignore[return-value]
 
     def get_history_df(self) -> pd.DataFrame:
-        """Return generational history as a tidy DataFrame."""
-        return pd.DataFrame(self.history).set_index("generation")
+        """Return generational history as a tidy DataFrame (reads from CSV if available)."""
+        csv_p = Path(self._csv_path)
+        if csv_p.exists():
+            try:
+                return pd.read_csv(csv_p).set_index("generation")
+            except Exception:
+                pass
+        return (
+            pd.DataFrame(self.history).set_index("generation")
+            if self.history
+            else pd.DataFrame()
+        )
 
     def print_leaderboard(self, top_n: int = 5) -> None:
         """Print multiverse leaderboard."""
