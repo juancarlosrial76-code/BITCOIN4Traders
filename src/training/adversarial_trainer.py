@@ -509,6 +509,132 @@ class AdversarialTrainer:
             else 0.0,
         }
 
+    # ------------------------------------------------------------------
+    # Vectorised trajectory collection (GPU-optimised)
+    # ------------------------------------------------------------------
+
+    def collect_trajectories_vec(
+        self,
+        vec_env,  # VecTradingEnv
+        steps_per_env: int,
+    ) -> Dict:
+        """
+        Collect trajectories from a VecTradingEnv with a single batched GPU
+        forward-pass per step instead of N sequential passes.
+
+        This is a drop-in replacement for collect_trajectories() when you have
+        initialised a VecTradingEnv.  The effective number of environment steps
+        collected equals steps_per_env * n_envs, so you should set
+        steps_per_env = config.steps_per_iteration // n_envs.
+
+        The adversary is intentionally NOT supported here — adversarial training
+        requires per-step obs modifications that are hard to vectorise without a
+        significant refactor.  Adversarial training continues to use the original
+        collect_trajectories().
+
+        Parameters
+        ----------
+        vec_env : VecTradingEnv
+            Vectorised environment with N parallel sub-environments.
+        steps_per_env : int
+            Number of steps to collect per sub-environment.
+            Total steps = steps_per_env * vec_env.n_envs
+
+        Returns
+        -------
+        metrics : dict  — same keys as collect_trajectories()
+        """
+        n_envs = vec_env.n_envs
+
+        # Per-env episode tracking
+        ep_rewards: list = [[] for _ in range(n_envs)]
+        ep_returns: list = [[] for _ in range(n_envs)]
+        ep_lengths: list = [[] for _ in range(n_envs)]
+        cur_reward = np.zeros(n_envs, dtype=np.float32)
+        cur_length = np.zeros(n_envs, dtype=np.int32)
+
+        # Trader buffer is flat — we flatten the (N, …) arrays per step
+        self.trader.reset_buffers()
+
+        # Initial hidden states — shape (rnn_layers, N, hidden_dim)
+        trader_hidden = self.trader.get_initial_hidden_state(batch_size=n_envs)
+
+        obs = vec_env.reset()  # (N, state_dim)
+
+        for _ in range(steps_per_env):
+            current_hidden = trader_hidden
+
+            # ---- single batched GPU forward pass -------------------------
+            actions, log_probs, values, trader_hidden = self.trader.select_action_batch(
+                obs, trader_hidden
+            )
+            # actions    : (N,) int
+            # log_probs  : (N,) float
+            # values     : (N,) float
+            # trader_hidden : updated hidden (rnn_layers, N, hidden_dim)
+
+            # ---- step all envs in parallel (ThreadPoolExecutor inside VecEnv) ----
+            next_obs, rewards, dones, infos = vec_env.step(actions)
+            # rewards/dones : (N,)
+
+            # ---- store N transitions as N flat entries --------------------
+            for i in range(n_envs):
+                self.trader.store_transition(
+                    obs[i],
+                    int(actions[i]),
+                    float(rewards[i]),
+                    float(log_probs[i]),
+                    float(values[i]),
+                    bool(dones[i]),
+                    hidden=None,  # We don't store per-step hidden in vec mode
+                )
+
+            cur_reward += rewards
+            cur_length += 1
+            self.total_steps += n_envs
+
+            # ---- episode boundary bookkeeping ----------------------------
+            for i in range(n_envs):
+                if dones[i]:
+                    ep_rewards[i].append(float(cur_reward[i]))
+                    ep_returns[i].append(float(infos[i].get("return", 0.0)))
+                    ep_lengths[i].append(int(cur_length[i]))
+                    cur_reward[i] = 0.0
+                    cur_length[i] = 0
+                    # Reset hidden state for this env's slice
+                    if trader_hidden is not None:
+                        if isinstance(trader_hidden, tuple):
+                            # LSTM: (h, c) each (rnn_layers, N, hidden_dim)
+                            trader_hidden[0][:, i, :].zero_()
+                            trader_hidden[1][:, i, :].zero_()
+                        else:
+                            # GRU: (rnn_layers, N, hidden_dim)
+                            trader_hidden[:, i, :].zero_()
+
+            obs = next_obs
+
+        # Bootstrap value for incomplete episodes
+        _, _, bootstrap_values, _ = self.trader.select_action_batch(obs, trader_hidden)
+        next_value = float(bootstrap_values.mean())  # Conservative scalar estimate
+
+        # Flatten per-env lists
+        all_ep_rewards = [r for env_r in ep_rewards for r in env_r]
+        all_ep_returns = [r for env_r in ep_returns for r in env_r]
+        all_ep_lengths = [l for env_l in ep_lengths for l in env_l]
+
+        return {
+            "episode_rewards": all_ep_rewards,
+            "episode_returns": all_ep_returns,
+            "episode_lengths": all_ep_lengths,
+            "mean_reward": float(np.mean(all_ep_rewards)) if all_ep_rewards else 0.0,
+            "mean_return": float(np.mean(all_ep_returns)) if all_ep_returns else 0.0,
+            "mean_length": float(np.mean(all_ep_lengths)) if all_ep_lengths else 0.0,
+            "next_value": next_value,
+            "adversary_next_value": 0.0,
+            "adversary_episode_rewards": [],
+            "mean_adversary_reward": 0.0,
+        }
+
     def _apply_adversary_modification(
         self, obs: np.ndarray, adv_action: int, env_info: Dict
     ) -> tuple[np.ndarray, Dict]:
@@ -665,7 +791,7 @@ class AdversarialTrainer:
 
         return result
 
-    def train(self):
+    def train(self, vec_env=None, steps_per_env: Optional[int] = None):
         """
         Main training loop.
 
@@ -674,23 +800,48 @@ class AdversarialTrainer:
         2. Adversary learning (after warm-up)
         3. Evaluation
         4. Checkpointing
+
+        Parameters
+        ----------
+        vec_env : VecTradingEnv or None
+            If provided, uses collect_trajectories_vec() for GPU-optimised
+            trajectory collection (single batched forward-pass per step).
+            Adversarial training is NOT supported with VecEnv — adversary stays
+            inactive when vec_env is passed.
+        steps_per_env : int or None
+            Steps per sub-environment per iteration when using vec_env.
+            Defaults to config.steps_per_iteration // vec_env.n_envs.
         """
         logger.info("Starting adversarial training...")
+        _use_vec = vec_env is not None
+        if _use_vec:
+            _steps_per_env = steps_per_env or (
+                self.config.steps_per_iteration // vec_env.n_envs
+            )
+            logger.warning(
+                f"VecEnv mode: {vec_env.n_envs} envs x {_steps_per_env} steps "
+                f"= {vec_env.n_envs * _steps_per_env} steps/iter | adversary DISABLED"
+            )
 
         for iteration in range(self.config.n_iterations):
             self.iteration = iteration
 
             # Collect trajectories
-            use_adversary = iteration >= self.config.adversary_start_iteration
+            use_adversary = (
+                not _use_vec and iteration >= self.config.adversary_start_iteration
+            )
 
             # debug level: goes to log file only, not to Colab stdout
             logger.debug(f"\n{'=' * 80}")
             logger.debug(f"Iteration {iteration + 1}/{self.config.n_iterations}")
             logger.debug(f"Adversary active: {use_adversary}")
 
-            traj_metrics = self.collect_trajectories(
-                self.config.steps_per_iteration, use_adversary=use_adversary
-            )
+            if _use_vec:
+                traj_metrics = self.collect_trajectories_vec(vec_env, _steps_per_env)
+            else:
+                traj_metrics = self.collect_trajectories(
+                    self.config.steps_per_iteration, use_adversary=use_adversary
+                )
 
             # Train trader
             trader_stats = self.train_trader(traj_metrics["next_value"])

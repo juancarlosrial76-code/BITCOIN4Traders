@@ -595,6 +595,71 @@ class PPOAgent:
 
         return (action.item(), log_prob.item(), value.item(), next_hidden_actor)
 
+    def select_action_batch(
+        self,
+        states: np.ndarray,
+        hidden: Optional[Union[Tuple, torch.Tensor]] = None,
+        deterministic: bool = False,
+    ) -> Tuple[
+        np.ndarray, np.ndarray, np.ndarray, Optional[Union[Tuple, torch.Tensor]]
+    ]:
+        """
+        Select actions for a batch of N observations in a single GPU forward-pass.
+
+        This is the vectorised counterpart of select_action() and is used together
+        with VecTradingEnv to maximise GPU utilisation during trajectory collection.
+
+        Parameters
+        ----------
+        states : np.ndarray  shape (N, state_dim)
+            Batch of observations, one per environment.
+        hidden : optional
+            Recurrent hidden state with leading batch dimension N.
+            For GRU:  tensor shape (rnn_layers, N, hidden_dim)
+            For LSTM: tuple of two tensors with the same shape
+            Pass None (or the return value of get_initial_hidden_state(batch_size=N))
+            at the start of each episode.
+        deterministic : bool
+            If True uses argmax instead of sampling (for evaluation).
+
+        Returns
+        -------
+        actions   : np.ndarray  shape (N,)   int   — one action per env
+        log_probs : np.ndarray  shape (N,)   float — log π(a|s) per env
+        values    : np.ndarray  shape (N,)   float — V(s) per env
+        next_hidden : same type/shape as hidden — updated recurrent state
+        """
+        # (N, state_dim) → GPU
+        state_tensor = torch.FloatTensor(states).to(self.device)  # (N, state_dim)
+
+        training_mode = self.actor.training
+        if deterministic:
+            self.actor.eval()
+            self.critic.eval()
+
+        with torch.no_grad():
+            dist, next_hidden_actor = self.actor(state_tensor, hidden)  # batch forward
+
+            value_tensor, _ = self.critic(state_tensor, None)  # (N, 1)
+
+            if deterministic:
+                actions_t = dist.probs.argmax(dim=-1)  # (N,)
+            else:
+                actions_t = dist.sample()  # (N,)
+
+            log_probs_t = dist.log_prob(actions_t)  # (N,)
+
+        if deterministic:
+            self.actor.train(training_mode)
+            self.critic.train(training_mode)
+
+        return (
+            actions_t.cpu().numpy().astype(np.int64),  # (N,)
+            log_probs_t.cpu().numpy().astype(np.float32),  # (N,)
+            value_tensor.squeeze(-1).cpu().numpy().astype(np.float32),  # (N,)
+            next_hidden_actor,
+        )
+
     def store_transition(
         self,
         state: np.ndarray,
