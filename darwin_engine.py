@@ -953,6 +953,10 @@ class RNNScout(DarwinBot):
         Build features → GRU forward pass → threshold to signals.
         All hot loops are Numba JIT-compiled.
         """
+        # Defensive: accept DataFrame/Series or raw numpy array
+        if hasattr(closes, "values"):
+            closes = closes.values
+        closes = np.asarray(closes, dtype=np.float64)
         features = _kernel_build_features(closes, self.lookback)
         outputs = _kernel_rnn_forward(
             features,
