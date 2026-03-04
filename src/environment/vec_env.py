@@ -105,6 +105,12 @@ class VecTradingEnv:
         self._obs: np.ndarray = np.zeros((n_envs, self.state_dim), dtype=np.float32)
         self._infos: List[Dict] = [{} for _ in range(n_envs)]
 
+        # P1-A: Pre-allocate step output arrays as class attributes.
+        # Previously rewards/dones were re-allocated on every step() call.
+        # Now they are written in-place → zero allocation overhead per step.
+        self._rewards: np.ndarray = np.zeros(n_envs, dtype=np.float32)
+        self._dones: np.ndarray = np.zeros(n_envs, dtype=bool)
+
         # Thread pool — reuse across calls to avoid thread-creation overhead
         self._executor = ThreadPoolExecutor(max_workers=n_envs)
 
@@ -131,7 +137,9 @@ class VecTradingEnv:
             self._obs[i] = obs
             self._infos[i] = info
 
-        return self._obs.copy()
+        # P1-A: return view instead of copy — safe because reset() is only called
+        # once before the rollout loop and self._obs is immediately read (not mutated)
+        return self._obs
 
     def step(
         self, actions: np.ndarray
@@ -151,10 +159,10 @@ class VecTradingEnv:
         dones   : np.ndarray  shape (N,)  dtype bool — episode boundaries
         infos   : List[Dict]  length N
         """
-        next_obs = np.zeros_like(self._obs)
-        rewards = np.zeros(self.n_envs, dtype=np.float32)
-        dones = np.zeros(self.n_envs, dtype=bool)
-        infos: List[Dict] = [{}] * self.n_envs
+        # P1-A: Write directly into self._obs (in-place) instead of allocating
+        # a fresh next_obs array. Also reuse self._rewards/_dones pre-alloc arrays.
+        # Eliminates 2 full (N, state_dim) allocations per step.
+        infos: List[Dict] = [{} for _ in range(self.n_envs)]
 
         def _step_one(i: int, action: int) -> Tuple[int, np.ndarray, float, bool, Dict]:
             obs, reward, terminated, truncated, info = self._envs[i].step(action)
@@ -170,14 +178,16 @@ class VecTradingEnv:
         ]
         for f in as_completed(futures):
             i, obs, reward, done, info = f.result()
-            next_obs[i] = obs
-            rewards[i] = reward
-            dones[i] = done
+            self._obs[i] = obs  # in-place write → no extra alloc
+            self._rewards[i] = reward
+            self._dones[i] = done
             infos[i] = info
 
-        self._obs = next_obs
         self._infos = infos
-        return next_obs.copy(), rewards, dones, infos
+        # Return a view of self._obs — caller must NOT mutate it between steps.
+        # In all trainer paths, obs is immediately consumed (select_action_batch)
+        # and then overwritten on the next step, so this is safe.
+        return self._obs, self._rewards, self._dones, infos
 
     def close(self) -> None:
         """Shut down the thread pool and close all environments."""

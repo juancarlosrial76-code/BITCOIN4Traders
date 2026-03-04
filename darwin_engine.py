@@ -111,7 +111,12 @@ try:
     _JOBLIB_AVAILABLE = True
     import multiprocessing as _mp
 
-    _N_JOBS = max(1, _mp.cpu_count() - 1)  # leave one core free
+    # P2: cpu_count()-1 war auf Colab (2 vCPU) immer 1 → kein Parallelismus.
+    # Wir nutzen ALLE verfuegbaren Kerne fuer Evolution (joblib hat eigene
+    # Prozesse, daher kein Konflikt mit dem PyTorch-Training-Thread).
+    # Auf lokalen Rechnern bleibt ein Core fuer das OS frei (cpu_count()-1).
+    _n_cpu = _mp.cpu_count()
+    _N_JOBS = _n_cpu if _n_cpu <= 2 else _n_cpu - 1
     logger.info(f"joblib detected - parallel evaluation on {_N_JOBS} cores enabled.")
 except ImportError:
     _JOBLIB_AVAILABLE = False

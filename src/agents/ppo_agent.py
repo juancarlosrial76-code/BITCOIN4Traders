@@ -531,16 +531,43 @@ class PPOAgent:
         logger.info(f"  LayerNorm: {config.use_layer_norm}, Dropout: {config.dropout}")
         logger.info(f"  LR Schedule: {config.use_lr_decay}")
 
-    def reset_buffers(self):
-        """Reset experience buffers."""
-        self.states = []
-        self.actions = []
-        self.rewards = []
-        self.log_probs = []
-        self.values = []
-        self.dones = []
-        # Store hidden states for training
-        self.hiddens = []
+    def reset_buffers(self, capacity: int = 0):
+        """Reset experience buffers.
+
+        P0-B: Pre-allocate fixed-size numpy arrays for scalar/vector fields.
+        Avoids O(N) Python list traversal when converting to tensors at train time.
+        'capacity' should be steps_per_iteration (or steps_per_env * n_envs).
+        Falls back to dynamic lists when capacity is unknown (capacity=0).
+        """
+        self._buf_capacity = capacity
+        self._buf_ptr = 0  # write pointer
+
+        if capacity > 0:
+            state_dim = self.config.state_dim
+            self._states_np = np.empty((capacity, state_dim), dtype=np.float32)
+            self._actions_np = np.empty(capacity, dtype=np.int64)
+            self._rewards_np = np.empty(capacity, dtype=np.float32)
+            self._logprobs_np = np.empty(capacity, dtype=np.float32)
+            self._values_np = np.empty(capacity, dtype=np.float32)
+            self._dones_np = np.empty(capacity, dtype=np.float32)
+            # hiddens stay as list (tensors of variable type/shape)
+            self.hiddens = []
+            # Keep legacy list aliases as views (used by compute_gae)
+            self.states = self._states_np  # slice later
+            self.actions = self._actions_np
+            self.rewards = self._rewards_np
+            self.log_probs = self._logprobs_np
+            self.values = self._values_np
+            self.dones = self._dones_np
+        else:
+            # Fallback: dynamic Python lists (same API, used when capacity unknown)
+            self.states = []
+            self.actions = []
+            self.rewards = []
+            self.log_probs = []
+            self.values = []
+            self.dones = []
+            self.hiddens = []
 
     def get_initial_hidden_state(self, batch_size: int = 1):
         """Get initial hidden state for RNN."""
@@ -681,20 +708,33 @@ class PPOAgent:
         log_prob: float,
         value: float,
         done: bool,
-        hidden: Optional[Any] = None,  # New arg
+        hidden: Optional[Any] = None,
     ):
-        """Store transition in buffer."""
-        self.states.append(state)
-        self.actions.append(action)
-        self.rewards.append(reward)
-        self.log_probs.append(log_prob)
-        self.values.append(value)
-        self.dones.append(done)
+        """Store transition in buffer.
 
-        # We store the hidden state used to generate this action
-        # This is needed for "burn-in" or initialization during training
+        P0-B: Writes directly into pre-allocated numpy arrays (no list.append
+        overhead, no object allocation per step). Falls back to list.append
+        when pre-allocation was not used (capacity=0 at reset_buffers call).
+        """
+        if self._buf_capacity > 0:
+            i = self._buf_ptr
+            self._states_np[i] = state
+            self._actions_np[i] = action
+            self._rewards_np[i] = reward
+            self._logprobs_np[i] = log_prob
+            self._values_np[i] = value
+            self._dones_np[i] = float(done)
+            self._buf_ptr += 1
+        else:
+            self.states.append(state)
+            self.actions.append(action)
+            self.rewards.append(reward)
+            self.log_probs.append(log_prob)
+            self.values.append(value)
+            self.dones.append(float(done))
+
+        # Hidden states stay as list (tensors can't easily go into a pre-alloc buffer)
         if hidden is not None:
-            # Move to CPU to save GPU memory
             if isinstance(hidden, tuple):
                 self.hiddens.append(tuple(h.cpu() for h in hidden))
             else:
@@ -722,36 +762,41 @@ class PPOAgent:
                 - advantages: Normalized advantage estimates
                 - returns: Target values for value function (advantage + baseline)
         """
-        # Append bootstrap value for final state to enable TD learning at episode end
-        # This prevents the "deadly triad" problem in RL
-        values = self.values + [next_value]
-        advantages = []
-        gae = 0  # Running GAE accumulator initialized to 0
+        # Determine filled length (pre-alloc path vs list path)
+        T = self._buf_ptr if self._buf_capacity > 0 else len(self.rewards)
 
-        # Iterate backwards through trajectory to compute backwards GAE recursion
-        # Going backwards allows us to compute A_t using A_{t+1} which is already known
-        for t in reversed(range(len(self.rewards))):
-            # TD error (δ_t): How much we exceeded expected value
-            # If done, the value of next state is effectively 0 (no future rewards)
+        # Build contiguous float32 arrays (zero-copy if pre-alloc, one-copy if list)
+        if self._buf_capacity > 0:
+            rewards_arr = self._rewards_np[:T]
+            values_arr_partial = self._values_np[:T]
+            dones_arr = self._dones_np[:T]
+            values_arr = np.append(values_arr_partial, next_value).astype(np.float32)
+        else:
+            rewards_arr = np.array(self.rewards, dtype=np.float32)
+            dones_arr = np.array(self.dones, dtype=np.float32)
+            values_arr = np.array(self.values + [next_value], dtype=np.float32)
+
+        # P0-A fix: pre-allocate output array and write by index.
+        # The old code used advantages.insert(0, gae) which is O(N) per call
+        # → O(N²) total. With T=16384 steps that was the dominant CPU cost.
+        # New approach: write advantages[t] directly → O(N) total.
+        advantages = np.empty(T, dtype=np.float32)
+        gae = 0.0
+        gamma = self.config.gamma
+        lam = self.config.gae_lambda
+
+        # Backwards GAE: A_t = δ_t + γλ(1-done_t) * A_{t+1}
+        for t in range(T - 1, -1, -1):
             delta = (
-                self.rewards[t]
-                + self.config.gamma * values[t + 1] * (1 - self.dones[t])
-                - values[t]
+                rewards_arr[t]
+                + gamma * values_arr[t + 1] * (1.0 - dones_arr[t])
+                - values_arr[t]
             )
+            gae = delta + gamma * lam * (1.0 - dones_arr[t]) * gae
+            advantages[t] = gae
 
-            # GAE formula: A_t = δ_t + γλ(1-done) * A_{t+1}
-            # This accumulates n-step returns with exponential weighting
-            gae = (
-                delta
-                + self.config.gamma * self.config.gae_lambda * (1 - self.dones[t]) * gae
-            )
-            advantages.insert(0, gae)  # Prepend to maintain original time order
-
-        advantages = np.array(advantages)
-
-        # Returns = advantage + value baseline (for value function training)
-        # This is the "target" we want V(s) to predict
-        returns = advantages + np.array(self.values)
+        # Returns = advantage + value baseline (target for V(s))
+        returns = advantages + values_arr[:T]
         return advantages, returns
 
     def train(self, next_value: float = 0.0) -> Dict:
@@ -782,64 +827,70 @@ class PPOAgent:
                 - mean_kl: Mean KL divergence between old and new policy
                 - n_epochs: Number of epochs trained
         """
-        # Check if we have any experience to learn from
-        if len(self.states) == 0:
+        # Determine actual number of stored transitions
+        # (pre-alloc path: _buf_ptr; list path: len)
+        _n = self._buf_ptr if self._buf_capacity > 0 else len(self.states)
+        if _n == 0:
             return {}
 
+        # Get contiguous views of only the filled portion
+        if self._buf_capacity > 0:
+            _states_raw = self._states_np[:_n]
+            _actions_raw = self._actions_np[:_n]
+            _logprobs_raw = self._logprobs_np[:_n]
+        else:
+            _states_raw = np.array(self.states, dtype=np.float32)
+            _actions_raw = np.array(self.actions, dtype=np.int64)
+            _logprobs_raw = np.array(self.log_probs, dtype=np.float32)
+
         # Step 1: Compute Generalized Advantage Estimation
-        # This gives us advantage estimates with good bias-variance tradeoff
         advantages, returns = self.compute_gae(next_value)
 
-        # Step 2: Normalize advantages to zero-mean, unit-variance
-        # This improves training stability by ensuring advantages are well-scaled
-        # The small epsilon (1e-8) prevents division by zero
+        # Step 2: Normalize advantages
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         # Convert to tensors — mit Pinned Memory für schnelleren CPU→GPU Transfer.
-        # pin_memory=True funktioniert nur auf CUDA; auf CPU wird es ignoriert.
-        _pin = self._amp_enabled  # True nur wenn CUDA + AMP aktiv
-        states = (
-            torch.tensor(np.array(self.states), dtype=torch.float32).pin_memory()
-            if _pin
-            else torch.FloatTensor(np.array(self.states))
-        )
-        actions = (
-            torch.tensor(np.array(self.actions), dtype=torch.long).pin_memory()
-            if _pin
-            else torch.LongTensor(self.actions)
-        )
-        old_log_probs = (
-            torch.tensor(np.array(self.log_probs), dtype=torch.float32).pin_memory()
-            if _pin
-            else torch.FloatTensor(self.log_probs)
-        )
-        advantages = (
-            torch.tensor(advantages, dtype=torch.float32).pin_memory()
-            if _pin
-            else torch.FloatTensor(advantages)
-        )
-        returns = (
-            torch.tensor(returns, dtype=torch.float32).pin_memory()
-            if _pin
-            else torch.FloatTensor(returns)
-        )
+        # Wenn pre-alloc aktiv: numpy arrays sind bereits contiguous float32 → kein
+        # np.array() Kopier-Overhead mehr. torch.from_numpy() referenziert denselben
+        # Speicher (zero-copy), pin_memory() pinnt dann in-place.
+        _pin = self._amp_enabled
 
-        # Auf GPU verschieben (non_blocking=True: asynchroner Transfer, CPU blockiert nicht)
-        states = states.to(self.device, non_blocking=True)
-        actions = actions.to(self.device, non_blocking=True)
-        old_log_probs = old_log_probs.to(self.device, non_blocking=True)
-        advantages = advantages.to(self.device, non_blocking=True)
-        returns = returns.to(self.device, non_blocking=True)
+        def _to_tensor_f32(arr: np.ndarray) -> torch.Tensor:
+            t = torch.from_numpy(np.ascontiguousarray(arr, dtype=np.float32))
+            return t.pin_memory() if _pin else t
 
-        # For recurrent training, we need to handle hidden states.
-        # Simplified approach: Train on shuffled batches but detach history (truncate) or use stored hidden states.
-        # For full correctness -> Sequences.
-        # Here we will use the stored hidden states as the initial state for the batch.
-        # This is "truncated BPTT" with window 1 if we just use the stored state.
+        def _to_tensor_i64(arr: np.ndarray) -> torch.Tensor:
+            t = torch.from_numpy(np.ascontiguousarray(arr, dtype=np.int64))
+            return t.pin_memory() if _pin else t
 
-        # Prepare hidden states batch
-        # If we have stored hidden states
+        states = _to_tensor_f32(_states_raw).to(self.device, non_blocking=True)
+        actions = _to_tensor_i64(_actions_raw).to(self.device, non_blocking=True)
+        old_log_probs = _to_tensor_f32(_logprobs_raw).to(self.device, non_blocking=True)
+        advantages_t = _to_tensor_f32(advantages).to(self.device, non_blocking=True)
+        returns_t = _to_tensor_f32(returns).to(self.device, non_blocking=True)
+        advantages = advantages_t
+        returns = returns_t
+
+        # P1-B: Pre-move all hidden states to GPU ONCE before the epoch loop.
+        # The old code called .to(device) inside the mini-batch loop → up to
+        # (n_epochs × dataset_size // batch_size) = 10×256 = 2560 PCIe transfers
+        # per training update. Doing it once here cuts that to 1 transfer.
         has_hidden = len(self.hiddens) > 0 and self.hiddens[0] is not None
+        if has_hidden:
+            if self.config.rnn_type == "LSTM":
+                _h_gpu = [
+                    (
+                        h[0].to(self.device, non_blocking=True),
+                        h[1].to(self.device, non_blocking=True),
+                    )
+                    for h in self.hiddens[:_n]
+                ]
+            else:  # GRU
+                _h_gpu = [
+                    h.to(self.device, non_blocking=True) for h in self.hiddens[:_n]
+                ]
+        else:
+            _h_gpu = []
 
         dataset_size = len(states)
         indices = np.arange(dataset_size)
@@ -871,18 +922,14 @@ class PPOAgent:
 
                 batch_hidden = None
                 if has_hidden:
-                    # Collate hidden states
-                    raw_hiddens = [self.hiddens[i] for i in batch_indices]
-
+                    # P1-B: hidden states already on GPU (pre-moved before epoch loop)
+                    gpu_hiddens = [_h_gpu[i] for i in batch_indices]
                     if self.config.rnn_type == "LSTM":
-                        h_list = [x[0] for x in raw_hiddens]
-                        c_list = [x[1] for x in raw_hiddens]
-                        # Stored: (num_layers, 1, hidden) -> cat dim 1 = (num_layers, batch, hidden)
-                        h_stack = torch.cat(h_list, dim=1).to(self.device)
-                        c_stack = torch.cat(c_list, dim=1).to(self.device)
+                        h_stack = torch.cat([x[0] for x in gpu_hiddens], dim=1)
+                        c_stack = torch.cat([x[1] for x in gpu_hiddens], dim=1)
                         batch_hidden = (h_stack, c_stack)
-                    else:  # GRU
-                        batch_hidden = torch.cat(raw_hiddens, dim=1).to(self.device)
+                    else:  # GRU — (num_layers, 1, hidden) per step → cat along batch dim
+                        batch_hidden = torch.cat(gpu_hiddens, dim=1)
 
                 # ── Mixed Precision forward pass ─────────────────────────────
                 # autocast: Actor/Critic GRU + Linear laufen in float16 → halber

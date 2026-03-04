@@ -358,6 +358,9 @@ class AdversarialTrainer:
         trader_hidden = None
         adversary_hidden = None
 
+        # Pre-allocate trader buffer with exact capacity (P0-B)
+        self.trader.reset_buffers(capacity=n_steps)
+
         obs, info = self.env.reset()
         episode_reward = 0
         episode_length = 0
@@ -553,8 +556,9 @@ class AdversarialTrainer:
         cur_reward = np.zeros(n_envs, dtype=np.float32)
         cur_length = np.zeros(n_envs, dtype=np.int32)
 
-        # Trader buffer is flat — we flatten the (N, …) arrays per step
-        self.trader.reset_buffers()
+        # Trader buffer: pre-allocate with exact capacity = steps_per_env * n_envs
+        # so store_transition() writes into pre-alloc numpy arrays (zero list overhead)
+        self.trader.reset_buffers(capacity=steps_per_env * n_envs)
 
         # Initial hidden states — shape (rnn_layers, N, hidden_dim)
         trader_hidden = self.trader.get_initial_hidden_state(batch_size=n_envs)

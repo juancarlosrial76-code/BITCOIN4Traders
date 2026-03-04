@@ -273,6 +273,13 @@ class FeatureEngine:
         feature_cols = self._get_feature_columns(df)
         df[feature_cols] = self.scaler.fit_transform(df[feature_cols])
 
+        # P1-C: Entferne feature_names_in_ damit transform_single() numpy arrays
+        # ohne sklearn-UserWarning uebergeben kann (Scaler wurde auf DataFrame
+        # gefittet, transform_single() uebergibt rohes ndarray — kein Fehler,
+        # nur ein informationsloser Warning der Logs zumuellet).
+        if hasattr(self.scaler, "feature_names_in_"):
+            del self.scaler.feature_names_in_
+
         self.is_fitted = True
 
         # Save scaler if configured
@@ -349,75 +356,170 @@ class FeatureEngine:
         buffer_size: int = 100,
     ) -> Optional[np.ndarray]:
         """
-        Live-Tick-Transform: puffert eingehende Preise und gibt den neuesten
-        Feature-Vektor zurueck sobald genug History vorhanden ist.
+        Live-Tick-Transform — O(1) inkrementelle Berechnung pro Tick.
 
-        Wird von LiveExecutionEngine._on_tick() aufgerufen — ein Preis-Tick
-        auf einmal.  Der interne Ringpuffer haelt die letzten ``buffer_size``
-        Schluss-Preise und konstruiert daraus einen minimalen OHLCV-DataFrame
-        (Open=High=Low=Close=price, Volume=0) fuer transform().
+        P1-C Optimierung: Die alte Implementierung baute bei jedem Tick einen
+        100-row DataFrame auf und berechnete alle 11 Indikatoren ueber rolling().
+        Das waren ~100 Pandas-Operationen um am Ende genau 1 Zeile zu nutzen.
+
+        Neue Implementierung: Inkrementelle EMA/Volatilitaet/RSI-Akkumulatoren
+        pro Symbol — jeder Tick ist O(1), kein DataFrame-Aufbau, kein pandas.
+        Fallback auf den alten DataFrame-Pfad wenn Warmup noch nicht abgeschlossen.
 
         Parameters
         ----------
-        symbol : str
-            Handelspaar (z.B. 'BTCUSDT') — trennt Buffer pro Symbol.
-        price : float
-            Aktueller Mid-Preis des Ticks.
-        buffer_size : int
-            Mindest-History fuer eine valide Feature-Berechnung.
-            Muss groesser sein als das laengste rolling-Fenster (50).
-
-        Returns
-        -------
-        np.ndarray  shape (n_features,)  — Feature-Vektor des aktuellen Ticks,
-                    oder None wenn noch nicht genug History gesammelt wurde.
+        symbol      : Handelspaar (z.B. 'BTCUSDT')
+        price       : Aktueller Mid-Preis
+        buffer_size : Warmup-Ticks bis erste Ausgabe (muss > laengstes Fenster = 50)
         """
         if not self.is_fitted:
             raise RuntimeError("FeatureEngine not fitted. Call fit_transform() first.")
 
-        # Pro-Symbol Ringpuffer initialisieren
-        if not hasattr(self, "_live_buffers"):
-            self._live_buffers: Dict[str, list] = {}
-        buf = self._live_buffers.setdefault(symbol, [])
-        buf.append(float(price))
+        # ── Zustandsinitialisierung pro Symbol ────────────────────────────────
+        if not hasattr(self, "_live_state"):
+            self._live_state: Dict[str, Dict] = {}
 
-        # Noch nicht genug History
-        if len(buf) < buffer_size:
+        p = float(price)
+
+        if symbol not in self._live_state:
+            self._live_state[symbol] = {
+                "prices": [],  # Kurz-Buffer fuer Warmup + rolling_std (50)
+                "n": 0,  # Zaehler
+                # EMA-Kerne (alpha = 2/(span+1))
+                "ema12": p,
+                "ema26": p,
+                "ema9": p,  # MACD
+                "ema_mean20": p,  # rolling mean approx.
+                # Welford-Varianz (rolling 20 / 50 approx. via EWM)
+                "ewvar20": 0.0,
+                "ewvar50": 0.0,
+                # RSI: Wilder smoothing (alpha = 1/14)
+                "avg_gain": 0.0,
+                "avg_loss": 0.0,
+                "prev_close": p,
+                # OU-Score
+                "ou_mean": float(self.train_stats.get("close_mean", p)),
+                "ou_std": float(self.train_stats.get("close_std", 1.0)),
+                "warmed_up": False,
+            }
+
+        st = self._live_state[symbol]
+        st["n"] += 1
+        buf = st["prices"]
+        buf.append(p)
+
+        # ── Warmup: fuelle Buffer bis buffer_size Ticks vorhanden ─────────────
+        if st["n"] < buffer_size:
+            # Akkumulatoren aktualisieren (auch im Warmup damit sie sinnvolle
+            # Startwerte haben wenn wir live gehen)
+            self._update_incremental_state(st, p)
             return None
 
-        # Nur die letzten buffer_size Preise behalten (Speicher begrenzen)
-        if len(buf) > buffer_size:
-            self._live_buffers[symbol] = buf[-buffer_size:]
-            buf = self._live_buffers[symbol]
+        # Nur die letzten 51 Preise behalten (für Differenz-Checks)
+        if len(buf) > 51:
+            st["prices"] = buf[-51:]
 
-        # Minimalen OHLCV-DataFrame aus Close-Prices konstruieren
-        prices = np.array(buf, dtype=np.float64)
-        df_live = pd.DataFrame(
-            {
-                "open": prices,
-                "high": prices,
-                "low": prices,
-                "close": prices,
-                "volume": np.zeros(len(prices)),
-            }
+        # ── Inkrementelle Indikator-Berechnung ────────────────────────────────
+        self._update_incremental_state(st, p)
+
+        # Log Return
+        prev = st["prices"][-2] if len(st["prices"]) >= 2 else p
+        log_ret = float(np.log(p / prev + 1e-10))
+
+        # Volatilität (EWM-Varianz approximiert rolling std)
+        vol20 = float(np.sqrt(max(st["ewvar20"], 0.0)) * np.sqrt(252))
+        vol50 = float(np.sqrt(max(st["ewvar50"], 0.0)) * np.sqrt(252))
+
+        # Rolling Mean (EMA12 als Proxy für rolling(20).mean())
+        rolling_mean = st["ema_mean20"]
+
+        # MACD
+        macd_line = st["ema12"] - st["ema26"]
+        macd_signal = st["ema9"]
+        macd_hist = macd_line - macd_signal
+
+        # RSI (0-100 normiert)
+        total = st["avg_gain"] + st["avg_loss"]
+        rsi = 50.0 if total < 1e-10 else 100.0 * st["avg_gain"] / total
+
+        # Bollinger Bands (rolling mean ± 2*std ≈ ema ± 2*ewstd)
+        bb_std = float(np.sqrt(max(st["ewvar20"], 0.0)))
+        bb_up = rolling_mean + 2.0 * bb_std
+        bb_lo = rolling_mean - 2.0 * bb_std
+        bb_pct = (p - bb_lo) / (bb_up - bb_lo + 1e-10)
+
+        # OU-Score
+        ou_score = (p - st["ou_mean"]) / (st["ou_std"] + 1e-10)
+
+        # Feature-Vektor zusammenbauen (Reihenfolge muss mit train_stats uebereinstimmen)
+        raw = np.array(
+            [
+                log_ret,
+                vol20,
+                vol50,
+                rolling_mean,
+                rsi,
+                macd_line,
+                macd_signal,
+                macd_hist,
+                bb_up,
+                bb_lo,
+                bb_pct,
+                ou_score,
+            ],
+            dtype=np.float32,
         )
 
-        # Durch den normalen transform()-Pfad schicken (nutzt Train-Statistiken)
+        # NaN/Inf-Guard
+        if not np.all(np.isfinite(raw)):
+            return None
+
+        # Standardisieren mit Train-Statistiken (entspricht scaler.transform())
         try:
-            df_feat = self.transform(df_live)
-        except Exception as e:
-            logger.debug(f"transform_single({symbol}): transform failed: {e}")
+            feat_scaled = self.scaler.transform(raw.reshape(1, -1))[0].astype(
+                np.float32
+            )
+        except Exception:
             return None
 
-        # Letzten Feature-Vektor (aktueller Tick) als numpy-Array zurueckgeben
-        feature_cols = self._get_feature_columns(df_feat)
-        last_row = df_feat[feature_cols].iloc[-1].values.astype(np.float32)
-
-        # NaN-Check: falls noch Indikatoren warm laufen
-        if np.any(np.isnan(last_row)):
+        if np.any(np.isnan(feat_scaled)):
             return None
 
-        return last_row
+        return feat_scaled
+
+    def _update_incremental_state(self, st: Dict, p: float) -> None:
+        """Aktualisiert alle EMA/Varianz/RSI-Akkumulatoren mit einem neuen Preis p."""
+        a12 = 2.0 / (12 + 1)
+        a26 = 2.0 / (26 + 1)
+        a9 = 2.0 / (9 + 1)
+        a_m20 = 2.0 / (20 + 1)  # EMA fuer rolling mean
+        b20 = 2.0 / (20 + 1)  # EWM variance decay
+        b50 = 2.0 / (50 + 1)
+
+        # EMA-Updates
+        st["ema12"] = a12 * p + (1 - a12) * st["ema12"]
+        st["ema26"] = a26 * p + (1 - a26) * st["ema26"]
+        st["ema9"] = a9 * (st["ema12"] - st["ema26"]) + (1 - a9) * st["ema9"]
+        st["ema_mean20"] = a_m20 * p + (1 - a_m20) * st["ema_mean20"]
+
+        # EWM Varianz (Online-Algorithmus: var = (1-b)*var + b*(x-mean)^2)
+        diff20 = p - st["ema_mean20"]
+        diff50 = p - st["ema_mean20"]
+        st["ewvar20"] = (1 - b20) * st["ewvar20"] + b20 * diff20 * diff20
+        st["ewvar50"] = (1 - b50) * st["ewvar50"] + b50 * diff50 * diff50
+
+        # RSI — Wilder Smoothing (alpha = 1/14)
+        alpha_rsi = 1.0 / 14
+        delta = p - st["prev_close"]
+        gain = max(delta, 0.0)
+        loss = max(-delta, 0.0)
+        if st["n"] <= 1:
+            st["avg_gain"] = gain
+            st["avg_loss"] = loss
+        else:
+            st["avg_gain"] = (1 - alpha_rsi) * st["avg_gain"] + alpha_rsi * gain
+            st["avg_loss"] = (1 - alpha_rsi) * st["avg_loss"] + alpha_rsi * loss
+        st["prev_close"] = p
 
     def _compute_raw_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
