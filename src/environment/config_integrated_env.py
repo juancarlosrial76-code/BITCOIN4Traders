@@ -114,6 +114,7 @@ from src.environment.position_actions import (
 
 from src.risk.risk_manager import RiskManager, RiskConfig
 from src.risk.risk_metrics_logger import RiskMetricsLogger
+from src.reward.antibias_rewards import RegimeAwareReward, RegimeState
 
 
 class ConfigIntegratedTradingEnv(gym.Env):
@@ -212,6 +213,31 @@ class ConfigIntegratedTradingEnv(gym.Env):
 
         # Initialize spaces
         self._init_spaces()
+
+        # Regime-Aware Reward (verdrahtet aus antibias_rewards.py)
+        # Ersetzt bzw. ergaenzt die 'regime_reward' Komponente in der YAML-Config.
+        # Erkennt automatisch ob 'regime_reward' in config.reward.components steht.
+        self._has_regime_reward = any(
+            c.name == "regime_reward" for c in self.config.reward.components
+        )
+        self._regime_reward_fn = RegimeAwareReward(
+            window=50,
+            lambda_cost=2.0,
+            lambda_draw=3.0,
+            lambda_regime=0.5,
+        )
+        if self._has_regime_reward:
+            logger.info(
+                "  Regime-Aware Reward: AKTIV (antibias_rewards.RegimeAwareReward)"
+            )
+        else:
+            logger.debug(
+                "  Regime-Aware Reward: inaktiv (kein 'regime_reward' in config)"
+            )
+
+        # Curriculum Learning: erlaubte Actions (None = alle erlaubt)
+        # Gesetzt via env.set_allowed_actions([3,4,5,6]) fuer Long-only Phase
+        self._allowed_actions: Optional[list] = None
 
         # Episode state
         self.reset()
@@ -418,6 +444,15 @@ class ConfigIntegratedTradingEnv(gym.Env):
         """
         # Store old equity for reward calculation
         old_equity = self._calculate_equity()
+
+        # ============================================================
+        # CURRICULUM LEARNING: Action-Masking
+        # Wenn set_allowed_actions() gesetzt wurde, wird jede nicht
+        # erlaubte Action auf die naechstgelegene erlaubte Action gemappt.
+        # Ermoeglicht Phasen-Training: Phase 1=Long only, Phase 2=Short only,
+        # Phase 3=alle Actions. Kein Reward-Bias durch Masking noetig.
+        # ============================================================
+        action = self._apply_action_mask(action)
 
         # ============================================================
         # LAYER 1: PRE-TRADE CIRCUIT BREAKER CHECK
@@ -675,6 +710,8 @@ class ConfigIntegratedTradingEnv(gym.Env):
             "slippage_bps": costs.get("slippage_bps", 0),
             "pnl": pnl,
             "kelly_fraction": kelly_fraction,
+            "prev_position": old_position_value
+            / (current_price + 1e-8),  # fuer Regime-Reward
         }
 
         self.trade_history.append(trade_info)
@@ -738,6 +775,41 @@ class ConfigIntegratedTradingEnv(gym.Env):
                     trade_info.get("cost", 0.0) / old_equity if old_equity > 0 else 0.0
                 )
                 components_values["transaction_cost"] = -cost_penalty * comp.weight
+
+            elif comp.name == "regime_reward":
+                # Regime-Aware Reward: belohnt Long in Bullen-Phasen,
+                # Short in Baeren-Phasen. Bestraft Gegenteil.
+                # Loest den "100% Short" Policy-Kollaps durch Marktbias.
+                pnl = current_equity - old_equity
+                cost_this_bar = trade_info.get("cost", 0.0)
+
+                # Regime-State aus aktuellem MarketRegime ableiten
+                regime_name = self.current_regime.name.lower()
+                if "bull" in regime_name or "up" in regime_name:
+                    regime_int = 2
+                elif "bear" in regime_name or "down" in regime_name:
+                    regime_int = 0
+                else:
+                    regime_int = 1  # neutral
+
+                # Trendstaerke aus Volatilitaet approximieren (hoehere Vol = staerkerer Trend)
+                trend_strength = min(1.0, self.current_regime.volatility / 0.04)
+
+                regime_state = RegimeState(
+                    regime=regime_int,
+                    vol_regime=1 if self.current_regime.volatility > 0.03 else 0,
+                    trend_strength=trend_strength,
+                )
+                self._regime_reward_fn.set_regime(regime_state)
+
+                regime_r = self._regime_reward_fn.compute(
+                    pnl=pnl,
+                    position=self.position,
+                    prev_position=trade_info.get("prev_position", self.position),
+                    equity=current_equity,
+                    cost_this_bar=cost_this_bar,
+                )
+                components_values["regime_reward"] = regime_r * comp.weight
 
         # Sum all components
         reward = sum(components_values.values())
@@ -887,6 +959,67 @@ class ConfigIntegratedTradingEnv(gym.Env):
             print(f"  Equity: ${info['equity']:.2f}")
             print(f"  Return: {info['return'] * 100:.2f}%")
             print(f"  Regime: {info['regime']}")
+
+    # ----------------------------------------------------------------
+    # Curriculum Learning API
+    # ----------------------------------------------------------------
+
+    def set_allowed_actions(self, allowed: Optional[list]) -> None:
+        """
+        Curriculum Learning: Schraenkt den Action-Space ein.
+
+        Ermoeglicht phasenweises Training:
+          Phase 1 (Long only):  env.set_allowed_actions([3, 4, 5, 6])
+          Phase 2 (Short only): env.set_allowed_actions([0, 1])
+          Phase 3 (alle):       env.set_allowed_actions(None)
+
+        Action-Bedeutung (7 diskrete Positionen):
+          0: Short 100%  1: Short 50%
+          2: Neutral
+          3: Long 33%    4: Long 50%    5: Long 75%    6: Long 100%
+
+        Parameters
+        ----------
+        allowed : list[int] | None
+            Liste erlaubter Action-Indizes. None = alle erlaubt.
+        """
+        self._allowed_actions = allowed
+        if allowed is not None:
+            logger.info(f"Curriculum: allowed_actions={sorted(allowed)}")
+        else:
+            logger.info("Curriculum: alle Actions erlaubt (Phase abgeschlossen)")
+
+    def _apply_action_mask(self, action: int) -> int:
+        """
+        Mappt eine nicht-erlaubte Action auf die naechstgelegene erlaubte.
+
+        Strategie: minimale Abweichung (abs(action - candidate)).
+        Bei Gleichstand wird die hoehere Action (Long-Bias) bevorzugt.
+        """
+        if self._allowed_actions is None:
+            return action
+        if action in self._allowed_actions:
+            return action
+        # Naechstgelegene erlaubte Action
+        return min(self._allowed_actions, key=lambda a: (abs(a - action), -a))
+
+    def get_curriculum_info(self) -> dict:
+        """Gibt Curriculum-Status zurueck (fuer Logging/Dashboard)."""
+        return {
+            "allowed_actions": self._allowed_actions,
+            "n_allowed": len(self._allowed_actions) if self._allowed_actions else 7,
+            "phase": (
+                "long_only"
+                if self._allowed_actions == [3, 4, 5, 6]
+                else "short_only"
+                if self._allowed_actions == [0, 1]
+                else "neutral_only"
+                if self._allowed_actions == [2]
+                else "all"
+                if self._allowed_actions is None
+                else "custom"
+            ),
+        }
 
 
 class EnhancedTransactionCostModel:
