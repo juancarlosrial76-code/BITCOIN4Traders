@@ -363,7 +363,10 @@ class ActorNetwork(BaseNetwork):
         self, state: torch.Tensor, hidden: Optional[Union[Tuple, torch.Tensor]] = None
     ) -> Tuple[Categorical, Optional[Union[Tuple, torch.Tensor]]]:
         logits, next_hidden = super().forward(state, hidden)
-        return Categorical(logits=logits), next_hidden
+        # Cast to float32: AMP autocast produziert float16-logits, Categorical
+        # validate_args schlaegt dann fehl (IndependentConstraint). float32 cast
+        # loest das ohne die AMP-Performance-Vorteile zu verlieren.
+        return Categorical(logits=logits.float()), next_hidden
 
 
 class CriticNetwork(BaseNetwork):
