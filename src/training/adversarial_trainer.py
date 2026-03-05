@@ -79,6 +79,7 @@ Configure via config/memory_management.yaml
 """
 
 import gc
+import os
 import numpy as np
 import torch
 from typing import Dict, Tuple, Optional
@@ -1131,15 +1132,38 @@ class AdversarialTrainer:
         trader_path = str(path).replace(".pth", "_trader.pth")
         adversary_path = str(path).replace(".pth", "_adversary.pth")
 
-        try:
-            self.trader.load(trader_path)
-            self.adversary.load(adversary_path)
-        except Exception as e:
-            logger.warning(f"Could not load agent weights from sidecar files: {e}")
-            logger.warning(
-                "Attempting to load from main checkpoint if embedded (legacy support)..."
+        # Sidecar-Dateien laden (trader_path / adversary_path).
+        # Beim ersten Start ohne vorherigen Checkpoint fehlen diese Dateien – das ist normal.
+        # FileNotFoundError wird als INFO geloggt, nicht als WARNING.
+        _trader_ok = False
+        _adversary_ok = False
+        if os.path.exists(trader_path):
+            try:
+                self.trader.load(trader_path)
+                _trader_ok = True
+            except Exception as e:
+                logger.warning(f"Fehler beim Laden der Trader-Gewichte: {e}")
+        else:
+            logger.info(
+                f"Trader-Sidecar nicht vorhanden (OK beim ersten Start): {trader_path}"
             )
-            # If we ever decide to embed weights in the main file
+
+        if os.path.exists(adversary_path):
+            try:
+                self.adversary.load(adversary_path)
+                _adversary_ok = True
+            except Exception as e:
+                logger.warning(f"Fehler beim Laden der Adversary-Gewichte: {e}")
+        else:
+            logger.info(
+                f"Adversary-Sidecar nicht vorhanden (OK beim ersten Start): {adversary_path}"
+            )
+
+        if not _trader_ok or not _adversary_ok:
+            logger.info(
+                "Sidecar-Dateien nicht vollstaendig – starte mit frischen Gewichten "
+                "(Trainingsfortschritt aus Checkpoint wird geladen)."
+            )
 
         # Load training state
         if "iteration" in checkpoint:

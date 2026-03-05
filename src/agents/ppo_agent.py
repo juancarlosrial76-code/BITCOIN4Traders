@@ -762,6 +762,10 @@ class PPOAgent:
         Select action given state.
         Returns: action, log_prob, value, next_hidden
         """
+        # NaN-Guard: ersetze NaN/Inf in Observations bevor sie ins Netz gehen.
+        state = np.nan_to_num(
+            np.asarray(state, dtype=np.float32), nan=0.0, posinf=1.0, neginf=-1.0
+        )
         state_tensor = (
             torch.FloatTensor(state).unsqueeze(0).to(self.device)
         )  # (1, state_dim)
@@ -833,6 +837,10 @@ class PPOAgent:
         next_hidden : same type/shape as hidden — updated recurrent state
         """
         # (N, state_dim) → GPU
+        # NaN-Guard: ersetze NaN/Inf in Observations bevor sie ins Netz gehen.
+        # Ursache: Feature-Engine liefert bei sehr kleinen Datensaetzen (< lookback)
+        # NaNs die durch das GRU propagieren und alle Logits auf NaN setzen.
+        states = np.nan_to_num(states, nan=0.0, posinf=1.0, neginf=-1.0)
         state_tensor = torch.FloatTensor(states).to(self.device)  # (N, state_dim)
 
         training_mode = self.actor.training
@@ -1012,6 +1020,10 @@ class PPOAgent:
 
         # Step 2: Normalize advantages
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+        # NaN-Guard auf States: verhindert NaN-Logits wenn Feature-Engineering
+        # bei kleinen Datensaetzen (< lookback-Fenster) NaN produziert.
+        _states_raw = np.nan_to_num(_states_raw, nan=0.0, posinf=1.0, neginf=-1.0)
 
         # Convert to tensors — mit Pinned Memory für schnelleren CPU→GPU Transfer.
         # Wenn pre-alloc aktiv: numpy arrays sind bereits contiguous float32 → kein
