@@ -180,6 +180,18 @@ class PPOConfig:
     # Deaktiviert by default (inkompatibel mit GRU auf
     # aelterem CUDA; aktivieren wenn PyTorch >= 2.1)
 
+    # ── Feature 5: Dual-Head Actor ────────────────────────────────────────────
+    # Wenn True: Actor hat zwei Köpfe die denselben GRU-Backbone teilen:
+    #   Head 1 (direction_head): 3 logits  → {Short, Neutral, Long}
+    #   Head 2 (sizing_head):    3 logits  → {Full, Half, Quarter}
+    # Gemeinsam spannen sie einen 3×3=9 Aktionsraum auf, der auf die
+    # ursprünglichen 7 Actions gemappt wird (einige Kombinationen gemergt).
+    # Vorteil: Der Agent lernt Richtung und Größe getrennt → bessere Generalisierung.
+    # Wenn False: klassischer Single-Head Actor (n_actions logits).
+    use_dual_head: bool = (
+        False  # Default off; aktivieren per PPOConfig(use_dual_head=True)
+    )
+
 
 class BaseNetwork(nn.Module):
     """
@@ -369,6 +381,149 @@ class ActorNetwork(BaseNetwork):
         return Categorical(logits=logits.float()), next_hidden
 
 
+class DualHeadActorNetwork(nn.Module):
+    """
+    Feature 5: Dual-Head Actor Network.
+
+    Teilt den Aktionsraum in zwei orthogonale Entscheidungen:
+      - Direction Head (3 logits): Short | Neutral | Long
+      - Sizing Head   (3 logits): Full (100%) | Half (50%) | Quarter (33%)
+
+    Beide Köpfe teilen denselben GRU-Backbone (feature_extractor + rnn).
+    Die Kombination ergibt einen 3×3=9 kombinierten Aktionsraum, der
+    per DIRECTION_SIZE_TO_ACTION auf die 7 originalen Actions gemappt wird.
+
+    Mapping:
+        Short+Full    → Action 0  (Short 100%)
+        Short+Half    → Action 1  (Short 50%)
+        Short+Quarter → Action 1  (Short 50%, merge)
+        Neutral+*     → Action 2  (Neutral, ignore size)
+        Long+Quarter  → Action 3  (Long 33%)
+        Long+Half     → Action 4  (Long 50%)
+        Long+Full     → Action 6  (Long 100%)
+        Long+*        → Action 5  (Long 75%, catch-all)
+
+    Vorteil gegenüber Single-Head:
+    - Agent lernt Richtung und Größe GETRENNT → mehr Training-Signal
+    - Generalisiert besser: z.B. "Long gelernt" + "Full gelernt" = sofort nutzbar
+    - Weniger Aktionen pro Kopf → schnellere Konvergenz
+    """
+
+    # Mapping: (direction_idx, size_idx) → original action (0-6)
+    # direction: 0=Short, 1=Neutral, 2=Long
+    # size:      0=Full,  1=Half,    2=Quarter
+    DIRECTION_SIZE_TO_ACTION = {
+        (0, 0): 0,  # Short+Full     → Action 0
+        (0, 1): 1,  # Short+Half     → Action 1
+        (0, 2): 1,  # Short+Quarter  → Action 1 (merge)
+        (1, 0): 2,  # Neutral+Full   → Action 2
+        (1, 1): 2,  # Neutral+Half   → Action 2
+        (1, 2): 2,  # Neutral+Quarter→ Action 2
+        (2, 0): 6,  # Long+Full      → Action 6
+        (2, 1): 4,  # Long+Half      → Action 4
+        (2, 2): 3,  # Long+Quarter   → Action 3
+    }
+
+    def __init__(self, config: "PPOConfig"):
+        super().__init__()
+        self.config = config
+
+        # Shared backbone (identical to BaseNetwork without head)
+        modules = []
+        modules.append(nn.Linear(config.state_dim, config.hidden_dim))
+        if config.use_layer_norm:
+            modules.append(nn.LayerNorm(config.hidden_dim))
+        modules.append(nn.ReLU())
+        if config.dropout > 0:
+            modules.append(nn.Dropout(config.dropout))
+        modules.append(nn.Linear(config.hidden_dim, config.hidden_dim))
+        if config.use_layer_norm:
+            modules.append(nn.LayerNorm(config.hidden_dim))
+        modules.append(nn.ReLU())
+        if config.dropout > 0:
+            modules.append(nn.Dropout(config.dropout))
+        self.feature_extractor = nn.Sequential(*modules)
+
+        # Shared recurrent layer
+        self.rnn = None
+        if config.use_recurrent:
+            self.rnn = nn.GRU(
+                config.hidden_dim,
+                config.hidden_dim,
+                num_layers=config.rnn_layers,
+                batch_first=True,
+            )
+
+        # Two separate output heads
+        self.direction_head = nn.Linear(config.hidden_dim, 3)  # Short/Neutral/Long
+        self.sizing_head = nn.Linear(config.hidden_dim, 3)  # Full/Half/Quarter
+
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            nn.init.orthogonal_(module.weight)
+            if module.bias is not None:
+                nn.init.constant_(module.bias, 0)
+        elif isinstance(module, nn.LayerNorm):
+            nn.init.constant_(module.weight, 1)
+            nn.init.constant_(module.bias, 0)
+        elif isinstance(module, nn.GRU):
+            for name, param in module.named_parameters():
+                if "weight" in name:
+                    nn.init.orthogonal_(param.data)
+                elif "bias" in name:
+                    nn.init.constant_(param.data, 0)
+
+    def forward(
+        self,
+        state: torch.Tensor,
+        hidden: Optional[Union[Tuple, torch.Tensor]] = None,
+    ) -> Tuple[Categorical, Optional[torch.Tensor]]:
+        """
+        Forward pass returning a Categorical over the 7 original actions.
+
+        Internally samples direction and sizing independently, then maps
+        the joint probability to the original 7-action space.
+        """
+        x = state
+        if self.rnn is not None and x.dim() == 2:
+            x = x.unsqueeze(1)
+
+        features = self.feature_extractor(x)
+
+        next_hidden = None
+        if self.rnn is not None:
+            features, next_hidden = self.rnn(features, hidden)
+            if features.size(1) == 1:
+                features = features.squeeze(1)
+
+        dir_logits = self.direction_head(features).float()  # (B, 3)
+        siz_logits = self.sizing_head(features).float()  # (B, 3)
+
+        dir_probs = torch.softmax(dir_logits, dim=-1)  # (B, 3)
+        siz_probs = torch.softmax(siz_logits, dim=-1)  # (B, 3)
+
+        # Joint probability: outer product → (B, 3, 3) → flatten → (B, 9)
+        joint = torch.bmm(dir_probs.unsqueeze(2), siz_probs.unsqueeze(1)).view(
+            dir_probs.size(0), 9
+        )
+
+        # Map joint 9 → original 7 actions by summing probabilities
+        n_actions = 7
+        device = joint.device
+        action_probs = torch.zeros(joint.size(0), n_actions, device=device)
+        for (d_idx, s_idx), a_idx in self.DIRECTION_SIZE_TO_ACTION.items():
+            joint_idx = d_idx * 3 + s_idx
+            action_probs[:, a_idx] += joint[:, joint_idx]
+
+        # Add tiny epsilon to prevent log(0) in entropy calculation
+        action_probs = action_probs + 1e-8
+        action_probs = action_probs / action_probs.sum(dim=-1, keepdim=True)
+
+        return Categorical(probs=action_probs), next_hidden
+
+
 class CriticNetwork(BaseNetwork):
     """
     Critic (Value) Network for PPO.
@@ -480,8 +635,14 @@ class PPOAgent:
         self.config = config
         self.device = device
 
-        # Networks
-        self.actor = ActorNetwork(config).to(device)
+        # ── Feature 5: Dual-Head Actor ─────────────────────────────────────────
+        # Wenn use_dual_head=True: DualHeadActorNetwork (Direction × Sizing)
+        # Sonst: klassischer Single-Head ActorNetwork
+        if getattr(config, "use_dual_head", False):
+            self.actor = DualHeadActorNetwork(config).to(device)
+            logger.info("  Actor: DualHeadActorNetwork (Direction × Sizing)")
+        else:
+            self.actor = ActorNetwork(config).to(device)
         self.critic = CriticNetwork(config).to(device)
 
         # ── GPU Optimierung: torch.compile() ────────────────────────────────

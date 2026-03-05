@@ -116,6 +116,16 @@ from src.risk.risk_manager import RiskManager, RiskConfig
 from src.risk.risk_metrics_logger import RiskMetricsLogger
 from src.reward.antibias_rewards import RegimeAwareReward, RegimeState
 
+# Feature 2: HMM Regime-Wahrscheinlichkeiten als Observation
+# Optionaler Import — graceful fallback wenn hmmlearn nicht installiert
+try:
+    from src.math_tools.hmm_regime import HMMRegimeDetector, prepare_hmm_features
+
+    _HMM_AVAILABLE = True
+except ImportError:
+    _HMM_AVAILABLE = False
+    logger.debug("hmmlearn not available — HMM regime probabilities disabled")
+
 
 class ConfigIntegratedTradingEnv(gym.Env):
     """
@@ -211,7 +221,17 @@ class ConfigIntegratedTradingEnv(gym.Env):
         # Initialize Risk Management (Phase 4)
         self._init_risk_management()
 
-        # Initialize spaces
+        # ── Feature 2: HMM Regime-Wahrscheinlichkeiten ────────────────────────
+        # MUSS vor _init_spaces() stehen, da _init_spaces() n_hmm berechnet.
+        self._hmm_detector = None
+        self._hmm_probs_raw = None
+        self._hmm_index_map = None
+        if _HMM_AVAILABLE and getattr(config, "use_hmm_features", True):
+            self._init_hmm(price_data)
+        else:
+            logger.debug("HMM regime features: disabled")
+
+        # Initialize spaces (nutzt self._hmm_detector für n_hmm)
         self._init_spaces()
 
         # Regime-Aware Reward (verdrahtet aus antibias_rewards.py)
@@ -299,6 +319,65 @@ class ConfigIntegratedTradingEnv(gym.Env):
         )
         logger.info(f"  Max position: {risk_config.max_position_size * 100:.0f}%")
 
+    def _init_hmm(self, price_data: pd.DataFrame):
+        """
+        Fit HMM on training price data and pre-compute regime probabilities.
+
+        Pre-computes p(regime) for every timestep so the env can look them
+        up in O(1) during rollouts — no fitting overhead during training.
+
+        Args:
+            price_data: Full OHLCV training data
+        """
+        try:
+            hmm_features = prepare_hmm_features(price_data, lookback=20)
+            if len(hmm_features) < 50:
+                logger.warning("HMM: not enough data to fit — disabling")
+                return
+
+            self._hmm_detector = HMMRegimeDetector(
+                n_regimes=3, n_iter=50, random_state=42
+            )
+            self._hmm_detector.fit(hmm_features)
+
+            # Pre-compute softmax probabilities for all timesteps
+            # Shape: (n_steps, 3)  — aligned with price_data index
+            X_scaled = self._hmm_detector.scaler.transform(hmm_features.values)
+            self._hmm_probs_raw = self._hmm_detector.model.predict_proba(X_scaled)
+            # Build lookup: map price_data index → row in hmm_probs
+            self._hmm_index_map = {idx: i for i, idx in enumerate(hmm_features.index)}
+            logger.info(
+                f"HMM fitted on {len(hmm_features)} samples, "
+                f"3 regimes. Regime probabilities pre-computed."
+            )
+        except Exception as e:
+            logger.warning(
+                f"HMM init failed ({e}) — using flat priors [0.33,0.33,0.34]"
+            )
+            self._hmm_detector = None
+            self._hmm_probs_raw = None
+            self._hmm_index_map = None
+
+    def _get_hmm_probs(self) -> np.ndarray:
+        """
+        Return current-step HMM regime probabilities [p0, p1, p2].
+
+        Falls back to flat [0.33, 0.33, 0.34] if HMM not available.
+        """
+        if (
+            self._hmm_probs_raw is None
+            or self._hmm_index_map is None
+            or self.current_step >= len(self.price_data)
+        ):
+            return np.array([0.33, 0.33, 0.34], dtype=np.float32)
+
+        current_ts = self.price_data.index[self.current_step]
+        row_idx = self._hmm_index_map.get(current_ts, None)
+        if row_idx is None:
+            return np.array([0.33, 0.33, 0.34], dtype=np.float32)
+
+        return self._hmm_probs_raw[row_idx].astype(np.float32)
+
     def _init_spaces(self):
         """
         Initialize observation and action spaces.
@@ -310,7 +389,9 @@ class ConfigIntegratedTradingEnv(gym.Env):
         """
         # Calculate state dimension
         n_features = len(self.features.columns)
-        n_additional = 9  # Extended features
+        # 9 base portfolio features + 3 HMM regime probabilities (if available)
+        n_hmm = 3 if (self._hmm_detector is not None or _HMM_AVAILABLE) else 0
+        n_additional = 9 + n_hmm
         state_dim = n_features + n_additional
 
         self.observation_space = spaces.Box(
@@ -931,7 +1012,7 @@ class ConfigIntegratedTradingEnv(gym.Env):
         regime_vol_factor = self.current_regime.volatility / 0.02
         regime_volume_factor = self.current_regime.volume / 500.0
 
-        # Additional features
+        # Additional features (9 base portfolio/risk features)
         additional = np.array(
             [
                 self.position,
@@ -946,7 +1027,14 @@ class ConfigIntegratedTradingEnv(gym.Env):
             ]
         )
 
-        obs = np.concatenate([feature_values, additional])
+        # ── Feature 2: HMM Regime-Wahrscheinlichkeiten ────────────────────────
+        # [p_regime_0, p_regime_1, p_regime_2] — summt auf 1.0
+        # Gibt dem Agenten die explizite Regime-Unsicherheit:
+        # z.B. [0.9, 0.05, 0.05] = sehr sicherer Bull-Markt
+        #      [0.34, 0.33, 0.33] = unklares Regime → kleinere Position
+        hmm_probs = self._get_hmm_probs()  # (3,) float32
+
+        obs = np.concatenate([feature_values, additional, hmm_probs])
         obs = np.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0)
 
         return obs.astype(np.float32)

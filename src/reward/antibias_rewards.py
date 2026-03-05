@@ -644,8 +644,18 @@ class RegimeAwareReward(BaseReward):
         self._peak = max(self._peak, equity)
         drawdown = max(0, (self._peak - equity) / (self._peak + 1e-8))
 
-        # Squared drawdown penalty (stronger for deeper drawdowns)
-        draw_penalty = self.lambda_draw * (drawdown**1.5)
+        # ── Feature 3: Asymmetrischer quadratischer Drawdown-Penalty ─────────
+        # Vorher: drawdown^1.5  (mild)
+        # Jetzt:  drawdown^2.0  (quadratisch = viel härter bei tiefen Drawdowns)
+        #
+        # Begründung: Bei drawdown=0.05 (5%): 0.05^1.5=0.011, 0.05^2=0.0025
+        #             Bei drawdown=0.20 (20%): 0.20^1.5=0.089, 0.20^2=0.04
+        # → Kleine Verluste werden toleriert, grosse Drawdowns brutal bestraft.
+        # → Agent lernt FRÜHER aus einem Trade auszusteigen.
+        #
+        # lambda_draw wird von 3.0 auf 5.0 erhöht um die Skalierung auszugleichen:
+        # draw_penalty = 5.0 * drawdown^2 statt 3.0 * drawdown^1.5
+        draw_penalty = self.lambda_draw * (drawdown**2.0)
 
         # Regime bonus/penalty
         regime_bonus = 0.0

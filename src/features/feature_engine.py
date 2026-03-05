@@ -60,6 +60,21 @@ Version: 1.0.0
 
 import pandas as pd
 import numpy as np
+
+# Prediction-improvement imports (optional — graceful fallback if unavailable)
+try:
+    from src.math_tools.hurst_exponent import HurstExponent as _HurstExponent
+
+    _HURST_AVAILABLE = True
+except ImportError:
+    _HURST_AVAILABLE = False
+
+try:
+    from src.math_tools.garch_models import GARCHModel as _GARCHModel
+
+    _GARCH_AVAILABLE = True
+except ImportError:
+    _GARCH_AVAILABLE = False
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
@@ -615,7 +630,115 @@ class FeatureEngine:
             upper - lower + 1e-8
         )  # 0=at lower band, 1=at upper band
 
+        # ── Feature 1: Hurst Exponent (trend vs mean-reversion detector) ──────
+        # H > 0.55: trending market  → follow momentum
+        # H < 0.45: mean-reverting   → use OU/RSI contrarian signals
+        # H ≈ 0.5 : random walk      → reduce position size
+        df["hurst_100"] = self._compute_hurst_feature(df, window=100)
+
+        # ── Feature 4: GARCH(1,1) 1-step volatility forecast ─────────────────
+        # Normalised to [0, ~5] where 1.0 ≈ 10% daily vol.
+        # High value → agent should expect large move → smaller/no position.
+        # NOTE: expensive O(n) loop; skipped when use_garch_feature=False (default).
+        if getattr(self.config, "use_garch_feature", False):
+            df["garch_vol_forecast"] = self._compute_garch_forecast_feature(
+                df, window=100
+            )
+
         return df
+
+    # -----------------------------------------------------------------------
+    # Feature 1: Rolling Hurst Exponent
+    # Tells the agent whether the market is trending (H>0.5) or
+    # mean-reverting (H<0.5) or random (H≈0.5) over a recent window.
+    # -----------------------------------------------------------------------
+    def _compute_hurst_feature(self, df: pd.DataFrame, window: int = 100) -> pd.Series:
+        """
+        Compute rolling Hurst exponent as a single feature.
+
+        Uses R/S analysis (fast) over a rolling window.
+        Returns NaN for rows where not enough history is available.
+        Falls back to 0.5 (random walk) if hurst_exponent module unavailable.
+
+        Args:
+            df: DataFrame with 'log_ret' column
+            window: Rolling window (default 100 bars)
+
+        Returns:
+            pd.Series of Hurst values in [0,1], indexed like df
+        """
+        if not _HURST_AVAILABLE:
+            return pd.Series(0.5, index=df.index)
+
+        returns = df["log_ret"].fillna(0.0).values
+        hurst_calc = _HurstExponent(max_lag=min(50, window // 4))
+        hurst_vals = np.full(len(returns), np.nan)
+
+        for i in range(window, len(returns)):
+            window_data = returns[i - window : i]
+            try:
+                h = hurst_calc.detrended_fluctuation_analysis(window_data)
+                # DFA gives values roughly in [0, 1] but can slightly exceed
+                # due to finite sample noise — clip to [0.05, 0.95] for robustness
+                hurst_vals[i] = float(np.clip(h, 0.05, 0.95))
+            except Exception:
+                hurst_vals[i] = 0.5  # fallback: random walk
+
+        result = pd.Series(hurst_vals, index=df.index)
+        # Forward-fill the NaN warmup period with 0.5 (neutral / no info)
+        result = result.fillna(0.5)
+        return result
+
+    # -----------------------------------------------------------------------
+    # Feature 4: Rolling GARCH(1,1) 1-step Volatility Forecast
+    # Tells the agent how much volatility to *expect* next bar.
+    # High forecast → smaller position; low forecast → larger position.
+    # -----------------------------------------------------------------------
+    def _compute_garch_forecast_feature(
+        self, df: pd.DataFrame, window: int = 100
+    ) -> pd.Series:
+        """
+        Compute rolling GARCH(1,1) 1-step-ahead volatility forecast.
+
+        Fits a GARCH model on each rolling window and extracts the
+        one-step forecast. Slow (O(n*window)) but runs on CPU before training.
+        Falls back to rolling std if GARCH module unavailable or fit fails.
+
+        Args:
+            df: DataFrame with 'log_ret' column
+            window: Rolling window for GARCH fitting (default 100 bars)
+
+        Returns:
+            pd.Series of normalised GARCH volatility forecasts, indexed like df
+        """
+        if not _GARCH_AVAILABLE:
+            # Fallback: rolling std (already in volatility_20)
+            return df["log_ret"].fillna(0.0).rolling(window).std().fillna(0.02)
+
+        returns = df["log_ret"].fillna(0.0).values
+        garch_vals = np.full(len(returns), np.nan)
+        garch_model = _GARCHModel(p=1, q=1)
+
+        for i in range(window, len(returns), 1):
+            window_data = returns[i - window : i]
+            try:
+                result = garch_model.fit(window_data)
+                if result.get("success", False):
+                    forecast = garch_model.forecast(steps=1)[0]
+                    garch_vals[i] = float(np.clip(forecast, 0.0, 0.5))
+                else:
+                    garch_vals[i] = float(np.std(window_data))
+            except Exception:
+                garch_vals[i] = float(np.std(window_data))
+
+        result_series = pd.Series(garch_vals, index=df.index)
+        # Take absolute value (GARCH variance is always positive, but numeric
+        # optimiser can occasionally produce tiny negatives near zero)
+        result_series = result_series.abs()
+        # Normalise to roughly [0,5] range (daily vol rarely exceeds 50%)
+        result_series = result_series / 0.10
+        result_series = result_series.fillna(0.2)  # neutral fallback
+        return result_series.clip(0.0, 5.0)
 
     def _compute_rsi(self, series: pd.Series, window: int = 14) -> pd.Series:
         """Compute Relative Strength Index."""
@@ -776,7 +899,19 @@ class FeatureEngine:
     def _get_feature_columns(self, df: pd.DataFrame) -> List[str]:
         """Get columns to be scaled."""
         # Exclude OHLCV, timestamp, etc.
-        exclude = ["open", "high", "low", "close", "volume", "timestamp"]
+        # Also exclude prediction-improvement features that have their own bounded
+        # range: StandardScaler would move them to mean≈0/std≈1 which breaks
+        # the semantic interpretation (hurst_100 ∈ [0,1], garch_vol_forecast ∈ [0,5]).
+        exclude = [
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "timestamp",
+            "hurst_100",  # [0.05, 0.95] → trend/MR detector
+            "garch_vol_forecast",  # [0, ~5] → 1-step vol forecast
+        ]
 
         feature_cols = [col for col in df.columns if col not in exclude]
 
@@ -817,8 +952,8 @@ class FeatureEngine:
         logger.info(f"Loaded scaler from {scaler_file}")
 
     def get_feature_names(self) -> List[str]:
-        """Get list of feature names."""
-        return [
+        """Get list of feature names (base set + prediction-improvement features)."""
+        names = [
             "log_ret",
             "volatility_20",
             "volatility_50",
@@ -831,7 +966,13 @@ class FeatureEngine:
             "macd_hist",
             "bb_width",
             "bb_position",
+            # Feature 1: Hurst Exponent — always computed (fast R/S method)
+            "hurst_100",
         ]
+        # Feature 4: GARCH — only when explicitly enabled in config
+        if getattr(self.config, "use_garch_feature", False):
+            names.append("garch_vol_forecast")
+        return names
 
 
 # ============================================================================
