@@ -97,6 +97,14 @@ except ImportError:
 
 from agents.ppo_agent import PPOAgent, PPOConfig
 
+# Optional unified logging (MLflow + TensorBoard + ExperimentTracker)
+try:
+    from training.run_logger import RunLogger
+
+    _HAS_RUN_LOGGER = True
+except ImportError:
+    _HAS_RUN_LOGGER = False
+
 
 def _load_mem_cfg() -> dict:
     """Laedt memory_management.yaml (graceful fallback)."""
@@ -262,6 +270,7 @@ class AdversarialTrainer:
         env,  # Trading environment
         config: AdversarialConfig,
         device: str = "cpu",
+        run_logger=None,  # Optional RunLogger instance
     ):
         """
         Initialize adversarial trainer.
@@ -274,10 +283,14 @@ class AdversarialTrainer:
             Training configuration
         device : str
             'cpu' or 'cuda'
+        run_logger : RunLogger or None
+            Optional unified logger (MLflow + TensorBoard + ExperimentTracker).
+            If None, only loguru console/file logging is used.
         """
         self.env = env
         self.config = config
         self.device = device
+        self._run_logger = run_logger  # may be None
 
         # Create agents
         self.trader = PPOAgent(config.trader_config, device)
@@ -1009,6 +1022,36 @@ class AdversarialTrainer:
             f"Return {traj_metrics['mean_return'] * 100:.1f}% | "
             f"Reward {traj_metrics['mean_reward']:.3f}"
         )
+
+        # ── RunLogger: unified MLflow + TensorBoard + ExperimentTracker ──
+        if self._run_logger is not None:
+            metrics: Dict = {
+                "trader/mean_return": traj_metrics["mean_return"],
+                "trader/mean_reward": traj_metrics["mean_reward"],
+                "trader/mean_length": traj_metrics["mean_length"],
+            }
+            if trader_stats:
+                metrics.update(
+                    {
+                        "trader/actor_loss": trader_stats.get("actor_loss", 0.0),
+                        "trader/critic_loss": trader_stats.get("critic_loss", 0.0),
+                        "trader/entropy": trader_stats.get("entropy", 0.0),
+                        "trader/kl": trader_stats.get("mean_kl", 0.0),
+                    }
+                )
+            if adversary_stats:
+                metrics.update(
+                    {
+                        "adversary/loss": adversary_stats.get("adversary_loss", 0.0),
+                        "adversary/success_rate": adversary_stats.get(
+                            "adversary_success_rate", 0.0
+                        ),
+                        "adversary/mean_reward": adversary_stats.get(
+                            "mean_adversary_reward", 0.0
+                        ),
+                    }
+                )
+            self._run_logger.log(iteration, **metrics)
 
     def _save_checkpoint(self, iteration: int, mean_return: Optional[float] = None):
         """Save training checkpoint only if it's better than previous best."""

@@ -82,6 +82,7 @@ from environment.config_system import (
 )
 from agents.ppo_agent import PPOAgent, PPOConfig
 from training.adversarial_trainer import AdversarialTrainer, AdversarialConfig
+from training.run_logger import RunLogger
 from testing.benchmark import ModelBenchmark, BenchmarkResult
 
 
@@ -306,6 +307,7 @@ def make_trainer(
     n_iterations: int,
     device: str,
     checkpoint_subdir: str = "curriculum",
+    run_logger: Optional[RunLogger] = None,
 ) -> AdversarialTrainer:
     """Build an AdversarialTrainer wired to the given env."""
     state_dim = env.observation_space.shape[0]
@@ -355,7 +357,7 @@ def make_trainer(
         log_frequency=10,
         checkpoint_dir=str(CHECKPOINT_DIR / checkpoint_subdir),
     )
-    return AdversarialTrainer(env, training_cfg, device=device)
+    return AdversarialTrainer(env, training_cfg, device=device, run_logger=run_logger)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -410,16 +412,25 @@ def run_phase(
     logger.info(f"  Allowed actions: {allowed if allowed is not None else 'all (0-6)'}")
     logger.info("=" * 60)
 
+    # ── RunLogger: start per-phase run ────────────────────────────────────
+    run_log = RunLogger.for_curriculum(
+        phase=phase,
+        allowed_actions=allowed,
+        n_iterations=n_iterations,
+        device=device,
+    )
+
     # Build env with phase mask
     env = make_env(train_price, train_features)
     env.set_allowed_actions(allowed)
 
-    # Build trainer
+    # Build trainer (with RunLogger wired in)
     trainer = make_trainer(
         env,
         n_iterations=n_iterations,
         device=device,
         checkpoint_subdir=f"phase{phase}",
+        run_logger=run_log,
     )
 
     # Transfer weights from previous phase (warm-start)
@@ -450,6 +461,9 @@ def run_phase(
     # Benchmark on validation set
     logger.info(f"  Benchmarking Phase {phase} on validation set…")
     result = run_benchmark(trainer, val_price, val_features, phase=phase)
+
+    # ── RunLogger: finish with benchmark summary ───────────────────────────
+    run_log.finish(status="success", **result.to_dict())
 
     return trainer, result
 
