@@ -1117,7 +1117,10 @@ class AdversarialTrainer:
         """Load training checkpoint."""
         logger.info(f"Loading checkpoint from: {path}")
 
-        checkpoint = torch.load(path, map_location=self.device)
+        # PyTorch >= 2.6: weights_only=True ist default, schlaegt fehl wenn
+        # Dataclasses (PPOConfig, AdversarialConfig) im Checkpoint gespeichert sind.
+        # weights_only=False ist sicher, da Checkpoints aus dem eigenen Training stammen.
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
 
         # Load agents
         # We need to reconstruct the paths for trader and adversary weights

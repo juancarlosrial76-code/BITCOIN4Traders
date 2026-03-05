@@ -1059,7 +1059,9 @@ class PPOAgent:
         logger.info(f"Agent saved to {path}")
 
     def load(self, path: str):
-        checkpoint = torch.load(path, map_location=self.device)
+        # PyTorch >= 2.6: weights_only=False erforderlich, da PPOConfig
+        # als Dataclass im Checkpoint gespeichert ist (eigene Quelle = sicher).
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
 
         # Adapt weights if dimensions changed (e.g. removed reserved features)
         actor_state = self._adapt_state_dict(

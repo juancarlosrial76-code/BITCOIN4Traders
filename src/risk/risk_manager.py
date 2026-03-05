@@ -366,7 +366,7 @@ class RiskManager:
         max_allowed = current_capital * self.config.max_position_size
 
         if proposed_size > max_allowed:
-            logger.warning(
+            logger.debug(
                 f"Position size {proposed_size:.0f} exceeds hard cap "
                 f"{max_allowed:.0f}. Capping to {self.config.max_position_size * 100:.0f}%"
             )

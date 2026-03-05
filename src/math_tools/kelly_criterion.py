@@ -164,7 +164,7 @@ class KellyCriterion:
         losses = trade_returns[trade_returns < 0]
 
         if len(wins) == 0 or len(losses) == 0:
-            logger.warning("No wins or losses in history, using defaults")
+            logger.debug("No wins or losses in history, using defaults")
             return KellyParameters(
                 win_probability=0.55,  # Slightly favorable to allow initial trading
                 win_loss_ratio=1.0,
