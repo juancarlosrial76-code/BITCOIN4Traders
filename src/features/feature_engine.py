@@ -634,7 +634,12 @@ class FeatureEngine:
         # H > 0.55: trending market  → follow momentum
         # H < 0.45: mean-reverting   → use OU/RSI contrarian signals
         # H ≈ 0.5 : random walk      → reduce position size
-        df["hurst_100"] = self._compute_hurst_feature(df, window=100)
+        # PERFORMANCE GUARD: Hurst DFA ist O(n²) — bei < 500 Zeilen zu langsam.
+        # Bei kleinen Datensätzen setzen wir 0.5 (neutral = kein Signal).
+        if len(df) >= 500 and _HURST_AVAILABLE:
+            df["hurst_100"] = self._compute_hurst_feature(df, window=100)
+        else:
+            df["hurst_100"] = 0.5  # neutral fallback (random walk assumption)
 
         # ── Feature 4: GARCH(1,1) 1-step volatility forecast ─────────────────
         # Normalised to [0, ~5] where 1.0 ≈ 10% daily vol.
