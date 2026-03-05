@@ -357,7 +357,18 @@ class BaseDataProcessor(ABC):
             df = self.add_covariance_matrix(df)
 
         # Drop NaN values
+        initial_rows = len(df)
         df = df.dropna()
+        dropped = initial_rows - len(df)
+        if dropped > 0:
+            logger.debug(f"process_features: dropped {dropped} NaN rows")
+
+        if len(df) == 0:
+            logger.warning(
+                "process_features: all rows dropped after dropna() — "
+                "returning empty DataFrame; caller must handle this gracefully"
+            )
+            return df
 
         # Normalize
         df = self.normalize_data(df)

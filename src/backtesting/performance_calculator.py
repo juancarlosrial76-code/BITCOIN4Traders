@@ -284,11 +284,21 @@ class PerformanceCalculator:
         metrics : PerformanceMetrics
             Complete performance metrics
         """
-        # Calculate returns
-        returns = equity.pct_change().dropna()
+        # Calculate returns — sicher bei leerer oder 1-Zeilen Equity-Kurve
+        if len(equity) < 2:
+            logger.warning(
+                "Performance calculation: equity series too short — returning zeros"
+            )
+            return self._empty_metrics()
 
-        # Return metrics
-        total_return = (equity.iloc[-1] - equity.iloc[0]) / equity.iloc[0]
+        returns = equity.pct_change().dropna()
+        returns = returns.replace([np.inf, -np.inf], np.nan).dropna()
+
+        # Return metrics — Division-by-zero Guard
+        equity0 = equity.iloc[0]
+        if equity0 == 0 or pd.isna(equity0):
+            equity0 = 1.0
+        total_return = (equity.iloc[-1] - equity0) / equity0
 
         years = (
             equity.index[-1] - equity.index[0]
@@ -309,10 +319,13 @@ class PerformanceCalculator:
             else 0.0  # annualised downside vol
         )
 
-        var_95 = np.percentile(returns, 5)  # 5th percentile = 95% VaR (daily)
-        cvar_95 = returns[
-            returns <= var_95
-        ].mean()  # expected loss beyond VaR (tail average)
+        # VaR / CVaR — sicher bei leeren returns
+        if len(returns) > 0:
+            var_95 = float(np.percentile(returns, 5))
+            tail = returns[returns <= var_95]
+            cvar_95 = float(tail.mean()) if len(tail) > 0 else var_95
+        else:
+            var_95 = cvar_95 = 0.0
 
         # Risk-adjusted metrics
         excess_returns = (
@@ -399,6 +412,37 @@ class PerformanceCalculator:
         )
 
         return metrics
+
+    def _empty_metrics(self) -> PerformanceMetrics:
+        """Return a zero-valued PerformanceMetrics when equity data is insufficient."""
+        return PerformanceMetrics(
+            total_return=0.0,
+            cagr=0.0,
+            monthly_return=0.0,
+            volatility=0.0,
+            downside_deviation=0.0,
+            var_95=0.0,
+            cvar_95=0.0,
+            sharpe_ratio=0.0,
+            sortino_ratio=0.0,
+            calmar_ratio=0.0,
+            omega_ratio=0.0,
+            max_drawdown=0.0,
+            avg_drawdown=0.0,
+            max_drawdown_duration=0,
+            recovery_time=-1,
+            total_trades=0,
+            win_rate=0.0,
+            profit_factor=0.0,
+            avg_trade=0.0,
+            avg_win=0.0,
+            avg_loss=0.0,
+            largest_win=0.0,
+            largest_loss=0.0,
+            positive_months=0,
+            negative_months=0,
+            consistency_score=0.0,
+        )
 
     def _calculate_drawdown_metrics(self, equity: pd.Series) -> Dict:
         """Calculate drawdown metrics."""

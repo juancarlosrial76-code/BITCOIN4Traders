@@ -358,19 +358,33 @@ class ConfigIntegratedTradingEnv(gym.Env):
         super().reset(seed=seed)
 
         # Random start – episode ends after max_steps steps
-        # Ensure enough data for lookback window
-        max_start = (
-            len(self.price_data) - self.config.max_steps - self.config.lookback_window
-        )
-        self.current_step = np.random.randint(
-            self.config.lookback_window, max(self.config.lookback_window + 1, max_start)
-        )
+        # Sicher auch bei kleinen Datensaetzen (Live-Feed mit wenigen Kerzen)
+        n = len(self.price_data)
+        lookback = self.config.lookback_window
+        max_start = n - self.config.max_steps - lookback
+
+        if max_start <= lookback:
+            # Zu wenig Daten fuer sauberen Split → starte so frueh wie moeglich
+            logger.warning(
+                f"Dataset too small for full episode "
+                f"(n={n}, lookback={lookback}, max_steps={self.config.max_steps}). "
+                f"Starting at step {lookback}."
+            )
+            max_start = lookback
+
+        self.current_step = np.random.randint(lookback, max(lookback + 1, max_start))
         self._episode_start_step = self.current_step
 
         # Reset state
         self.position = 0.0
         self.cash = self.config.initial_capital
         self.shares = 0.0
+        # Fallback-Preis fuer Datenlücken (letzter gueltiger Close-Preis)
+        _step0 = min(self.current_step, len(self.price_data) - 1)
+        try:
+            self._last_valid_price = float(self.price_data.iloc[_step0]["close"])
+        except Exception:
+            self._last_valid_price = 40000.0  # konservativer BTC-Fallback
         self.equity_history = [self.config.initial_capital]
         self.trade_history = []
 
@@ -564,10 +578,27 @@ class ConfigIntegratedTradingEnv(gym.Env):
         if abs(target_position - self.position) < 0.01:
             return {"trade_executed": False, "cost": 0.0, "order_type": "none"}
 
-        # Get current market data
-        current_price = self.price_data.iloc[self.current_step]["close"]
-        current_volume = self.price_data.iloc[self.current_step]["volume"]
-        volatility = self.features.iloc[self.current_step].get("volatility_20", 0.02)
+        # Get current market data — sicher auch bei out-of-bounds (Datenlücken)
+        step = min(self.current_step, len(self.price_data) - 1)
+        feat_step = min(self.current_step, len(self.features) - 1)
+        row = self.price_data.iloc[step]
+        current_price = (
+            float(row["close"])
+            if pd.notna(row.get("close"))
+            else self._last_valid_price
+        )
+        current_volume = float(row["volume"]) if pd.notna(row.get("volume")) else 500.0
+        feat_row = self.features.iloc[feat_step]
+        volatility = (
+            float(feat_row.get("volatility_20", 0.02))
+            if hasattr(feat_row, "get")
+            else 0.02
+        )
+        if pd.isna(volatility) or volatility <= 0:
+            volatility = 0.02
+        # Letzten gueltigen Preis merken (Fallback fuer naechste Luecke)
+        if pd.notna(current_price) and current_price > 0:
+            self._last_valid_price = current_price
 
         # Apply market regime: scale volatility and volume
         regime = self.current_regime

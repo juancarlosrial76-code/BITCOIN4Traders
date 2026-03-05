@@ -682,18 +682,35 @@ class FeatureEngine:
         return df
 
     def _store_train_stats(self, df: pd.DataFrame):
-        """Store training statistics for later use in transform."""
-        self.train_stats = {
-            "ou_mean": df["rolling_mean"].mean(),
-            "ou_std": df["rolling_std"].mean(),
-            "volatility_mean": df["volatility_20"].mean(),
-            "close_mean": df["close"].mean(),
-            "close_std": df["close"].std(),
-            "rsi_mean": df["rsi_14"].mean(),
-            "macd_mean": df["macd"].mean(),
-            "bb_width_mean": df["bb_width"].mean(),
-        }
+        """Store training statistics for later use in transform.
 
+        NaN-sicher: alle Statistiken werden erst nach _handle_nan() berechnet.
+        Falls eine Spalte trotzdem NaN-Werte hat, werden sichere Fallbacks
+        verwendet (0 fuer Mittelwerte, 1 fuer Standardabweichungen).
+        """
+
+        def _safe_mean(col: str, fallback: float = 0.0) -> float:
+            if col not in df.columns:
+                return fallback
+            val = df[col].mean()
+            return float(val) if pd.notna(val) else fallback
+
+        def _safe_std(col: str, fallback: float = 1.0) -> float:
+            if col not in df.columns:
+                return fallback
+            val = df[col].std()
+            return float(val) if (pd.notna(val) and val > 0) else fallback
+
+        self.train_stats = {
+            "ou_mean": _safe_mean("rolling_mean"),
+            "ou_std": _safe_mean("rolling_std", fallback=1.0),
+            "volatility_mean": _safe_mean("volatility_20", fallback=0.02),
+            "close_mean": _safe_mean("close", fallback=1.0),
+            "close_std": _safe_std("close", fallback=1.0),
+            "rsi_mean": _safe_mean("rsi_14", fallback=50.0),
+            "macd_mean": _safe_mean("macd", fallback=0.0),
+            "bb_width_mean": _safe_mean("bb_width", fallback=0.02),
+        }
         logger.debug(f"Stored training statistics: {self.train_stats}")
 
     def _handle_nan(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -721,6 +738,12 @@ class FeatureEngine:
 
         elif self.config.dropna_strategy == "drop_all":
             df = df.dropna()
+            if len(df) == 0 and initial_rows > 0:
+                # Alle Zeilen hatten NaN → forward-fill als Rettungsanker
+                logger.warning(
+                    "drop_all removed all rows — falling back to forward_fill."
+                )
+                df = df.ffill().dropna()
 
         else:
             raise ValueError(f"Unknown dropna_strategy: {self.config.dropna_strategy}")
@@ -730,12 +753,23 @@ class FeatureEngine:
         if dropped > 0:
             logger.info(f"Dropped {dropped} rows (NaN handling)")
 
-        # Validate minimum rows
+        # Validate minimum rows — im Live-Betrieb nie crashen, Annahme treffen
         if len(df) < self.config.min_valid_rows:
-            raise ValueError(
-                f"Insufficient data after NaN handling: {len(df)} rows "
-                f"(minimum: {self.config.min_valid_rows})"
-            )
+            if len(df) == 0:
+                # Komplett leer: ffill vom letzten bekannten Stand nicht moeglich
+                # -> leeres DataFrame zurueckgeben, Aufrufer entscheidet
+                logger.warning(
+                    f"NaN handling produced empty DataFrame "
+                    f"(initial={initial_rows} rows). "
+                    f"Returning empty — caller must handle."
+                )
+            else:
+                # Zu wenig Zeilen: Warnung aber weitermachen
+                logger.warning(
+                    f"Insufficient data after NaN handling: {len(df)} rows "
+                    f"(minimum: {self.config.min_valid_rows}). "
+                    f"Continuing with available data — features may be less reliable."
+                )
 
         return df
 

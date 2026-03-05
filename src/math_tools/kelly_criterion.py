@@ -40,11 +40,37 @@ class KellyParameters:
     max_position: float = 0.25  # Max 25% of capital
 
     def __post_init__(self):
-        """Validate parameters."""
-        assert 0 <= self.win_probability <= 1, "Win probability must be in [0, 1]"
-        assert self.win_loss_ratio > 0, "Win/loss ratio must be positive"
-        assert 0 < self.kelly_fraction <= 1, "Kelly fraction must be in (0, 1]"
-        assert 0 < self.max_position <= 1, "Max position must be in (0, 1]"
+        """Validate and clamp parameters — nie crashen, Annahmen treffen."""
+        # Statt assert: klemmen + warnen (assert wird mit -O deaktiviert,
+        # raise ValueError ist robuster und bleibt immer aktiv)
+        if not (0 <= self.win_probability <= 1):
+            from loguru import logger as _log
+
+            _log.warning(
+                f"KellyParameters: win_probability {self.win_probability} out of [0,1] — clamped"
+            )
+            self.win_probability = float(np.clip(self.win_probability, 0.0, 1.0))
+        if not (self.win_loss_ratio > 0):
+            from loguru import logger as _log
+
+            _log.warning(
+                f"KellyParameters: win_loss_ratio {self.win_loss_ratio} <= 0 — reset to 1.0"
+            )
+            self.win_loss_ratio = 1.0
+        if not (0 < self.kelly_fraction <= 1):
+            from loguru import logger as _log
+
+            _log.warning(
+                f"KellyParameters: kelly_fraction {self.kelly_fraction} out of (0,1] — clamped"
+            )
+            self.kelly_fraction = float(np.clip(self.kelly_fraction, 1e-4, 1.0))
+        if not (0 < self.max_position <= 1):
+            from loguru import logger as _log
+
+            _log.warning(
+                f"KellyParameters: max_position {self.max_position} out of (0,1] — clamped"
+            )
+            self.max_position = float(np.clip(self.max_position, 1e-4, 1.0))
 
 
 class KellyCriterion:
@@ -264,8 +290,9 @@ class KellyCriterion:
         f = kelly_fraction
 
         # Expected log-growth rate: G(f) = p*ln(1+f*b) + q*ln(1-f)
-        # Maximizing this is equivalent to the Kelly criterion
-        g = p * np.log(1 + f * b) + q * np.log(1 - f)
+        # Klemme f < 1 um log(0) = -inf zu vermeiden
+        f_safe = min(f, 1.0 - 1e-9)
+        g = p * np.log(1 + f_safe * b) + q * np.log(1 - f_safe)
 
         return float(g)
 

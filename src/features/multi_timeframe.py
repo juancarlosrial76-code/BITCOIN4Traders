@@ -593,6 +593,10 @@ class MarketStructureAnalyzer:
         range_low = recent["low"].min()
         range_size = range_high - range_low
 
+        # Guard: flat range — no breakout can be measured
+        if range_size <= 0:
+            return None
+
         # Check for breakout
         if current["close"] > range_high:
             return {

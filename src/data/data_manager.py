@@ -630,6 +630,13 @@ class FeatureEngine:
         if dropped_rows > 0:
             logger.info(f"Dropped {dropped_rows} rows due to NaN values")
 
+        if len(df) == 0:
+            logger.warning(
+                "compute_all_features: all rows dropped after dropna() — "
+                "returning empty DataFrame; caller must handle this gracefully"
+            )
+            return df
+
         logger.success(f"Features computed: {len(df)} rows, {len(df.columns)} columns")
 
         return df

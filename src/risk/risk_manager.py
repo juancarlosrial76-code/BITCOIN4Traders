@@ -549,9 +549,12 @@ class RiskManager:
         # This ensures VaR adapts to recent market conditions
         equity_array = np.array(self.equity_history[-self.config.var_lookback :])
 
-        # Calculate period-over-period returns
-        # Returns = (current - previous) / previous
-        returns = np.diff(equity_array) / equity_array[:-1]
+        # Calculate period-over-period returns — Division-by-zero sicher
+        denom = equity_array[:-1]
+        denom = np.where(np.abs(denom) < 1e-8, 1e-8, denom)  # nie durch 0 teilen
+        returns = np.diff(equity_array) / denom
+        # Inf/NaN durch Ruin oder Datenfehler abfangen
+        returns = returns[np.isfinite(returns)]
 
         if len(returns) == 0:
             return 0.0
