@@ -53,7 +53,7 @@ import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
-from numba import jit
+# numba import entfernt — JIT blockierte Colab beim Import
 from loguru import logger
 
 
@@ -401,7 +401,6 @@ class MicrostructureAnalyzer:
         return iceberg_candidates
 
 
-@jit(nopython=True, cache=True)
 def calculate_spread_metrics(
     bids: np.ndarray, asks: np.ndarray, bid_vols: np.ndarray, ask_vols: np.ndarray
 ) -> Tuple[float, float, float]:

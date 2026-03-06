@@ -27,7 +27,7 @@ import numpy as np
 from typing import Tuple, Optional
 from dataclasses import dataclass
 from loguru import logger
-from numba import jit
+# numba import entfernt — JIT blockierte Colab beim Import
 
 
 @dataclass
@@ -336,7 +336,6 @@ class KellyCriterion:
 # ============================================================================
 
 
-@jit(nopython=True, cache=True)
 def calculate_kelly_numba(
     win_prob: float, win_loss_ratio: float, kelly_fraction: float, max_position: float
 ) -> float:
@@ -357,7 +356,6 @@ def calculate_kelly_numba(
     return kelly_f
 
 
-@jit(nopython=True, cache=True)
 def simulate_kelly_growth(
     initial_capital: float,
     win_prob: float,

@@ -75,7 +75,7 @@ Dependencies:
 import numpy as np
 from typing import Tuple, Dict
 from dataclasses import dataclass
-from numba import jit
+# numba import entfernt — JIT blockierte Colab beim Import
 from loguru import logger
 
 
@@ -425,7 +425,6 @@ class SlippageModel:
         return execution_price, slippage_bps
 
 
-@jit(nopython=True, cache=True)
 def calculate_slippage_numba(
     quantity: float, prices: np.ndarray, volumes: np.ndarray
 ) -> Tuple[float, float]:

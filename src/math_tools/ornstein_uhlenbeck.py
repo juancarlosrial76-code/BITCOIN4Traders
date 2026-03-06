@@ -58,7 +58,7 @@ Dependencies:
 """
 
 import numpy as np
-from numba import jit, float64, int64
+# numba import entfernt — JIT blockierte Colab beim Import
 from typing import Tuple, Optional
 from dataclasses import dataclass
 from scipy import stats
@@ -387,7 +387,6 @@ class OrnsteinUhlenbeckProcess:
 # ============================================================================
 
 
-@jit(nopython=True, cache=True)
 def simulate_ou_paths_numba(
     x0: float,
     theta: float,
@@ -424,7 +423,6 @@ def simulate_ou_paths_numba(
     return paths
 
 
-@jit(nopython=True, cache=True)
 def calculate_ou_score_vectorized(
     prices: np.ndarray, mu: float, sigma: float
 ) -> np.ndarray:
@@ -443,7 +441,6 @@ def calculate_ou_score_vectorized(
     return scores
 
 
-@jit(nopython=True, cache=True)
 def estimate_ou_params_numba(
     log_prices: np.ndarray, dt: float
 ) -> Tuple[float, float, float]:

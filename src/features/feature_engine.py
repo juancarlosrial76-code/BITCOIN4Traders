@@ -81,7 +81,9 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
 from loguru import logger
 import pickle
 from dataclasses import dataclass
-from numba import jit
+# numba import entfernt — JIT-Kompilierung beim Import blockierte Colab 15-20 min
+# Die Numba-Funktionen (compute_rolling_mean_numba etc.) werden nicht im
+# Haupt-Training-Pfad aufgerufen — pandas rolling() ist ausreichend schnell.
 
 
 @dataclass
@@ -985,27 +987,21 @@ class FeatureEngine:
 # ============================================================================
 
 
-@jit(nopython=True, cache=True)
 def compute_rolling_mean_numba(arr: np.ndarray, window: int) -> np.ndarray:
-    """Numba-optimized rolling mean."""
+    """Rolling mean (plain numpy — Numba entfernt wegen Colab-Import-Hänger)."""
     n = len(arr)
     result = np.zeros(n)
-
     for i in range(window - 1, n):
         result[i] = np.mean(arr[i - window + 1 : i + 1])
-
     return result
 
 
-@jit(nopython=True, cache=True)
 def compute_rolling_std_numba(arr: np.ndarray, window: int) -> np.ndarray:
-    """Numba-optimized rolling std."""
+    """Rolling std (plain numpy — Numba entfernt wegen Colab-Import-Hänger)."""
     n = len(arr)
     result = np.zeros(n)
-
     for i in range(window - 1, n):
         result[i] = np.std(arr[i - window + 1 : i + 1])
-
     return result
 
 
