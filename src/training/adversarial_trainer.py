@@ -596,7 +596,21 @@ class AdversarialTrainer:
             # rewards/dones : (N,)
 
             # ---- store N transitions as N flat entries --------------------
+            # BUG-005 fix: store per-env hidden slice so BPTT works correctly
             for i in range(n_envs):
+                # Extract the hidden state for env i from the batched tensor
+                if current_hidden is not None:
+                    if isinstance(current_hidden, tuple):
+                        # LSTM: (h, c) each shape (rnn_layers, N, hidden_dim)
+                        env_hidden = tuple(
+                            h[:, i : i + 1, :].detach() for h in current_hidden
+                        )
+                    else:
+                        # GRU: shape (rnn_layers, N, hidden_dim)
+                        env_hidden = current_hidden[:, i : i + 1, :].detach()
+                else:
+                    env_hidden = None
+
                 self.trader.store_transition(
                     obs[i],
                     int(actions[i]),
@@ -604,7 +618,7 @@ class AdversarialTrainer:
                     float(log_probs[i]),
                     float(values[i]),
                     bool(dones[i]),
-                    hidden=None,  # We don't store per-step hidden in vec mode
+                    hidden=env_hidden,
                 )
 
             cur_reward += rewards

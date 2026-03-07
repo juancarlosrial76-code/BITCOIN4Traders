@@ -200,7 +200,12 @@ class SharpeIncrementReward(BaseReward):
         0.85
     """
 
-    def __init__(self, window: int = 50, risk_free_rate: float = 0.0):
+    def __init__(
+        self,
+        window: int = 50,
+        risk_free_rate: float = 0.0,
+        bars_per_year: int = 8760,
+    ):
         """
         Initialize Sharpe increment reward calculator.
 
@@ -212,10 +217,15 @@ class SharpeIncrementReward(BaseReward):
         risk_free_rate : float, optional
             Annual risk-free rate (default: 0.0). Divided by periods
             to get per-period rate.
+        bars_per_year : int, optional
+            Number of bars per year for risk-free rate conversion.
+            Default 8760 = 365*24 for hourly bars.
+            Use 2190 for 4h bars, 365 for daily bars.
         """
         self.window = window
-        # Convert annual rate to per-bar rate (assuming hourly = 365*24 bars/year)
-        self.rf = risk_free_rate / (365 * 24)
+        self.bars_per_year = bars_per_year
+        # Convert annual rate to per-bar rate (configurable timeframe)
+        self.rf = risk_free_rate / bars_per_year
         # Rolling buffer of net returns (after costs)
         self._ret_buf: deque = deque(maxlen=window)
         self._peak_equity: float = 0.0
@@ -248,8 +258,9 @@ class SharpeIncrementReward(BaseReward):
         net_ret = pnl - cost_this_bar
         self._ret_buf.append(net_ret)
 
-        # Warm-up period: return simple scaled reward
-        if len(self._ret_buf) < 5:
+        # Warm-up period: return simple scaled reward until buffer is filled
+        # Must match window size (50) to avoid noisy Sharpe on insufficient data
+        if len(self._ret_buf) < self.window:
             return float(np.clip(net_ret * 10, -1, 1))
 
         # Calculate rolling statistics
@@ -644,17 +655,17 @@ class RegimeAwareReward(BaseReward):
         self._peak = max(self._peak, equity)
         drawdown = max(0, (self._peak - equity) / (self._peak + 1e-8))
 
-        # ── Feature 3: Asymmetrischer quadratischer Drawdown-Penalty ─────────
-        # Vorher: drawdown^1.5  (mild)
-        # Jetzt:  drawdown^2.0  (quadratisch = viel härter bei tiefen Drawdowns)
+        # Quadratischer Drawdown-Penalty (exponent=2.0, lambda=5.0)
         #
-        # Begründung: Bei drawdown=0.05 (5%): 0.05^1.5=0.011, 0.05^2=0.0025
-        #             Bei drawdown=0.20 (20%): 0.20^1.5=0.089, 0.20^2=0.04
-        # → Kleine Verluste werden toleriert, grosse Drawdowns brutal bestraft.
-        # → Agent lernt FRÜHER aus einem Trade auszusteigen.
+        # Skalenvergleich vs. früherer Variante (exponent=1.5, lambda=3.0):
+        #   DD=5%:  neu=5.0*0.05^2=0.0125  alt=3.0*0.05^1.5=0.0336  → milder
+        #   DD=20%: neu=5.0*0.20^2=0.2000  alt=3.0*0.20^1.5=0.2683  → milder
+        #   DD=36%: Crossover-Punkt — ab hier ist ^2 strenger als ^1.5
+        #   DD=50%: neu=5.0*0.50^2=1.25    alt=3.0*0.50^1.5=1.061   → strenger
         #
-        # lambda_draw wird von 3.0 auf 5.0 erhöht um die Skalierung auszugleichen:
-        # draw_penalty = 5.0 * drawdown^2 statt 3.0 * drawdown^1.5
+        # Design-Entscheidung: toleranter bei kleinen Drawdowns (<36%),
+        # strenger bei extremen Drawdowns (>36%). Dies passt zum Crypto-Kontext
+        # (hohe Volatilität erfordert Toleranz für kurze Dips).
         draw_penalty = self.lambda_draw * (drawdown**2.0)
 
         # Regime bonus/penalty

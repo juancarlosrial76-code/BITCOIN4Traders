@@ -603,14 +603,14 @@ class FeatureEngine:
             "bb_middle"
         ]  # Normalized band width (volatility proxy)
 
-        # RSI (Relative Strength Index, 14-period)
-        delta = df["close"].diff()  # Price change per period
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()  # Average gain
-        loss = (
-            (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        )  # Average loss (positive)
-        rs = gain / loss  # Relative strength ratio
-        df["rsi"] = 100 - (100 / (1 + rs))  # RSI formula: 0=oversold, 100=overbought
+        # RSI (Relative Strength Index, 14-period) — Wilder's EMA smoothing
+        # alpha = 1/14 matches the original Wilder (1978) definition.
+        # Simple rolling mean (formerly used) produces different values and is incorrect.
+        delta = df["close"].diff()
+        gain = delta.where(delta > 0, 0.0).ewm(alpha=1.0 / 14, adjust=False).mean()
+        loss = (-delta.where(delta < 0, 0.0)).ewm(alpha=1.0 / 14, adjust=False).mean()
+        rs = gain / (loss + 1e-8)  # epsilon avoids division by zero
+        df["rsi"] = 100 - (100 / (1 + rs))
 
         return df
 
