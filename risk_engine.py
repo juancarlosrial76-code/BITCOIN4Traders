@@ -231,6 +231,9 @@ class SessionReport:
     total_return: float
     max_drawdown: float
     sharpe_ratio: float
+    sortino_ratio: float
+    cvar_95: float  # Conditional VaR (Expected Shortfall) at 95% confidence
+    annualized_volatility: float  # Annualized return volatility
     profit_factor: float
     total_trades: int
     winning_trades: int
@@ -258,7 +261,12 @@ class SessionReport:
         )
         print(f"  Total Return : {self.total_return:>+10.2%}")
         print(f"  Max Drawdown : {self.max_drawdown:>10.2%}")
-        print(f"  Sharpe Ratio : {self.sharpe_ratio:>10.2f}")
+        print(f"  Sharpe Ratio : {self.sharpe_ratio:>10.2f}  (annualized, rf-adjusted)")
+        print(
+            f"  Sortino Ratio: {self.sortino_ratio:>10.2f}  (annualized, rf-adjusted)"
+        )
+        print(f"  CVaR 95%     : {self.cvar_95:>+10.4%}  (expected shortfall)")
+        print(f"  Ann. Vol     : {self.annualized_volatility:>10.4%}")
         print(f"  Profit Factor: {self.profit_factor:>10.3f}")
         print(f"{'─' * 64}")
         print(
@@ -704,7 +712,12 @@ class TradingSession:
             price = closes[i]
 
             # Daily reset (for daily loss limit)
-            bar_day = getattr(bar_ts, "date", lambda: bar_ts)()
+            # Use pd.Timestamp.normalize() to strip time component safely.
+            bar_day = (
+                bar_ts.normalize()
+                if isinstance(bar_ts, pd.Timestamp)
+                else pd.Timestamp(bar_ts).normalize()
+            )
             if last_day is not None and bar_day != last_day:
                 self.engine.reset_daily(equity)
             last_day = bar_day
@@ -723,6 +736,7 @@ class TradingSession:
                     exit_price = sl_price if sl_hit else tp_price
                     pnl_pct = in_position * (exit_price - entry_price) / entry_price
                     pnl_pct -= self.risk_config.fee_rate  # Exit-Fee
+                    pnl_pct -= self.risk_config.slippage_rate  # Slippage (RISK-002)
 
                     trade_pnl = entry_equity * pnl_pct
                     equity += trade_pnl
@@ -782,6 +796,7 @@ class TradingSession:
                 # Flat signal: close open position
                 pnl_pct = in_position * (price - entry_price) / entry_price
                 pnl_pct -= self.risk_config.fee_rate
+                pnl_pct -= self.risk_config.slippage_rate  # Slippage (RISK-002)
 
                 trade_pnl = entry_equity * pnl_pct
                 equity += trade_pnl
@@ -797,16 +812,43 @@ class TradingSession:
             equity_curve.append(max(equity, 0.0))
 
         # --- Metrics ---
+        _BARS_PER_YEAR = 8760  # 365 days * 24 hours (crypto never closes)
+        _RF_RATE_PER_BAR = 0.04 / _BARS_PER_YEAR  # 4% annual risk-free rate, per bar
+
         eq_series = pd.Series(equity_curve, index=df.index[: len(equity_curve)])
         returns = eq_series.pct_change().dropna()
         total_ret = (eq_series.iloc[-1] / eq_series.iloc[0]) - 1
         running_max = eq_series.cummax()
         max_dd = float(((eq_series - running_max) / running_max).min())
+
+        ret_std = float(returns.std(ddof=1))
+        excess_mean = float(returns.mean()) - _RF_RATE_PER_BAR  # RISK-004: rf-adjusted
+
+        # RISK-004: Sharpe with risk-free rate subtracted
         sharpe = (
-            float(returns.mean()) / float(returns.std()) * np.sqrt(8760)
-            if returns.std() > 0
+            (excess_mean / ret_std * np.sqrt(_BARS_PER_YEAR)) if ret_std > 0 else 0.0
+        )
+
+        # RISK-006: Sortino — downside deviation (returns below rf only)
+        downside = returns[returns < _RF_RATE_PER_BAR] - _RF_RATE_PER_BAR
+        downside_std = (
+            float(np.sqrt((downside**2).mean())) if len(downside) > 0 else 0.0
+        )
+        sortino = (
+            (excess_mean / downside_std * np.sqrt(_BARS_PER_YEAR))
+            if downside_std > 0
             else 0.0
-        )  # Annualized to hours
+        )
+
+        # RISK-005: CVaR (Expected Shortfall) at 95% confidence
+        if len(returns) >= 20:
+            var_95 = float(np.percentile(returns, 5))
+            cvar_95 = float(returns[returns <= var_95].mean())
+        else:
+            cvar_95 = 0.0
+
+        # RISK-008: Annualized volatility
+        ann_vol = ret_std * np.sqrt(_BARS_PER_YEAR)
 
         n_wins = len(wins)
         n_losses = len(losses)
@@ -818,7 +860,10 @@ class TradingSession:
             final_capital=round(equity, 2),
             total_return=total_ret,
             max_drawdown=abs(max_dd),
-            sharpe_ratio=sharpe,
+            sharpe_ratio=round(sharpe, 4),
+            sortino_ratio=round(sortino, 4),
+            cvar_95=round(cvar_95, 6),
+            annualized_volatility=round(ann_vol, 6),
             profit_factor=round(pf, 3),
             total_trades=n_trades,
             winning_trades=n_wins,
