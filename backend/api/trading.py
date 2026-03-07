@@ -9,11 +9,12 @@ trading.py — Live-Trading mit Darwin-Engine Champion für Signale.
 import os
 import sys
 import json
+import threading
 from pathlib import Path
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, validator, Field
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -124,6 +125,7 @@ class TradingConfig(BaseModel):
     leverage: int = 1
 
 
+_state_lock = threading.Lock()
 trading_state = {
     "is_running": False,
     "current_position": 0.0,
@@ -163,7 +165,8 @@ async def get_status():
 
 @router.post("/start")
 async def start_trading():
-    trading_state["is_running"] = True
+    with _state_lock:
+        trading_state["is_running"] = True
     signal = _get_champion_signal()
     return {
         "status": "started",
@@ -176,7 +179,8 @@ async def start_trading():
 
 @router.post("/stop")
 async def stop_trading():
-    trading_state["is_running"] = False
+    with _state_lock:
+        trading_state["is_running"] = False
     return {"status": "stopped", "timestamp": datetime.now().isoformat()}
 
 
@@ -264,5 +268,6 @@ async def get_config():
 
 @router.put("/config")
 async def update_config(config: TradingConfig):
-    trading_state["config"] = config
+    with _state_lock:
+        trading_state["config"] = config
     return {"status": "updated", "config": config}

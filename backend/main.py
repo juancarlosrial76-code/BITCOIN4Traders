@@ -179,7 +179,25 @@ async def get_status():
 
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_endpoint(websocket: WebSocket, token: str = ""):
+    """WebSocket endpoint — requires JWT token as query param: /ws?token=<jwt>"""
+    from fastapi.security import HTTPAuthorizationCredentials
+    from backend.api.login import get_current_user, SECRET_KEY, ALGORITHM
+    from jose import JWTError, jwt as jose_jwt
+
+    # Validate token before accepting connection
+    if not token:
+        await websocket.close(code=1008, reason="Missing token")
+        return
+    try:
+        payload = jose_jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username = payload.get("sub") or ""
+        if not username:
+            raise JWTError("No subject")
+    except JWTError:
+        await websocket.close(code=1008, reason="Invalid token")
+        return
+
     await manager.connect(websocket)
     try:
         while True:

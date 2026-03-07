@@ -210,12 +210,14 @@ class HurstExponent:
         """
         lags = range(2, min(self.max_lag, len(ts) // 4))
         # τ(lag) = std of lagged differences; for fractional Brownian motion: τ ~ lag^H
-        tau = [np.sqrt(np.std(np.subtract(ts[lag:], ts[:-lag]))) for lag in lags]
+        # FIXED: removed erroneous np.sqrt() wrapper — std() is already the correct τ
+        tau = [np.std(np.subtract(ts[lag:], ts[:-lag]), ddof=1) for lag in lags]
 
         # Fit log(tau) = H * log(lag) + const on log-log plot
+        # slope directly equals H (no factor-of-2 correction needed)
         poly = np.polyfit(np.log(lags), np.log(tau), 1)
 
-        return poly[0] * 2.0  # Hurst exponent: slope * 2 due to sqrt in tau definition
+        return poly[0]  # Hurst exponent = slope of log-log regression
 
     def detrended_fluctuation_analysis(self, ts: np.ndarray) -> float:
         """

@@ -4108,7 +4108,16 @@ class TelegramNotifier:
         return self.send(msg)
 
     def send_alert(self, title: str, message: str) -> bool:
-        """Send a warning/alert message."""
+        """Send a warning/alert message.
+
+        Controlled via TELEGRAM_ALERTS_ENABLED env var (default: false).
+        Set TELEGRAM_ALERTS_ENABLED=true in .env to re-enable alerts.
+        Trading signals and champion updates are NOT affected by this flag.
+        """
+        alerts_enabled = os.getenv("TELEGRAM_ALERTS_ENABLED", "false").lower() == "true"
+        if not alerts_enabled:
+            logger.debug(f"[Telegram alert suppressed] {title}: {message[:120]}")
+            return False
         msg = f"<b>WARNING: {title}</b>\n{message}"
         return self.send(msg)
 

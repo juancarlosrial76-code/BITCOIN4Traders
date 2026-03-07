@@ -867,7 +867,10 @@ class ConfigIntegratedTradingEnv(gym.Env):
                     returns = np.diff(self.equity_history[-lookback:]) / np.array(
                         self.equity_history[-lookback:-1]
                     )
-                    sharpe = np.mean(returns) / (np.std(returns) + 1e-8) * np.sqrt(252)
+                    # Annualisation for hourly bars: sqrt(252 * 24) = sqrt(6048)
+                    sharpe = (
+                        np.mean(returns) / (np.std(returns) + 1e-8) * np.sqrt(252 * 24)
+                    )
                     components_values["sharpe"] = np.clip(
                         sharpe * comp.weight,
                         -0.5,

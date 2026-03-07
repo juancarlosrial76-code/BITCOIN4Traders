@@ -605,11 +605,10 @@ class RiskManager:
             else:
                 self.state.consecutive_losses = 0
 
-        # Update VaR
+        # Update VaR — use current equity as the position value at risk
+        # (previously used equity delta which measured PnL, not position size)
         if len(self.equity_history) >= 2:
-            # Estimate position value (simplified)
-            position_value = current_equity - self.state.current_equity
-            self.state.var_95 = self.calculate_var(abs(position_value))
+            self.state.var_95 = self.calculate_var(current_equity)
 
         # Update current equity
         self.state.current_equity = current_equity

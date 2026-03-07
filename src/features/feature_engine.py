@@ -64,7 +64,7 @@ from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
 from loguru import logger
-import pickle
+import joblib
 from dataclasses import dataclass
 
 # ============================================================================
@@ -827,21 +827,22 @@ class FeatureEngine:
         return result_series.clip(0.0, 5.0)
 
     def _compute_rsi(self, series: pd.Series, window: int = 14) -> pd.Series:
-        """Compute Relative Strength Index."""
-        delta = series.diff()  # Price change per period
-        gain = (
-            (delta.where(delta > 0, 0)).rolling(window=window).mean()
-        )  # Average gain over window
-        loss = (
-            (-delta.where(delta < 0, 0)).rolling(window=window).mean()
-        )  # Average loss (positive value)
+        """Compute Relative Strength Index using Wilder's smoothing (SMMA).
 
-        rs = gain / (
-            loss + 1e-8
-        )  # Relative strength ratio; epsilon avoids division by zero
-        return 100 - (
-            100 / (1 + rs)
-        )  # RSI formula: 0=fully oversold, 100=fully overbought
+        Wilder's original RSI uses exponential smoothing with alpha=1/window
+        (adjust=False), NOT a simple rolling mean. Simple rolling mean produces
+        different values, especially on short series.
+        """
+        delta = series.diff()  # Price change per period
+        gain = delta.where(delta > 0, 0.0)
+        loss = -delta.where(delta < 0, 0.0)
+
+        # Wilder's Smoothed Moving Average: alpha = 1/window
+        avg_gain = gain.ewm(alpha=1.0 / window, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1.0 / window, adjust=False).mean()
+
+        rs = avg_gain / (avg_loss + 1e-8)  # epsilon avoids division by zero
+        return 100 - (100 / (1 + rs))  # RSI: 0=oversold, 100=overbought
 
     def _compute_macd(self, series: pd.Series) -> Tuple[pd.Series, pd.Series]:
         """Compute MACD and Signal line."""
@@ -1007,29 +1008,36 @@ class FeatureEngine:
         """Save fitted scaler for production use."""
         self.config.scaler_path.mkdir(parents=True, exist_ok=True)
 
-        scaler_file = self.config.scaler_path / "feature_scaler.pkl"
+        scaler_file = self.config.scaler_path / "feature_scaler.joblib"
 
-        with open(scaler_file, "wb") as f:
-            pickle.dump(
-                {
-                    "scaler": self.scaler,
-                    "train_stats": self.train_stats,
-                    "config": self.config,
-                },
-                f,
-            )
+        joblib.dump(
+            {
+                "scaler": self.scaler,
+                "train_stats": self.train_stats,
+                "config": self.config,
+            },
+            scaler_file,
+        )
 
         logger.info(f"Saved scaler to {scaler_file}")
 
     def load_scaler(self):
         """Load pre-fitted scaler (for production)."""
-        scaler_file = self.config.scaler_path / "feature_scaler.pkl"
+        # Support both new (.joblib) and legacy (.pkl) paths
+        scaler_file = self.config.scaler_path / "feature_scaler.joblib"
+        legacy_file = self.config.scaler_path / "feature_scaler.pkl"
 
         if not scaler_file.exists():
-            raise FileNotFoundError(f"Scaler not found: {scaler_file}")
+            if legacy_file.exists():
+                logger.warning(
+                    f"Loading legacy .pkl scaler from {legacy_file}. "
+                    "Re-save with current version to upgrade to .joblib."
+                )
+                scaler_file = legacy_file
+            else:
+                raise FileNotFoundError(f"Scaler not found: {scaler_file}")
 
-        with open(scaler_file, "rb") as f:
-            data = pickle.load(f)
+        data = joblib.load(scaler_file)
 
         self.scaler = data["scaler"]
         self.train_stats = data["train_stats"]
