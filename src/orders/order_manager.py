@@ -78,6 +78,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 import aiohttp
+import random as _random
 
 from src.connectors.binance_ws_connector import (
     AuthenticationError,
@@ -444,6 +445,8 @@ class OrderManager:
     """
 
     _REST_BASE = "https://api.binance.com"
+    _RECV_WINDOW_MS = 5000  # EX-006: explicit recvWindow to avoid timestamp drift
+    _WEIGHT_WARN_THRESHOLD = 900  # Warn when 1-min weight >= 900 (limit is 1200)
 
     def __init__(self, api_key: str, api_secret: str):
         self._api_key = api_key
@@ -492,20 +495,28 @@ class OrderManager:
         params = self._build_order_params(order)
         logger.info("Submitting: %s", order)
 
-        try:
-            resp = await self._signed_post("/api/v3/order", params)
-        except RateLimitError:
-            logger.warning(
-                "Rate limit hit submitting %s – will retry in 5 s.",
-                order.client_order_id,
-            )
-            await asyncio.sleep(5)
-            resp = await self._signed_post("/api/v3/order", params)
-        except AuthenticationError as exc:
-            async with self._lock:
-                order.error_msg = str(exc)
-                order.transition(OrderStatus.REJECTED, note=str(exc))
-            raise
+        # EX-004: exponential backoff + jitter on rate-limit errors
+        _max_submit_retries = 4
+        _base_delay = 1.0
+        resp = None
+        for attempt in range(1, _max_submit_retries + 1):
+            try:
+                resp = await self._signed_post("/api/v3/order", params)
+                break
+            except RateLimitError as rl_exc:
+                if attempt == _max_submit_retries:
+                    raise
+                delay = _base_delay * (2 ** (attempt - 1)) + _random.uniform(0.0, 0.5)
+                logger.warning(
+                    "Rate limit hit submitting %s (attempt %d/%d) – retrying in %.2fs: %s",
+                    order.client_order_id, attempt, _max_submit_retries, delay, rl_exc,
+                )
+                await asyncio.sleep(delay)
+            except AuthenticationError as exc:
+                async with self._lock:
+                    order.error_msg = str(exc)
+                    order.transition(OrderStatus.REJECTED, note=str(exc))
+                raise
 
         async with self._lock:
             order.exchange_order_id = resp["orderId"]
@@ -515,6 +526,20 @@ class OrderManager:
             # Handle immediate fills (MARKET orders, IOC)
             for fill_data in resp.get("fills", []):
                 self._apply_fill_from_rest(order, fill_data)
+
+            # EX-007: fill price sanity check vs. limit price
+            if order.limit_price is not None and order.avg_fill_price > 0:
+                tolerance = Decimal("0.01")  # 1% max deviation from limit
+                deviation = abs(order.avg_fill_price - order.limit_price) / order.limit_price
+                if deviation > tolerance:
+                    logger.warning(
+                        "Fill price sanity check: avg_fill=%.6f vs limit=%.6f (deviation=%.4f%%) "
+                        "for order %s — possible slippage or stale price",
+                        float(order.avg_fill_price),
+                        float(order.limit_price),
+                        float(deviation * 100),
+                        order.client_order_id,
+                    )
 
             if resp["status"] == "FILLED":
                 order.transition(OrderStatus.FILLED, note="Immediately filled")
@@ -713,29 +738,54 @@ class OrderManager:
             self._api_secret.encode(), query.encode(), hashlib.sha256
         ).hexdigest()  # Return hex-encoded signature
 
-    async def _signed_post(self, path: str, params: dict) -> dict:
+    def _add_common_params(self, params: dict) -> None:
+        """Add timestamp and recvWindow (EX-006) in-place; then sign."""
         params["timestamp"] = int(time.time() * 1000)
+        params["recvWindow"] = self._RECV_WINDOW_MS  # EX-006
         params["signature"] = self._sign(params)
+
+    def _check_weight_headers(self, headers) -> None:
+        """EX-003: Log and warn when approaching Binance 1-min weight limit."""
+        used_weight = headers.get("X-MBX-USED-WEIGHT-1M")
+        if used_weight:
+            try:
+                w = int(used_weight)
+                if w >= self._WEIGHT_WARN_THRESHOLD:
+                    logger.warning(
+                        "Binance 1-min request weight at %d/1200 — approaching rate limit", w
+                    )
+            except ValueError:
+                pass
+
+    async def _signed_post(self, path: str, params: dict) -> dict:
+        self._add_common_params(params)
         headers = {"X-MBX-APIKEY": self._api_key}
         async with self._session.post(
             f"{self._REST_BASE}{path}", params=params, headers=headers
         ) as resp:
+            self._check_weight_headers(resp.headers)  # EX-003
             body = await resp.json()
             if resp.status == 401:
                 raise AuthenticationError(body)
             if resp.status in (429, 418):
-                raise RateLimitError(body)
+                # EX-003: honour Retry-After header if present
+                retry_after = resp.headers.get("Retry-After")
+                wait = float(retry_after) if retry_after else 60.0
+                logger.warning(
+                    "Rate limited (HTTP %d). Retry-After=%s s", resp.status, retry_after
+                )
+                raise RateLimitError({"body": body, "retry_after_s": wait})
             if resp.status >= 400:
                 raise ConnectorError(f"REST {resp.status}: {body}")
             return body
 
     async def _signed_delete(self, path: str, params: dict) -> dict:
-        params["timestamp"] = int(time.time() * 1000)
-        params["signature"] = self._sign(params)
+        self._add_common_params(params)
         headers = {"X-MBX-APIKEY": self._api_key}
         async with self._session.delete(
             f"{self._REST_BASE}{path}", params=params, headers=headers
         ) as resp:
+            self._check_weight_headers(resp.headers)  # EX-003
             if resp.status >= 400:
                 body = await resp.json()
                 raise ConnectorError(f"REST DELETE {resp.status}: {body}")
