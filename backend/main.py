@@ -19,26 +19,64 @@ from backend.api.login import get_current_user
 
 
 class ConnectionManager:
+    """
+    Thread-safe WebSocket connection manager.
+
+    WS-001: asyncio.Lock protects active_connections from concurrent mutation.
+    WS-002: broadcast() collects dead connections and removes them after iteration.
+    WS-003: heartbeat() sends server-initiated ping every 20 s to detect stale clients.
+    """
+
     def __init__(self):
         self.active_connections: list[WebSocket] = []
+        self._lock = asyncio.Lock()  # WS-001: protects list mutation
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
-        self.active_connections.append(websocket)
+        async with self._lock:
+            self.active_connections.append(websocket)
 
-    def disconnect(self, websocket: WebSocket):
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
+    async def disconnect(self, websocket: WebSocket):
+        async with self._lock:
+            if websocket in self.active_connections:
+                self.active_connections.remove(websocket)
 
     async def send_message(self, message: dict, websocket: WebSocket):
         await websocket.send_json(message)
 
     async def broadcast(self, message: dict):
-        for connection in self.active_connections:
+        """Send message to all connections; remove dead ones (WS-002)."""
+        dead: list[WebSocket] = []
+        async with self._lock:
+            snapshot = list(self.active_connections)
+        for connection in snapshot:
             try:
                 await connection.send_json(message)
             except Exception:
-                pass
+                dead.append(connection)
+        if dead:
+            async with self._lock:
+                for ws in dead:
+                    if ws in self.active_connections:
+                        self.active_connections.remove(ws)
+
+    async def heartbeat(self, interval: int = 20):
+        """WS-003: Send server-initiated ping every `interval` seconds to detect stale clients."""
+        while True:
+            await asyncio.sleep(interval)
+            async with self._lock:
+                snapshot = list(self.active_connections)
+            dead: list[WebSocket] = []
+            for ws in snapshot:
+                try:
+                    await ws.send_json({"type": "ping"})
+                except Exception:
+                    dead.append(ws)
+            if dead:
+                async with self._lock:
+                    for ws in dead:
+                        if ws in self.active_connections:
+                            self.active_connections.remove(ws)
 
 
 manager = ConnectionManager()
@@ -69,6 +107,7 @@ async def lifespan(app: FastAPI):
         print(f"Failed to initialize Binance: {e}")
 
     asyncio.create_task(price_stream())
+    asyncio.create_task(manager.heartbeat(interval=20))  # WS-003: keep-alive
     yield
 
     if binance_connector:
@@ -244,4 +283,4 @@ async def websocket_endpoint(websocket: WebSocket, token: str = ""):
                     websocket,
                 )
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
+        await manager.disconnect(websocket)
