@@ -88,7 +88,7 @@ def fetch_new_bars(
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
     df = df.set_index("timestamp").sort_index()
     df = df[~df.index.duplicated(keep="last")]
-    return df.astype("float32")
+    return df.astype("float64")
 
 
 def update_pair(exchange: ccxt.Exchange, symbol: str, timeframe: str) -> int:
@@ -124,7 +124,7 @@ def update_pair(exchange: ccxt.Exchange, symbol: str, timeframe: str) -> int:
     else:
         combined = pd.concat([existing, new_bars])
         combined = combined[~combined.index.duplicated(keep="last")].sort_index()
-        combined = combined.astype("float32")
+        combined = combined.astype("float64")
 
     # Speichern
     combined.to_parquet(path, engine="pyarrow", compression="snappy")

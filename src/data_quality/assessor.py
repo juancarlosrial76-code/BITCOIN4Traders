@@ -18,7 +18,7 @@ Quality Dimensions:
        - Gap distribution patterns
 
     3. Accuracy: Data correctness and outlier detection
-       - IQR-based outlier detection
+       - Rolling Z-Score outlier detection (window=50, threshold=3)
        - Price anomaly detection (e.g., close outside high/low)
        - Severity classification (low/medium/high)
 
@@ -413,7 +413,9 @@ class DataQualityAssessor:
         Assess data accuracy using outlier detection and anomaly checks.
 
         Uses two methods:
-        1. IQR (Interquartile Range) method for outlier detection
+        1. Rolling Z-Score method for outlier detection (window=50, threshold=3)
+           Uses log-returns so the detector is scale-invariant and adapts to
+           local volatility — far superior to the global IQR for financial data.
         2. OHLC consistency checks (prices must follow logical constraints)
 
         Scoring:
@@ -426,6 +428,9 @@ class DataQualityAssessor:
         - medium: 1-5% outliers
         - high: >5% outliers
         """
+        _ROLLING_WINDOW = 50
+        _Z_THRESHOLD = 3.0
+
         outliers_pct = 0
         severity = "low"
         anomalies = 0
@@ -435,19 +440,21 @@ class DataQualityAssessor:
         available_cols = [col for col in price_cols if col in self.df.columns]
 
         if available_cols:
-            # Use IQR method for outlier detection
-            # IQR = Q3 - Q1; outliers are beyond 1.5 * IQR from quartiles
+            # Rolling Z-Score outlier detection on log-returns (scale-invariant,
+            # adapts to local volatility — more appropriate than global IQR for
+            # financial time-series with non-stationary variance).
             for col in available_cols:
-                Q1 = self.df[col].quantile(0.25)
-                Q3 = self.df[col].quantile(0.75)
-                IQR = Q3 - Q1
-                lower_bound = Q1 - 1.5 * IQR
-                upper_bound = Q3 + 1.5 * IQR
-
-                outliers = (
-                    (self.df[col] < lower_bound) | (self.df[col] > upper_bound)
-                ).sum()
-                outliers_pct = max(outliers_pct, (outliers / len(self.df)) * 100)
+                series = self.df[col].replace(0, np.nan).dropna()
+                if len(series) < _ROLLING_WINDOW + 1:
+                    continue
+                log_ret = np.log(series).diff().dropna()
+                roll_mean = log_ret.rolling(_ROLLING_WINDOW, min_periods=10).mean()
+                roll_std = log_ret.rolling(_ROLLING_WINDOW, min_periods=10).std(ddof=1)
+                z_scores = (log_ret - roll_mean) / roll_std.replace(0, np.nan)
+                col_outlier_pct = (
+                    (z_scores.abs() > _Z_THRESHOLD).sum() / len(series) * 100
+                )
+                outliers_pct = max(outliers_pct, col_outlier_pct)
 
             # Check for price anomalies (e.g., close outside high/low)
             # Valid OHLC data must satisfy: low <= open,close <= high

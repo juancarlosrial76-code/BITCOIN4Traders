@@ -293,7 +293,7 @@ class LiveQualityMonitor:
 
     def _check_source_quality(self, source_name: str):
         """Check quality for a specific source."""
-        from data_quality.assessor import DataQualityAssessor
+        from src.data_quality.assessor import DataQualityAssessor
 
         df = self.sources[source_name]
 
