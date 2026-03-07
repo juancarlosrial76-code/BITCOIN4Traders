@@ -711,6 +711,26 @@ class FeatureEngine:
             upper - lower + 1e-8
         )  # 0=at lower band, 1=at upper band
 
+        # 7. ATR (Average True Range) — volatility-adjusted price range
+        # ATR = EWM of True Range; normalized by close price for scale-invariance.
+        # Tells the agent how much the market is "moving" relative to price level.
+        if all(col in df.columns for col in ["high", "low", "close"]):
+            df["atr_14"] = self._compute_atr(
+                df["high"], df["low"], df["close"], period=14
+            )
+        else:
+            df["atr_14"] = 0.0
+
+        # 8. VWAP deviation — price vs volume-weighted average price
+        # VWAP = cumulative(price * volume) / cumulative(volume) over rolling window.
+        # Deviation = (close - vwap) / close ; positive → price above VWAP (expensive).
+        if "volume" in df.columns:
+            df["vwap_dev"] = self._compute_vwap_deviation(
+                df["close"], df["volume"], window=20
+            )
+        else:
+            df["vwap_dev"] = 0.0
+
         # ── Feature 1: Hurst Exponent (trend vs mean-reversion detector) ──────
         # H > 0.55: trending market  → follow momentum
         # H < 0.45: mean-reverting   → use OU/RSI contrarian signals
@@ -863,6 +883,52 @@ class FeatureEngine:
         upper = rolling_mean + (rolling_std * num_std)
         lower = rolling_mean - (rolling_std * num_std)
         return upper, lower
+
+    def _compute_atr(
+        self,
+        high: pd.Series,
+        low: pd.Series,
+        close: pd.Series,
+        period: int = 14,
+    ) -> pd.Series:
+        """
+        Average True Range (ATR) normalized by close price (DATA-004).
+
+        True Range = max(High-Low, |High-PrevClose|, |Low-PrevClose|)
+        ATR = EWM(TR, span=period)
+        Normalized ATR = ATR / close  — scale-invariant % of price.
+        """
+        prev_close = close.shift(1)
+        tr = pd.concat(
+            [
+                high - low,
+                (high - prev_close).abs(),
+                (low - prev_close).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
+        atr = tr.ewm(span=period, adjust=False).mean()
+        return atr / (close + 1e-8)  # Normalize: ATR as fraction of price
+
+    def _compute_vwap_deviation(
+        self,
+        close: pd.Series,
+        volume: pd.Series,
+        window: int = 20,
+    ) -> pd.Series:
+        """
+        Rolling VWAP deviation (DATA-005).
+
+        VWAP = rolling(price * volume) / rolling(volume)
+        Deviation = (close - vwap) / close  — positive means price is above VWAP.
+        Clipped to ±0.1 (10%) to limit outlier influence.
+        """
+        pv = close * volume
+        vwap = pv.rolling(window, min_periods=1).sum() / (
+            volume.rolling(window, min_periods=1).sum() + 1e-8
+        )
+        dev = (close - vwap) / (close + 1e-8)
+        return dev.clip(-0.1, 0.1)
 
     def _compute_ou_score(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -1060,6 +1126,8 @@ class FeatureEngine:
             "macd_hist",
             "bb_width",
             "bb_position",
+            "atr_14",  # DATA-004: normalized ATR (volatility-adjusted range)
+            "vwap_dev",  # DATA-005: VWAP deviation (institutional price level)
             # Feature 1: Hurst Exponent — always computed (fast R/S method)
             "hurst_100",
         ]
