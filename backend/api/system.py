@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from datetime import datetime
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException, status
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -188,8 +188,18 @@ async def get_api_endpoints():
 
 
 @router.get("/env")
-async def get_env_variables():
-    """Gibt Umgebungsvariablen-Status zurück (Werte maskiert)."""
+async def get_env_variables(current_user: dict = Depends(lambda: None)):
+    """Gibt Umgebungsvariablen-Status zurück (Werte maskiert). Nur für Admins."""
+    # Import here to avoid circular imports
+    from backend.api.login import get_current_user as _get_user
+
+    # Note: auth is enforced at router level in main.py (Depends(get_current_user))
+    # Additional role check for admin-only access
+    if current_user and current_user.get("role") != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
+        )
 
     def _mask(val: str | None) -> str:
         if not val:

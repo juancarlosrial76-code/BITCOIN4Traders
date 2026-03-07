@@ -285,8 +285,9 @@ class HurstExponent:
         # Linear fit
         poly = np.polyfit(np.log(lags), np.log(variances), 1)
 
-        # Hurst = 1 - slope/2
-        return 1 - poly[0] / 2
+        # Var_n ~ n^(2H-2)  =>  slope = 2H-2  =>  H = 1 + slope/2
+        # FIXED: was 1 - slope/2 which is mathematically wrong (gives H=1.5 for RW)
+        return 1 + poly[0] / 2
 
     def calculate(self, ts: np.ndarray, method: str = "dfa") -> float:
         """

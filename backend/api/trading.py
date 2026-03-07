@@ -8,13 +8,15 @@ trading.py — Live-Trading mit Darwin-Engine Champion für Signale.
 
 import os
 import sys
+import re
 import json
 import threading
 from pathlib import Path
 from datetime import datetime
+from enum import Enum
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, validator, Field
+from pydantic import BaseModel, Field, validator
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -109,12 +111,29 @@ def _get_champion_signal() -> dict:
         }
 
 
+class OrderSideEnum(str, Enum):
+    BUY = "buy"
+    SELL = "sell"
+
+
+class OrderTypeEnum(str, Enum):
+    MARKET = "market"
+    LIMIT = "limit"
+
+
 class OrderRequest(BaseModel):
-    symbol: str
-    side: str
-    order_type: str
-    quantity: float
-    price: float | None = None
+    symbol: str = Field(..., min_length=3, max_length=20)
+    side: OrderSideEnum
+    order_type: OrderTypeEnum
+    quantity: float = Field(..., gt=0, le=100.0)  # positive, max 100 BTC
+    price: float | None = Field(None, gt=0)
+
+    @validator("symbol")
+    def validate_symbol(cls, v: str) -> str:
+        v = v.upper().replace("-", "/")
+        if not re.match(r"^[A-Z]{2,10}(/[A-Z]{2,10})?$", v):
+            raise ValueError("Invalid symbol format. Use e.g. BTC/USDT or BTCUSDT")
+        return v
 
 
 class TradingConfig(BaseModel):

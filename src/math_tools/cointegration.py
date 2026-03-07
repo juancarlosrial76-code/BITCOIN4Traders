@@ -248,7 +248,8 @@ class CointegrationTest:
         mse = np.sum(residuals**2) / (n - k)
 
         # Variance-covariance matrix: Var(β) = MSE * (X'X)^{-1}
-        var_beta = mse * np.linalg.inv(X.T @ X)
+        # Use pseudoinverse for numerical stability with ill-conditioned matrices
+        var_beta = mse * np.linalg.pinv(X.T @ X)
 
         # ADF t-statistic: t_β = β[1] / SE(β[1])
         # More negative = more evidence against unit root

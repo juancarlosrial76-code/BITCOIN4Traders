@@ -343,9 +343,10 @@ class SpectralAnalyzer:
             top_cycles.append(
                 {
                     "period": float(filtered_periods[peak_idx]),
+                    # Normalize by global max (not filtered max) to get true relative power
                     "power": float(
-                        filtered_power[peak_idx] / np.max(filtered_power)
-                    ),  # Normalized
+                        filtered_power[peak_idx] / np.max(power)
+                    ),  # Normalized by global spectrum maximum
                     "frequency": float(filtered_freqs[peak_idx]),
                     "amplitude": float(np.sqrt(filtered_power[peak_idx])),
                 }

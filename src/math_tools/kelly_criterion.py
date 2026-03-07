@@ -123,11 +123,15 @@ class KellyCriterion:
         b = win_loss_ratio
 
         # Kelly formula: f* = (p*b - q) / b = p - q/b
-        kelly_f = (
-            p * b - q
-        ) / b  # Positive = positive expected value; negative = avoid this bet
+        if b <= 0:
+            return 0.0  # Division by zero or negative odds: no bet
+        kelly_f = (p * b - q) / b  # Positive = positive EV; negative = avoid bet
 
-        return float(kelly_f)
+        if not np.isfinite(kelly_f):
+            return 0.0
+
+        # Clip to [-1, 1]: negative means negative EV (don't trade)
+        return float(np.clip(kelly_f, -1.0, 1.0))
 
     def calculate_position_size(self, capital: float, params: KellyParameters) -> float:
         """
@@ -290,8 +294,11 @@ class KellyCriterion:
         f = kelly_fraction
 
         # Expected log-growth rate: G(f) = p*ln(1+f*b) + q*ln(1-f)
-        # Klemme f < 1 um log(0) = -inf zu vermeiden
-        f_safe = min(f, 1.0 - 1e-9)
+        # Proper constraint: f < 1 AND f*b > -1  =>  f < 1/b
+        if b <= 0:
+            return 0.0
+        max_f = min(1.0 - 1e-9, 1.0 / (b + 1e-9) - 1e-9)
+        f_safe = min(f, max_f)
         g = p * np.log(1 + f_safe * b) + q * np.log(1 - f_safe)
 
         return float(g)

@@ -356,7 +356,12 @@ class GARCHModel:
             # Calculate persistence: α+β < 1 required for stationarity
             persistence = self.alpha + self.beta
             # Half-life: time for shock to decay to half its initial size
-            half_life = np.log(0.5) / np.log(persistence) if persistence < 1 else np.inf
+            if persistence >= 1 - 1e-10:
+                half_life = np.inf  # Unit root — shocks never decay
+            elif persistence <= 1e-10:
+                half_life = 0.0  # Instantaneous decay
+            else:
+                half_life = np.log(0.5) / np.log(persistence)
 
             return {
                 "omega": self.omega,
