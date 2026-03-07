@@ -28,9 +28,12 @@ jobs:
     timeout-minutes: 55     # GitHub Actions Free Tier: max 6h, capped at 55 min
 
     env:
-      # Telegram Credentials (store in GitHub Secrets)
-      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+      # Telegram deaktiviert - zum Aktivieren die Kommentare entfernen
+      # TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      # TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+      TELEGRAM_BOT_TOKEN: ""
+      TELEGRAM_CHAT_ID:   ""
+      TELEGRAM_ALERTS_ENABLED: "false"
       # Binance API (optional - public endpoints work without keys)
       BINANCE_API_KEY:    ${{ secrets.BINANCE_API_KEY }}
       BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
