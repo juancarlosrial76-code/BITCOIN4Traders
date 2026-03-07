@@ -202,6 +202,10 @@ class EngineConfig:
     circuit_breaker_pct: Decimal = Decimal("0.02")  # 2% drawdown → halt
     daily_loss_limit_usd: Decimal = Decimal(500)  # Hard stop on daily loss
 
+    # Per-position stop-loss (0 = disabled)
+    stop_loss_pct: Decimal = Decimal("0.02")  # 2% adverse move → force-flat
+    take_profit_pct: Decimal = Decimal("0.05")  # 5% favourable move → take profit
+
     # Execution
     use_limit_orders: bool = True
     limit_order_offset_bps: int = 2  # Place limit 2 bps inside the mid price
@@ -399,6 +403,11 @@ class LiveExecutionEngine:
         self._initial_equity: Optional[Decimal] = None  # Locked at first equity read
         self._cash = Decimal(0)  # Cash balance (live mode)
 
+        # Per-symbol entry price tracking for stop-loss / take-profit
+        self._entry_prices: Dict[str, Optional[Decimal]] = {
+            s: None for s in config.symbols
+        }
+
         self._breaker = CircuitBreaker(
             config.circuit_breaker_pct,
             config.daily_loss_limit_usd,
@@ -533,6 +542,10 @@ class LiveExecutionEngine:
     ) -> None:
         """Full tick processing pipeline."""
         try:
+            # 0. Per-position stop-loss / take-profit check (before agent signal)
+            if await self._check_stop_loss_take_profit(symbol, mid):
+                return  # Position was closed by SL/TP — skip signal this tick
+
             # 1. Build feature vector from raw price
             features = self._feat.transform_single(symbol, float(mid))
             if features is None:
@@ -550,6 +563,53 @@ class LiveExecutionEngine:
 
         except Exception as exc:
             logger.error("Tick processing error for %s: %s", symbol, exc, exc_info=True)
+
+    async def _check_stop_loss_take_profit(self, symbol: str, mid: Decimal) -> bool:
+        """Check and trigger stop-loss or take-profit for open positions.
+
+        Returns True if a position was force-closed (caller should skip agent signal).
+        Stop-loss and take-profit are only evaluated when stop_loss_pct > 0.
+        """
+        if self._cfg.stop_loss_pct <= 0:
+            return False  # Feature disabled
+
+        pos = self._positions.get(symbol)
+        if pos is None or pos.qty == Decimal(0):
+            self._entry_prices[symbol] = None  # Reset when flat
+            return False
+
+        entry = self._entry_prices.get(symbol)
+        if entry is None or entry == Decimal(0):
+            return False  # No entry price recorded yet
+
+        is_long = pos.qty > 0
+        pct_change = (mid - entry) / entry  # Positive = price rose
+
+        stop_hit = (is_long and pct_change <= -self._cfg.stop_loss_pct) or (
+            not is_long and pct_change >= self._cfg.stop_loss_pct
+        )
+        tp_hit = (is_long and pct_change >= self._cfg.take_profit_pct) or (
+            not is_long and pct_change <= -self._cfg.take_profit_pct
+        )
+
+        if stop_hit or tp_hit:
+            reason = "stop-loss" if stop_hit else "take-profit"
+            logger.warning(
+                "%s %s triggered for %s | entry=%.2f mid=%.2f pct=%.2f%%",
+                reason.upper(),
+                "LONG" if is_long else "SHORT",
+                symbol,
+                float(entry),
+                float(mid),
+                float(pct_change * 100),
+            )
+            # Force-flat: send opposite signal
+            flat_signal = 0
+            await self._execute_signal(symbol, flat_signal, mid, mid)
+            self._entry_prices[symbol] = None
+            return True
+
+        return False
 
     # ── Signal Execution ─────────────────────
 
@@ -655,6 +715,13 @@ class LiveExecutionEngine:
         if pos is None:
             return
         realized = pos.update_fill(order.side, fill)
+
+        # Record entry price for stop-loss / take-profit tracking
+        # Set on first fill that opens a position; clear when flat
+        if pos.qty != Decimal(0) and self._entry_prices.get(order.symbol) is None:
+            self._entry_prices[order.symbol] = fill.price
+        elif pos.qty == Decimal(0):
+            self._entry_prices[order.symbol] = None
 
         # Fix #8: Keep self._cash accurate so _compute_equity() works in live mode.
         # BUY  → cash decreases by (fill.price * fill.qty + commission_in_usdt)

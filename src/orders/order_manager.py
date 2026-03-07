@@ -524,8 +524,14 @@ class OrderManager:
         logger.info("Order ACK: %s", order)
         return order
 
-    async def cancel_order(self, client_order_id: str) -> Order:
-        """Cancel an open order."""
+     async def cancel_order(
+        self, client_order_id: str, max_retries: int = 3, retry_delay_s: float = 1.0
+    ) -> Order:
+        """Cancel an open order with retry logic.
+
+        Retries up to max_retries times on transient ConnectorError.
+        Raises the last exception if all attempts fail.
+        """
         async with self._lock:
             order = self._orders.get(client_order_id)
             if order is None:
@@ -539,11 +545,32 @@ class OrderManager:
             "symbol": order.symbol,
             "origClientOrderId": order.client_order_id,
         }
-        try:
-            await self._signed_delete("/api/v3/order", params)
-        except ConnectorError as exc:
-            logger.error("Cancel failed for %s: %s", client_order_id, exc)
-            raise
+
+        last_exc: Exception = RuntimeError("cancel_order: no attempts made")
+        for attempt in range(1, max_retries + 1):
+            try:
+                await self._signed_delete("/api/v3/order", params)
+                break  # Success
+            except ConnectorError as exc:
+                last_exc = exc
+                if attempt < max_retries:
+                    logger.warning(
+                        "Cancel attempt %d/%d failed for %s: %s — retrying in %.1fs",
+                        attempt,
+                        max_retries,
+                        client_order_id,
+                        exc,
+                        retry_delay_s,
+                    )
+                    await asyncio.sleep(retry_delay_s)
+                else:
+                    logger.error(
+                        "Cancel failed after %d attempts for %s: %s",
+                        max_retries,
+                        client_order_id,
+                        exc,
+                    )
+                    raise last_exc
 
         async with self._lock:
             order.transition(OrderStatus.CANCELED, note="Cancel confirmed by REST")
