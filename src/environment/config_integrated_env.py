@@ -207,6 +207,25 @@ class ConfigIntegratedTradingEnv(gym.Env):
         self.price_data = price_data.loc[common_index]
         self.features = features.loc[common_index]
 
+        # ENV-3+4: Pre-convert Pandas DataFrames to numpy for O(1) index access.
+        # self.features.iloc[step] and self.price_data.iloc[step] have high overhead
+        # from Pandas label-lookup machinery. Direct numpy indexing is ~10-25x faster.
+        self._features_np: np.ndarray = self.features.values.astype(np.float32)
+        # price columns: close=index 3, volume=index 4 (standard OHLCV order)
+        _price_cols = list(self.price_data.columns)
+        self._close_col_idx: int = (
+            _price_cols.index("close") if "close" in _price_cols else 3
+        )
+        self._volume_col_idx: int = (
+            _price_cols.index("volume") if "volume" in _price_cols else 4
+        )
+        self._price_np: np.ndarray = self.price_data.values.astype(np.float64)
+        # feature column index for volatility_20 (used in _execute_trade_enhanced)
+        _feat_cols = list(self.features.columns)
+        self._vol20_col_idx: int = (
+            _feat_cols.index("volatility_20") if "volatility_20" in _feat_cols else -1
+        )
+
         logger.info(
             f"ConfigIntegratedTradingEnv initialized: {len(self.price_data)} steps"
         )
@@ -469,6 +488,12 @@ class ConfigIntegratedTradingEnv(gym.Env):
         self.equity_history = [self.config.initial_capital]
         self.trade_history = []
 
+        # ENV-1: Incremental drawdown tracking — O(1) per step instead of O(T).
+        # _peak_equity tracks the running maximum; _current_drawdown is updated
+        # incrementally in step() whenever equity changes.
+        self._peak_equity: float = self.config.initial_capital
+        self._current_drawdown: float = 0.0
+
         # Reset Risk Management
         self.risk_manager.reset()
         self.risk_metrics.reset()
@@ -592,6 +617,15 @@ class ConfigIntegratedTradingEnv(gym.Env):
         current_equity = self._calculate_equity()
         self.equity_history.append(current_equity)
 
+        # ENV-1: Incremental drawdown — O(1) update instead of O(T) rebuild.
+        if current_equity > self._peak_equity:
+            self._peak_equity = current_equity
+        self._current_drawdown = (
+            (current_equity - self._peak_equity) / self._peak_equity
+            if self._peak_equity > 0
+            else 0.0
+        )
+
         # Update Risk Management
         trade_pnl = trade_info.get("pnl", 0.0)
         self.risk_manager.update_state(current_equity, trade_pnl)
@@ -659,26 +693,25 @@ class ConfigIntegratedTradingEnv(gym.Env):
         if abs(target_position - self.position) < 0.01:
             return {"trade_executed": False, "cost": 0.0, "order_type": "none"}
 
-        # Get current market data — sicher auch bei out-of-bounds (Datenlücken)
-        step = min(self.current_step, len(self.price_data) - 1)
-        feat_step = min(self.current_step, len(self.features) - 1)
-        row = self.price_data.iloc[step]
+        # Get current market data — ENV-4: numpy array lookups instead of Pandas iloc.
+        # Eliminates Pandas label-lookup overhead (~10-25x faster per step).
+        step = min(self.current_step, len(self._price_np) - 1)
+        feat_step = min(self.current_step, len(self._features_np) - 1)
+        _raw_price = self._price_np[step, self._close_col_idx]
         current_price = (
-            float(row["close"])
-            if pd.notna(row.get("close"))
-            else self._last_valid_price
+            float(_raw_price) if not np.isnan(_raw_price) else self._last_valid_price
         )
-        current_volume = float(row["volume"]) if pd.notna(row.get("volume")) else 500.0
-        feat_row = self.features.iloc[feat_step]
-        volatility = (
-            float(feat_row.get("volatility_20", 0.02))
-            if hasattr(feat_row, "get")
-            else 0.02
-        )
-        if pd.isna(volatility) or volatility <= 0:
+        _raw_vol = self._price_np[step, self._volume_col_idx]
+        current_volume = float(_raw_vol) if not np.isnan(_raw_vol) else 500.0
+        if self._vol20_col_idx >= 0:
+            _raw_v20 = self._features_np[feat_step, self._vol20_col_idx]
+            volatility = float(_raw_v20) if not np.isnan(_raw_v20) else 0.02
+        else:
+            volatility = 0.02
+        if volatility <= 0:
             volatility = 0.02
         # Letzten gueltigen Preis merken (Fallback fuer naechste Luecke)
-        if pd.notna(current_price) and current_price > 0:
+        if not np.isnan(current_price) and current_price > 0:
             self._last_valid_price = current_price
 
         # Apply market regime: scale volatility and volume
@@ -967,27 +1000,23 @@ class ConfigIntegratedTradingEnv(gym.Env):
         Returns:
             equity: Total portfolio value
         """
-        current_price = self.price_data.iloc[self.current_step]["close"]
+        # ENV-3: Use pre-cached numpy array instead of Pandas iloc for O(1) access.
+        step = min(self.current_step, len(self._price_np) - 1)
+        current_price = self._price_np[step, self._close_col_idx]
         position_value = self.shares * current_price
         return self.cash + position_value
 
     def _calculate_drawdown(self) -> float:
         """
-        Calculate current drawdown from peak equity.
+        Return current drawdown from peak equity (O(1) — incremental).
 
-        Drawdown = (Current Equity - Peak Equity) / Peak Equity
+        Updated every step in step() via _peak_equity / _current_drawdown.
+        Initialized to 0.0 in reset().
 
         Returns:
-            drawdown: Current drawdown (negative = below peak)
+            drawdown: Current drawdown (negative = below peak, 0.0 at peak)
         """
-        if len(self.equity_history) < 2:
-            return 0.0
-
-        equity_array = np.array(self.equity_history)
-        running_max = np.maximum.accumulate(equity_array)
-        drawdown = (equity_array[-1] - running_max[-1]) / running_max[-1]
-
-        return drawdown
+        return self._current_drawdown
 
     def _get_observation(self) -> np.ndarray:
         """
@@ -999,8 +1028,9 @@ class ConfigIntegratedTradingEnv(gym.Env):
         Returns:
             obs: State vector (float32)
         """
-        # Features from Phase 1
-        feature_values = self.features.iloc[self.current_step].values
+        # Features from Phase 1 — ENV-3: numpy array lookup instead of Pandas iloc
+        step = min(self.current_step, len(self._features_np) - 1)
+        feature_values = self._features_np[step]
 
         # Portfolio state
         current_equity = self._calculate_equity()
