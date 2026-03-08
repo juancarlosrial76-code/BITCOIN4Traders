@@ -293,7 +293,7 @@ class TradingTransformer(nn.Module):
         >>> output = model(input_tensor)  # (batch, seq, features)
     """
 
-    def ____(self, config: TransformerConfig):
+    def __init__(self, config: TransformerConfig):
         """
         Initialize trading transformer.
 

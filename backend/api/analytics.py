@@ -121,10 +121,37 @@ async def get_metrics():
             "totalTrades": stats["total_trades"],
             "winningTrades": winning,
             "losingTrades": losing,
-            "avgWin": round(stats["total_return"] / max(winning, 1) * 10000, 2),
-            "avgLoss": round(-stats["max_drawdown"] / max(losing, 1) * 10000, 2),
-            "largestWin": round(stats["total_return"] * 15000, 2),
-            "largestLoss": round(-stats["max_drawdown"] * 15000, 2),
+            # Derive avg win/loss in basis points from profit_factor and total_return.
+            # profit_factor = gross_profit / gross_loss
+            # gross_profit + gross_loss ≈ total_return * total_trades (normalised)
+            # avg_win_bps = gross_profit / winning = (pf / (pf+1)) * total_return * 10000 / max(winning,1)
+            # avg_loss_bps = gross_loss / losing  = (1 / (pf+1)) * total_return * 10000 / max(losing,1)
+            "avgWin": round(
+                stats["profit_factor"]
+                / (stats["profit_factor"] + 1)
+                * stats["total_return"]
+                * 10000
+                / max(winning, 1),
+                2,
+            ),
+            "avgLoss": round(
+                1.0
+                / (stats["profit_factor"] + 1)
+                * abs(stats["total_return"])
+                * 10000
+                / max(losing, 1),
+                2,
+            ),
+            "largestWin": round(
+                stats["profit_factor"]
+                / (stats["profit_factor"] + 1)
+                * stats["total_return"]
+                * 10000
+                / max(winning, 1)
+                * 3,  # Estimate: largest win ≈ 3× average win
+                2,
+            ),
+            "largestLoss": round(abs(stats["max_drawdown"]) * 10000, 2),
             "avgHoldingPeriod": wfv.get("avg_holding_period", 0),
             "wfv_oos_return": wfv.get("avg_oos_return", None),
             "wfv_degradation": wfv.get("degradation", None),

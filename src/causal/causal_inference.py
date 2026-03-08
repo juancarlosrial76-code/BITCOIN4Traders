@@ -441,8 +441,14 @@ class CausalEffectEstimator:
         ci_lower = np.percentile(bootstrap_effects, 2.5)
         ci_upper = np.percentile(bootstrap_effects, 97.5)
 
-        # P-value (simplified)
-        p_value = 0.05 if ci_lower < 0 < ci_upper else 0.01
+        # P-value from bootstrap: proportion of bootstrap samples with opposite sign
+        # (two-tailed test via reflection around zero)
+        bootstrap_arr = np.array(bootstrap_effects)
+        if avg_effect >= 0:
+            p_value = float(np.mean(bootstrap_arr <= 0) * 2)
+        else:
+            p_value = float(np.mean(bootstrap_arr >= 0) * 2)
+        p_value = min(p_value, 1.0)  # Cap at 1.0
 
         return CausalEffect(
             treatment=treatment,
@@ -515,6 +521,13 @@ class CausalEffectEstimator:
         ci_lower = np.percentile(bootstrap_effects, 2.5)
         ci_upper = np.percentile(bootstrap_effects, 97.5)
 
+        # P-value from bootstrap (two-tailed)
+        boot_arr = np.array(bootstrap_effects)
+        if effect >= 0:
+            iv_p_value = float(min(np.mean(boot_arr <= 0) * 2, 1.0))
+        else:
+            iv_p_value = float(min(np.mean(boot_arr >= 0) * 2, 1.0))
+
         # First-stage F-statistic (instrument strength)
         # Rule of thumb: F > 10 indicates instrument is not "weak"
         from sklearn.metrics import r2_score
@@ -525,7 +538,7 @@ class CausalEffectEstimator:
             treatment=treatment,
             outcome=outcome,
             effect_size=effect,
-            p_value=0.05,
+            p_value=iv_p_value,
             confidence_interval=(ci_lower, ci_upper),
             method="instrumental_variables",
             valid_instruments=[instrument],
@@ -567,27 +580,47 @@ class CausalEffectEstimator:
         Returns:
             CausalEffect with DiD estimate
         """
+        from scipy import stats as scipy_stats
+
         # Split by group and time
-        treat_pre = data[(data[group_var] == 1) & (data[time_var] == 0)][outcome].mean()
-        treat_post = data[(data[group_var] == 1) & (data[time_var] == 1)][
+        treat_pre_vals = data[(data[group_var] == 1) & (data[time_var] == 0)][outcome]
+        treat_post_vals = data[(data[group_var] == 1) & (data[time_var] == 1)][outcome]
+        control_pre_vals = data[(data[group_var] == 0) & (data[time_var] == 0)][outcome]
+        control_post_vals = data[(data[group_var] == 0) & (data[time_var] == 1)][
             outcome
-        ].mean()
-        control_pre = data[(data[group_var] == 0) & (data[time_var] == 0)][
-            outcome
-        ].mean()
-        control_post = data[(data[group_var] == 0) & (data[time_var] == 1)][
-            outcome
-        ].mean()
+        ]
+
+        treat_pre = treat_pre_vals.mean()
+        treat_post = treat_post_vals.mean()
+        control_pre = control_pre_vals.mean()
+        control_post = control_post_vals.mean()
 
         # DiD estimator
         effect = (treat_post - treat_pre) - (control_post - control_pre)
+
+        # P-value: t-test on treatment group difference vs control group difference
+        treat_diff = treat_post_vals.values - treat_pre_vals.mean()
+        control_diff = control_post_vals.values - control_pre_vals.mean()
+        _, did_p_value = scipy_stats.ttest_ind(treat_diff, control_diff)
+        did_p_value = float(did_p_value) if not np.isnan(did_p_value) else 1.0
+
+        # 95% confidence interval via bootstrap
+        bootstrap_did = []
+        for _ in range(500):
+            t_pre = treat_pre_vals.sample(frac=1, replace=True).mean()
+            t_post = treat_post_vals.sample(frac=1, replace=True).mean()
+            c_pre = control_pre_vals.sample(frac=1, replace=True).mean()
+            c_post = control_post_vals.sample(frac=1, replace=True).mean()
+            bootstrap_did.append((t_post - t_pre) - (c_post - c_pre))
+        ci_lower = float(np.percentile(bootstrap_did, 2.5))
+        ci_upper = float(np.percentile(bootstrap_did, 97.5))
 
         return CausalEffect(
             treatment=treatment,
             outcome=outcome,
             effect_size=effect,
-            p_value=0.05,  # Would calculate properly
-            confidence_interval=(effect * 0.8, effect * 1.2),
+            p_value=did_p_value,
+            confidence_interval=(ci_lower, ci_upper),
             method="difference_in_differences",
             assumptions={"parallel_trends": True},
         )

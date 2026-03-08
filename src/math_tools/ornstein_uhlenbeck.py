@@ -58,6 +58,7 @@ Dependencies:
 """
 
 import numpy as np
+
 # numba import entfernt — JIT blockierte Colab beim Import
 from typing import Tuple, Optional
 from dataclasses import dataclass
@@ -75,8 +76,10 @@ class OUParameters:
 
     def __post_init__(self):
         """Validate parameters."""
-        assert self.theta > 0, "Theta must be positive"
-        assert self.sigma > 0, "Sigma must be positive"
+        if self.theta <= 0:
+            raise ValueError(f"Theta must be positive, got {self.theta}")
+        if self.sigma <= 0:
+            raise ValueError(f"Sigma must be positive, got {self.sigma}")
 
 
 class OrnsteinUhlenbeckProcess:

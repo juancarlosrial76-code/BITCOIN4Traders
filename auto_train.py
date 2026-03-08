@@ -55,13 +55,13 @@ def get_latest_metrics():
                 try:
                     val = float(line.split("Mean Return:")[1].split("%")[0].strip())
                     returns.append(val)
-                except:
+                except (ValueError, IndexError):
                     pass
             if "Mean Length:" in line:
                 try:
                     val = float(line.split("Mean Length:")[1].strip())
                     lengths.append(val)
-                except:
+                except (ValueError, IndexError):
                     pass
 
     if returns:

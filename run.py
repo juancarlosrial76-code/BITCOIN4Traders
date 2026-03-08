@@ -320,6 +320,22 @@ def load_config(path: str) -> dict:
 async def main(config_path: str, dry_run: bool = False) -> None:
     cfg = load_config(config_path)
 
+    # ── API key validation (live mode only) ───────────────────────────
+    if not dry_run:
+        api_key = cfg.get("api_key", "")
+        api_secret = cfg.get("api_secret", "")
+        if not api_key or not api_secret:
+            logger.critical(
+                "BINANCE_API_KEY and BINANCE_API_SECRET must be set before "
+                "starting in live mode. Use --dry_run for paper trading."
+            )
+            sys.exit(1)
+        if len(api_key) < 10 or len(api_secret) < 10:
+            logger.critical(
+                "API keys appear invalid (too short). Refusing to start live trading."
+            )
+            sys.exit(1)
+
     # ── Logging ──────────────────────────────────────────────────────
     log_level = cfg.get("log_level", "INFO")
     logging.basicConfig(

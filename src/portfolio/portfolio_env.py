@@ -236,6 +236,7 @@ class PortfolioAllocationEnv(gym.Env):
         self.portfolio_values = [config.initial_capital]  # History of portfolio values
         self.asset_memory = [config.initial_capital]  # Tracks equity curve
         self.rewards_memory = []  # History of rewards
+        self.portfolio_returns_memory = []  # History of actual net portfolio returns
         self.actions_memory = []  # History of weight allocations
         self.date_memory = []  # History of dates
 
@@ -359,6 +360,7 @@ class PortfolioAllocationEnv(gym.Env):
         self.portfolio_values = [self.portfolio_value]
         self.asset_memory = [self.portfolio_value]
         self.rewards_memory = []
+        self.portfolio_returns_memory = []
         self.actions_memory = []
         self.date_memory = [self._get_date()]
         self.terminal = False
@@ -441,6 +443,9 @@ class PortfolioAllocationEnv(gym.Env):
         self.portfolio_values.append(self.portfolio_value)
         self.asset_memory.append(self.portfolio_value)
 
+        # Track actual portfolio returns (used by reward/sharpe calculations)
+        self.portfolio_returns_memory.append(net_return)
+
         # Calculate reward (can be customized)
         reward = self._calculate_reward(net_return)
         self.rewards_memory.append(reward)
@@ -474,11 +479,11 @@ class PortfolioAllocationEnv(gym.Env):
         # Simple return
         # return portfolio_return * 100  # Scale up
 
-        # Risk-adjusted return (approximation)
-        if len(self.rewards_memory) > 20:
+        # Risk-adjusted return (Sharpe-like ratio using actual portfolio returns)
+        if len(self.portfolio_returns_memory) > 20:
             recent_returns = np.array(
-                self.rewards_memory[-20:]
-            )  # Rolling 20-step window
+                self.portfolio_returns_memory[-20:]
+            )  # Rolling 20-step window of actual net returns
             volatility = np.std(recent_returns) + 1e-6  # Add epsilon to avoid /0
             sharpe_like = portfolio_return / volatility  # Sharpe-like ratio
             return sharpe_like
@@ -486,11 +491,11 @@ class PortfolioAllocationEnv(gym.Env):
         return portfolio_return * 100  # Scale up during warm-up period
 
     def _calculate_sharpe(self) -> float:
-        """Calculate Sharpe ratio."""
-        if len(self.rewards_memory) < 2:
+        """Calculate Sharpe ratio from actual portfolio returns."""
+        if len(self.portfolio_returns_memory) < 2:
             return 0.0
 
-        returns = np.array(self.rewards_memory)
+        returns = np.array(self.portfolio_returns_memory)
         excess_returns = returns - self.daily_risk_free  # Subtract risk-free benchmark
 
         if np.std(returns) == 0:
@@ -511,7 +516,8 @@ class PortfolioAllocationEnv(gym.Env):
 
     def get_portfolio_performance(self) -> Dict:
         """Get final portfolio performance metrics."""
-        portfolio_returns = np.array(self.rewards_memory)
+        # Use actual portfolio returns (not reward values) for accurate statistics
+        portfolio_returns = np.array(self.portfolio_returns_memory)
 
         # Total return
         total_return = (
@@ -519,7 +525,7 @@ class PortfolioAllocationEnv(gym.Env):
         ) / self.config.initial_capital
 
         # Annualized return
-        n_days = len(self.rewards_memory)
+        n_days = len(self.portfolio_returns_memory)
         annual_return = (1 + total_return) ** (252 / n_days) - 1 if n_days > 0 else 0.0
 
         # Volatility (annualized)
@@ -696,6 +702,7 @@ class MultiStockTradingEnv(PortfolioAllocationEnv):
             )  # Approximate prev stock value
         ) / (prev_cash + np.sum(prev_holdings * self.data[f"close_0"]))
         reward = portfolio_return * 100  # Scale up for training signal
+        self.portfolio_returns_memory.append(portfolio_return)  # Track actual returns
         self.rewards_memory.append(reward)
 
         # Check terminal

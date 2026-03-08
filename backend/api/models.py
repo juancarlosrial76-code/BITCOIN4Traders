@@ -28,6 +28,7 @@ TRAINING_LOG = PROJECT_ROOT / "data/cache/training_log.json"
 
 # Trainings-Status (in-memory, pro Prozess)
 _training_status = {"running": False, "started_at": None, "log": []}
+_training_lock = asyncio.Lock()  # Prevents concurrent training start race condition
 
 
 def _file_size_mb(path: Path) -> str:
@@ -181,13 +182,14 @@ async def get_models():
 @router.post("/train")
 async def train_model(background_tasks: BackgroundTasks):
     """Startet Darwin-Evolution als Hintergrund-Task."""
-    if _training_status["running"]:
-        return {
-            "status": "already_running",
-            "started_at": _training_status["started_at"],
-            "message": "Training läuft bereits",
-        }
-    background_tasks.add_task(_run_training_background)
+    async with _training_lock:
+        if _training_status["running"]:
+            return {
+                "status": "already_running",
+                "started_at": _training_status["started_at"],
+                "message": "Training läuft bereits",
+            }
+        background_tasks.add_task(_run_training_background)
     return {
         "status": "started",
         "message": "Darwin-Evolution gestartet (5 Generationen)",
