@@ -612,12 +612,16 @@ class ConfigIntegratedTradingEnv(gym.Env):
             terminated = False
             truncated = False
 
-        # Calculate reward (dynamic from config)
-        reward = self._calculate_reward_dynamic(old_equity, trade_info)
-
-        # Update equity
+        # Update equity (post-trade) — einmal berechnen und weitergeben.
+        # _calculate_equity() wird so nur 2x pro step aufgerufen (old + current),
+        # statt 4x (old + in execute_trade + in reward_dynamic + in step).
         current_equity = self._calculate_equity()
         self.equity_history.append(current_equity)
+
+        # Calculate reward — current_equity übergeben (kein weiterer _calculate_equity-Call)
+        reward = self._calculate_reward_dynamic(
+            old_equity, trade_info, current_equity=current_equity
+        )
 
         # ENV-1: Incremental drawdown — O(1) update instead of O(T) rebuild.
         if current_equity > self._peak_equity:
@@ -681,19 +685,22 @@ class ConfigIntegratedTradingEnv(gym.Env):
         trade_info : dict
             Contains trade details, costs, order type, execution price
         """
-        # Get Kelly parameters for optimal position sizing
+        # Map action to position size using predefined values
+        target_position = POSITION_SIZES[action]
+
+        # Skip if already at target position — BEFORE any expensive computation.
+        # kelly.estimate_parameters() is O(N) over trade_history and was previously
+        # called on EVERY step even when no trade occurs (~80-90% of all steps).
+        # Moving it after this guard cuts the call frequency by ~10x.
+        if abs(target_position - self.position) < 0.01:
+            return {"trade_executed": False, "cost": 0.0, "order_type": "none"}
+
+        # Get Kelly parameters — only reached when a trade actually happens
         kelly_params = self.risk_manager.kelly.estimate_parameters(
             self.risk_manager.trade_history[-20:]
             if len(self.risk_manager.trade_history) >= 5
             else []
         )
-
-        # Map action to position size using predefined values
-        target_position = POSITION_SIZES[action]
-
-        # Skip if already at target position
-        if abs(target_position - self.position) < 0.01:
-            return {"trade_executed": False, "cost": 0.0, "order_type": "none"}
 
         # Get current market data — ENV-4: numpy array lookups instead of Pandas iloc.
         # Eliminates Pandas label-lookup overhead (~10-25x faster per step).
@@ -865,7 +872,12 @@ class ConfigIntegratedTradingEnv(gym.Env):
 
         return trade_info
 
-    def _calculate_reward_dynamic(self, old_equity: float, trade_info: Dict) -> float:
+    def _calculate_reward_dynamic(
+        self,
+        old_equity: float,
+        trade_info: Dict,
+        current_equity: Optional[float] = None,
+    ) -> float:
         """
         Calculate reward dynamically from config components.
 
@@ -885,7 +897,10 @@ class ConfigIntegratedTradingEnv(gym.Env):
         Returns:
             reward: Combined reward from all components
         """
-        current_equity = self._calculate_equity()
+        # Reuse passed current_equity to avoid redundant _calculate_equity() call.
+        # step() already computed this; passing it here saves one numpy lookup per step.
+        if current_equity is None:
+            current_equity = self._calculate_equity()
         components_values = {}
 
         for comp in self.config.reward.components:
