@@ -34,6 +34,7 @@ ENV/
 
 # Jupyter Notebook
 .ipynb_checkpoints
+BITCOIN4Traders_Colab_BROKEN_MARCH2026.ipynb
 
 # Data: Unterordner selektiv ignorieren
 # data/cache/ ist NICHT ignoriert - Rohdaten werden getrackt
