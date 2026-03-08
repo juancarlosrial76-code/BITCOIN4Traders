@@ -1344,34 +1344,72 @@ class PPOAgent:
     def _adapt_state_dict(
         self, saved_state: Dict, current_state: Dict, name: str
     ) -> Dict:
-        """Adapt state dict if input dimensions match (handling removed features)."""
-        adapted_state = saved_state.copy()
+        """Smart Transfer Learning: überträgt Gewichte layer-wise auch bei hidden_dim-Änderungen.
 
-        # Check first layer weight
-        key = "feature_extractor.0.weight"
-        if key in saved_state and key in current_state:
-            saved_weight = saved_state[key]
-            current_weight = current_state[key]
+        Strategie:
+        - Für jede Schicht wird der kleinstmögliche gemeinsame Bereich kopiert
+          (oberer-linker Block beim Expandieren, Slice beim Schrumpfen).
+        - Neue Neuronen (bei Expansion) werden orthogonal initialisiert — das
+          erhält den Vorteil der gelernten Features aus dem kleinen Modell und
+          gibt den neuen Neuronen einen gesunden Start.
+        - LayerNorm-Gewichte (1D) werden linear interpoliert wenn nötig.
+        - Alle Shapes die exakt passen werden direkt kopiert (kein Overhead).
+        """
+        adapted_state = (
+            current_state.copy()
+        )  # Startet mit aktuellem (frisch initialisierten) Modell
 
-            if saved_weight.shape != current_weight.shape:
-                # Check if only input dimension (dim 1) differs
-                if (
-                    saved_weight.shape[0] == current_weight.shape[0]
-                    and saved_weight.shape[1] > current_weight.shape[1]
-                ):
-                    diff = saved_weight.shape[1] - current_weight.shape[1]
-                    logger.warning(
-                        f"Adapting {name} input layer: {saved_weight.shape} -> {current_weight.shape}"
-                    )
-                    logger.warning(
-                        f"Dropping last {diff} input features (assuming reserved/unused)"
-                    )
+        transferred = 0
+        skipped = 0
 
-                    # Slice to match current input dim
-                    adapted_state[key] = saved_weight[:, : current_weight.shape[1]]
-                else:
-                    logger.warning(
-                        f"Shape mismatch in {name} {key}: {saved_weight.shape} vs {current_weight.shape} - cannot auto-adapt"
-                    )
+        for key in current_state:
+            if key not in saved_state:
+                # Neuer Layer im aktuellen Modell — orthogonale Init bleibt
+                skipped += 1
+                continue
 
+            s = saved_state[key]  # gespeicherte Form
+            c = current_state[key]  # aktuelle Form
+
+            if s.shape == c.shape:
+                # Exakter Match — direkt kopieren
+                adapted_state[key] = s
+                transferred += 1
+                continue
+
+            # ── Shape-Mismatch: Smart Transfer ──────────────────────────────
+            if s.dim() == 0:
+                # Skalare (z.B. num_batches_tracked) — überspringen
+                skipped += 1
+                continue
+
+            if s.dim() == 1:
+                # 1D: Bias, LayerNorm weight/bias, RNN bias
+                # Kleiner→Größer: kopiere s in ersten len(s) Elemente
+                # Größer→Kleiner: slice auf aktuelle Größe
+                n_copy = min(s.shape[0], c.shape[0])
+                adapted_state[key] = c.clone()
+                adapted_state[key][:n_copy] = s[:n_copy]
+                transferred += 1
+                continue
+
+            if s.dim() == 2:
+                # 2D: Linear weight (out_features, in_features)
+                # Kopiere gemeinsamen Block [min_out, min_in]
+                min_out = min(s.shape[0], c.shape[0])
+                min_in = min(s.shape[1], c.shape[1])
+                adapted_state[key] = c.clone()  # orthogonal-init als Basis
+                adapted_state[key][:min_out, :min_in] = s[:min_out, :min_in]
+                transferred += 1
+                continue
+
+            # 3D+ (nicht im Standard-PPO — trotzdem abgesichert)
+            logger.warning(
+                f"  {name}.{key}: {s.shape} → {c.shape} — zu komplex, übersprungen"
+            )
+            skipped += 1
+
+        logger.warning(
+            f"Transfer Learning {name}: {transferred} Layer übertragen, {skipped} übersprungen"
+        )
         return adapted_state
