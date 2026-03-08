@@ -619,6 +619,13 @@ class AdversarialTrainer:
 
         # ── Rollout Loop mit Pipeline ────────────────────────────────────────
         for step_idx in range(steps_per_env):
+            # ── Merke hidden state VOR dem forward pass ───────────────────
+            # WICHTIG: prev_hidden muss h_{t-1} sein (Input zur forward-Berechnung),
+            # nicht h_t (Output). Deshalb HIER setzen, bevor trader_hidden durch
+            # forward() auf h_t aktualisiert wird. Ohne diesen Fix würde beim
+            # Training der falsche (um 1 verschobene) hidden state für BPTT genutzt.
+            prev_hidden = trader_hidden
+
             # ── GPU forward pass (nicht-blockierend) ──────────────────────
             if use_cuda and compute_stream is not None and obs_pinned is not None:
                 with torch.cuda.stream(compute_stream):
@@ -653,6 +660,7 @@ class AdversarialTrainer:
 
             # ── Speichere Transitions vom VORHERIGEN Schritt ──────────────
             # (prev_* hat den forward pass von t-1, step_result hat rewards von t-1)
+            # prev_hidden = h_{t-1} (gesetzt VOR dem forward pass oben — korrekt!)
             if prev_actions is not None and next_obs is not None:
                 # ADV-5: Build hidden list for all N envs, then batch-write.
                 # store_transitions_batch() uses a single numpy slice assignment
@@ -704,7 +712,7 @@ class AdversarialTrainer:
             prev_actions = actions
             prev_log_probs = log_probs
             prev_values = values
-            prev_hidden = trader_hidden
+            # NICHT: prev_hidden = trader_hidden (wurde an den Anfang des Loops verschoben)
 
             if next_obs is not None:
                 obs = next_obs
