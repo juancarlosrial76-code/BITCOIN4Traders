@@ -257,12 +257,17 @@ class HMMRegimeDetector:
         # Extract feature matrix as numpy array
         X = features[feature_cols].values
 
-        # Handle missing values
-        # Check for any NaN values in the feature matrix
+        # Handle missing values and infinities.
+        # isnan(inf) == False — inf must be checked separately before NaN fill.
+        if np.isinf(X).any():
+            n_inf = np.isinf(X).sum()
+            logger.warning(
+                f"Found {n_inf} Inf values in HMM features — clipping to finite"
+            )
+            X = np.where(np.isinf(X), np.nan, X)  # inf → NaN, then handled below
         if np.isnan(X).any():
             logger.warning(f"Found {np.isnan(X).sum()} NaN values, filling with mean")
-            # Fill NaN with column-wise mean (univariate imputation)
-            X = pd.DataFrame(X).fillna(pd.DataFrame(X).mean()).values
+            X = pd.DataFrame(X).fillna(pd.DataFrame(X).mean()).fillna(0.0).values
 
         # Store feature column names for later inference
         # Needed when predicting on new data
@@ -504,16 +509,27 @@ def prepare_hmm_features(price_data: pd.DataFrame, lookback: int = 20) -> pd.Dat
     # Volatility
     df["volatility_20"] = df["returns"].rolling(lookback).std()
 
-    # Volume change
+    # Volume change — pct_change() produziert inf wenn volume[t-1]==0
     df["volume_change"] = df["volume"].pct_change()
 
-    # Range (high-low normalized by close)
-    df["range"] = (df["high"] - df["low"]) / df["close"]
+    # Range (high-low normalized by close) — inf wenn close==0
+    # Sichere Division: close==0 wird zu NaN, dann durch dropna() entfernt
+    df["range"] = (df["high"] - df["low"]) / df["close"].replace(0, np.nan)
 
-    # Drop NaN
+    # Drop NaN (entfernt Warmup-Zeilen)
     df = df.dropna()
 
-    return df[["returns", "volatility_20", "volume_change", "range"]]
+    # Inf-Bereinigung: pct_change mit volume=0 produziert inf (isnan(inf)==False!)
+    # clip() begrenzt extreme Werte auf ±10 Standardabweichungen
+    feat_cols = ["returns", "volatility_20", "volume_change", "range"]
+    for col in feat_cols:
+        col_std = df[col].std()
+        if col_std > 0:
+            df[col] = df[col].clip(lower=-10 * col_std, upper=10 * col_std)
+    # Verbleibende inf/nan (falls std=0) auf 0 setzen
+    df[feat_cols] = df[feat_cols].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    return df[feat_cols]
 
 
 # ============================================================================
