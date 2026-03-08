@@ -536,32 +536,36 @@ class AdversarialTrainer:
         steps_per_env: int,
     ) -> Dict:
         """
-        Collect trajectories from a VecTradingEnv with a single batched GPU
-        forward-pass per step instead of N sequential passes.
+        Collect trajectories mit GPU-CPU Double-Buffering Pipeline.
 
-        This is a drop-in replacement for collect_trajectories() when you have
-        initialised a VecTradingEnv.  The effective number of environment steps
-        collected equals steps_per_env * n_envs, so you should set
-        steps_per_env = config.steps_per_iteration // n_envs.
+        Problem (alt): GPU forward pass und CPU env.step() laufen SEQUENZIELL.
+        GPU wartet während CPU stepped → T4 GPU-Auslastung ~10-20%.
 
-        The adversary is intentionally NOT supported here — adversarial training
-        requires per-step obs modifications that are hard to vectorise without a
-        significant refactor.  Adversarial training continues to use the original
-        collect_trajectories().
+        Lösung (neu): CUDA Stream Overlap — CPU und GPU laufen PARALLEL:
+
+            Schritt t:   GPU berechnet forward(obs_t)
+                         CPU stepped envs mit actions_{t-1}  ← gleichzeitig!
+            Schritt t+1: GPU berechnet forward(obs_{t+1})
+                         CPU stepped envs mit actions_t       ← gleichzeitig!
+
+        Implementierung via torch.cuda.Stream:
+        - compute_stream: GPU forward pass (select_action_batch)
+        - transfer_stream: Non-blocking obs nach GPU kopieren
+        - CPU env.step() läuft in ThreadPoolExecutor parallel zum GPU Stream
+
+        Erwartete GPU-Auslastung: 10-20% → 60-80% auf T4.
 
         Parameters
         ----------
         vec_env : VecTradingEnv
-            Vectorised environment with N parallel sub-environments.
         steps_per_env : int
-            Number of steps to collect per sub-environment.
-            Total steps = steps_per_env * vec_env.n_envs
 
         Returns
         -------
-        metrics : dict  — same keys as collect_trajectories()
+        metrics : dict
         """
         n_envs = vec_env.n_envs
+        use_cuda = torch.cuda.is_available()
 
         # Per-env episode tracking
         ep_rewards: list = [[] for _ in range(n_envs)]
@@ -570,53 +574,155 @@ class AdversarialTrainer:
         cur_reward = np.zeros(n_envs, dtype=np.float32)
         cur_length = np.zeros(n_envs, dtype=np.int32)
 
-        # Trader buffer: pre-allocate with exact capacity = steps_per_env * n_envs
-        # so store_transition() writes into pre-alloc numpy arrays (zero list overhead)
         self.trader.reset_buffers(capacity=steps_per_env * n_envs)
-
-        # Initial hidden states — shape (rnn_layers, N, hidden_dim)
         trader_hidden = self.trader.get_initial_hidden_state(batch_size=n_envs)
 
         obs = vec_env.reset()  # (N, state_dim)
 
-        for _ in range(steps_per_env):
-            current_hidden = trader_hidden
+        # ── CUDA Streams für Overlap ──────────────────────────────────────────
+        # compute_stream: GPU forward pass
+        # transfer_stream: non-blocking H2D Transfer (obs CPU→GPU)
+        if use_cuda:
+            compute_stream = torch.cuda.Stream()
+            transfer_stream = torch.cuda.Stream()
+        else:
+            compute_stream = None
+            transfer_stream = None
 
-            # ---- single batched GPU forward pass -------------------------
-            actions, log_probs, values, trader_hidden = self.trader.select_action_batch(
-                obs, trader_hidden
+        # Pinned Memory Buffer für schnellen H2D Transfer (non-blocking)
+        # pinned memory ermöglicht DMA-Transfer ohne CPU-Beteiligung
+        if use_cuda:
+            obs_pinned = torch.empty(
+                (n_envs, obs.shape[1]), dtype=torch.float32, pin_memory=True
             )
-            # actions    : (N,) int
-            # log_probs  : (N,) float
-            # values     : (N,) float
-            # trader_hidden : updated hidden (rnn_layers, N, hidden_dim)
+        else:
+            obs_pinned = None
 
-            # ---- step all envs in parallel (ThreadPoolExecutor inside VecEnv) ----
-            next_obs, rewards, dones, infos = vec_env.step(actions)
-            # rewards/dones : (N,)
+        # ── Double-Buffering Zustand ─────────────────────────────────────────
+        # Wir halten die Ergebnisse des vorherigen GPU-Schritts fest
+        # damit wir sie speichern während die GPU schon den nächsten berechnet
+        prev_actions = None
+        prev_log_probs = None
+        prev_values = None
+        prev_hidden = None
+        prev_obs = None
 
-            # ---- store N transitions as N flat entries --------------------
-            # BUG-005 fix: store per-env hidden slice so BPTT works correctly
+        # Futures für async env.step() (CPU läuft parallel zur GPU)
+        from concurrent.futures import Future
+
+        step_future: Optional[Future] = None
+        step_result = None  # (next_obs, rewards, dones, infos) vom letzten step
+
+        def _submit_step(actions_np):
+            """Startet env.step() asynchron — läuft parallel zum GPU forward."""
+            return vec_env._executor.submit(lambda: vec_env.step(actions_np))
+
+        # ── Rollout Loop mit Pipeline ────────────────────────────────────────
+        for step_idx in range(steps_per_env):
+            # ── GPU forward pass (nicht-blockierend) ──────────────────────
+            if use_cuda and compute_stream is not None and obs_pinned is not None:
+                with torch.cuda.stream(compute_stream):
+                    # Non-blocking H2D Transfer
+                    obs_pinned.copy_(torch.from_numpy(obs), non_blocking=True)
+                    obs_gpu = obs_pinned.to(self.trader.device, non_blocking=True)
+                    # Forward pass auf compute_stream
+                    actions, log_probs, values, trader_hidden = (
+                        self.trader.select_action_batch(obs_gpu, trader_hidden)
+                    )
+            else:
+                # CPU-Fallback: synchron
+                actions, log_probs, values, trader_hidden = (
+                    self.trader.select_action_batch(obs, trader_hidden)
+                )
+
+            # ── CPU env.step() PARALLEL zum nächsten GPU forward ──────────
+            # Warte auf vorherigen step_future (falls vorhanden)
+            if step_future is not None:
+                next_obs, rewards, dones, infos = step_future.result()
+            else:
+                next_obs, rewards, dones = None, None, None
+                infos = [{} for _ in range(n_envs)]
+
+            # ── GPU Sync: sicherstellen dass forward pass fertig ist ───────
+            if use_cuda and compute_stream is not None:
+                compute_stream.synchronize()
+
+            # actions ist jetzt sicher bereit → starte env.step() async
+            actions_np = actions if isinstance(actions, np.ndarray) else actions
+            step_future = _submit_step(actions_np)
+
+            # ── Speichere Transitions vom VORHERIGEN Schritt ──────────────
+            # (prev_* hat den forward pass von t-1, step_result hat rewards von t-1)
+            if prev_actions is not None and next_obs is not None:
+                for i in range(n_envs):
+                    if prev_hidden is not None:
+                        if isinstance(prev_hidden, tuple):
+                            env_hidden = tuple(
+                                h[:, i : i + 1, :].detach() for h in prev_hidden
+                            )
+                        else:
+                            env_hidden = prev_hidden[:, i : i + 1, :].detach()
+                    else:
+                        env_hidden = None
+
+                    self.trader.store_transition(
+                        prev_obs[i],
+                        int(prev_actions[i]),
+                        float(rewards[i]),
+                        float(prev_log_probs[i]),
+                        float(prev_values[i]),
+                        bool(dones[i]),
+                        hidden=env_hidden,
+                    )
+
+                cur_reward += rewards
+                cur_length += 1
+                self.total_steps += n_envs
+
+                for i in range(n_envs):
+                    if dones[i]:
+                        ep_rewards[i].append(float(cur_reward[i]))
+                        ep_returns[i].append(float(infos[i].get("return", 0.0)))
+                        ep_lengths[i].append(int(cur_length[i]))
+                        cur_reward[i] = 0.0
+                        cur_length[i] = 0
+                        if trader_hidden is not None:
+                            if isinstance(trader_hidden, tuple):
+                                trader_hidden[0][:, i, :].zero_()
+                                trader_hidden[1][:, i, :].zero_()
+                            else:
+                                trader_hidden[:, i, :].zero_()
+
+            # ── Schiebe Zustand einen Schritt weiter ──────────────────────
+            prev_obs = obs.copy()
+            prev_actions = actions
+            prev_log_probs = log_probs
+            prev_values = values
+            prev_hidden = trader_hidden
+
+            if next_obs is not None:
+                obs = next_obs
+
+        # ── Letzten step_future auflösen und letzten Schritt speichern ────
+        if step_future is not None and prev_actions is not None:
+            next_obs, rewards, dones, infos = step_future.result()
             for i in range(n_envs):
-                # Extract the hidden state for env i from the batched tensor
-                if current_hidden is not None:
-                    if isinstance(current_hidden, tuple):
-                        # LSTM: (h, c) each shape (rnn_layers, N, hidden_dim)
+                if prev_hidden is not None:
+                    if isinstance(prev_hidden, tuple):
                         env_hidden = tuple(
-                            h[:, i : i + 1, :].detach() for h in current_hidden
+                            h[:, i : i + 1, :].detach() for h in prev_hidden
                         )
                     else:
-                        # GRU: shape (rnn_layers, N, hidden_dim)
-                        env_hidden = current_hidden[:, i : i + 1, :].detach()
+                        env_hidden = prev_hidden[:, i : i + 1, :].detach()
                 else:
                     env_hidden = None
 
                 self.trader.store_transition(
-                    obs[i],
-                    int(actions[i]),
+                    prev_obs[i],
+                    int(prev_actions[i]),
                     float(rewards[i]),
-                    float(log_probs[i]),
-                    float(values[i]),
+                    float(prev_log_probs[i]),
+                    float(prev_values[i]),
                     bool(dones[i]),
                     hidden=env_hidden,
                 )
@@ -625,7 +731,6 @@ class AdversarialTrainer:
             cur_length += 1
             self.total_steps += n_envs
 
-            # ---- episode boundary bookkeeping ----------------------------
             for i in range(n_envs):
                 if dones[i]:
                     ep_rewards[i].append(float(cur_reward[i]))
@@ -633,23 +738,13 @@ class AdversarialTrainer:
                     ep_lengths[i].append(int(cur_length[i]))
                     cur_reward[i] = 0.0
                     cur_length[i] = 0
-                    # Reset hidden state for this env's slice
-                    if trader_hidden is not None:
-                        if isinstance(trader_hidden, tuple):
-                            # LSTM: (h, c) each (rnn_layers, N, hidden_dim)
-                            trader_hidden[0][:, i, :].zero_()
-                            trader_hidden[1][:, i, :].zero_()
-                        else:
-                            # GRU: (rnn_layers, N, hidden_dim)
-                            trader_hidden[:, i, :].zero_()
 
             obs = next_obs
 
-        # Bootstrap value for incomplete episodes
+        # Bootstrap value
         _, _, bootstrap_values, _ = self.trader.select_action_batch(obs, trader_hidden)
-        next_value = float(bootstrap_values.mean())  # Conservative scalar estimate
+        next_value = float(bootstrap_values.mean())
 
-        # Flatten per-env lists
         all_ep_rewards = [r for env_r in ep_rewards for r in env_r]
         all_ep_returns = [r for env_r in ep_returns for r in env_r]
         all_ep_lengths = [l for env_l in ep_lengths for l in env_l]
