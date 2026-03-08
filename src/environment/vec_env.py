@@ -168,8 +168,15 @@ class VecTradingEnv:
             obs, reward, terminated, truncated, info = self._envs[i].step(action)
             done = terminated or truncated
             if done:
-                # Auto-reset: return new episode's first observation
-                obs, info = self._envs[i].reset()
+                # Auto-reset: start new episode, but keep the TERMINAL info
+                # (contains the episode's final return, equity, etc.).
+                # Without this, info is overwritten by reset() and the trainer
+                # reads return=0.0 instead of the real episode return.
+                terminal_info = info.copy()
+                obs, _ = self._envs[i].reset()
+                # Merge: terminal_info carries episode stats, new obs is correct
+                terminal_info["_terminal"] = True
+                info = terminal_info
             return i, obs.astype(np.float32), float(reward), done, info
 
         futures = [
