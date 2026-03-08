@@ -648,8 +648,8 @@ class AdversarialTrainer:
                 compute_stream.synchronize()
 
             # actions ist jetzt sicher bereit → starte env.step() async
-            actions_np = actions if isinstance(actions, np.ndarray) else actions
-            step_future = _submit_step(actions_np)
+            # select_action_batch() gibt bereits numpy int64 zurück
+            step_future = _submit_step(actions)
 
             # ── Speichere Transitions vom VORHERIGEN Schritt ──────────────
             # (prev_* hat den forward pass von t-1, step_result hat rewards von t-1)

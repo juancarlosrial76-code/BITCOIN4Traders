@@ -480,9 +480,11 @@ class ConfigIntegratedTradingEnv(gym.Env):
         self.cash = self.config.initial_capital
         self.shares = 0.0
         # Fallback-Preis fuer Datenlücken (letzter gueltiger Close-Preis)
-        _step0 = min(self.current_step, len(self.price_data) - 1)
+        _step0 = min(self.current_step, len(self._price_np) - 1)
         try:
-            self._last_valid_price = float(self.price_data.iloc[_step0]["close"])
+            # ENV-3: numpy lookup statt Pandas iloc
+            _p0 = self._price_np[_step0, self._close_col_idx]
+            self._last_valid_price = float(_p0) if not np.isnan(_p0) else 40000.0
         except Exception:
             self._last_valid_price = 40000.0  # konservativer BTC-Fallback
         self.equity_history = [self.config.initial_capital]
@@ -1082,7 +1084,11 @@ class ConfigIntegratedTradingEnv(gym.Env):
 
         info = {
             "step": self.current_step,
-            "price": self.price_data.iloc[self.current_step]["close"],
+            "price": float(
+                self._price_np[
+                    min(self.current_step, len(self._price_np) - 1), self._close_col_idx
+                ]
+            ),
             "position": self.position,
             "equity": current_equity,
             "cash": self.cash,
