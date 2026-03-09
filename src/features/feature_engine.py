@@ -746,10 +746,26 @@ class FeatureEngine:
         # H > 0.55: trending market  → follow momentum
         # H < 0.45: mean-reverting   → use OU/RSI contrarian signals
         # H ≈ 0.5 : random walk      → reduce position size
-        # PERFORMANCE GUARD: Hurst DFA ist O(n²) — bei < 500 Zeilen zu langsam.
-        # Bei kleinen Datensätzen setzen wir 0.5 (neutral = kein Signal).
+        # PERFORMANCE GUARD: Hurst DFA ist O(n²).
+        # - Unter 500 Zeilen: kein Signal (neutral 0.5)
+        # - Über 5000 Zeilen: nur die letzten 5000 Zeilen verwenden (Rolling-Cap)
+        #   um O(n²) bei grossen Datasets (52k+ Zeilen) zu verhindern.
+        _MAX_HURST_ROWS = 5000
         if len(df) >= 500 and _HURST_AVAILABLE:
-            df["hurst_100"] = self._compute_hurst_feature(df, window=100)
+            if len(df) > _MAX_HURST_ROWS:
+                logger.warning(
+                    f"Hurst: {len(df)} rows exceeds cap ({_MAX_HURST_ROWS}), "
+                    f"computing on last {_MAX_HURST_ROWS} rows only."
+                )
+                _hurst_sub = self._compute_hurst_feature(
+                    df.iloc[-_MAX_HURST_ROWS:], window=100
+                )
+                # Pad the leading rows with neutral 0.5
+                _hurst_full = pd.Series(0.5, index=df.index)
+                _hurst_full.loc[_hurst_sub.index] = _hurst_sub
+                df["hurst_100"] = _hurst_full
+            else:
+                df["hurst_100"] = self._compute_hurst_feature(df, window=100)
         else:
             df["hurst_100"] = 0.5  # neutral fallback (random walk assumption)
 
@@ -1847,9 +1863,9 @@ class GPUFeatureEngine:
         log_ret = _np(log_ret_t)
         volatility_20 = _np(vol20)
         volatility_50 = _np(vol50)
-        ou_score_np = _np(ou_score)
-        rolling_mean_np = _np(rolling_mean)
-        rolling_std_np = _np(rolling_std)
+        ou_score = _np(ou_score)
+        rolling_mean = _np(rolling_mean)
+        rolling_std = _np(rolling_std)
         rsi = _np(rsi_t)
         macd = _np(macd_t)
         macd_signal = _np(macd_signal_t)
@@ -1877,6 +1893,11 @@ class GPUFeatureEngine:
                 "vwap_dev": vwap_dev,
             },
             index=df.index,
+        )
+
+        # Force convert ALL columns to numpy (safety net)
+        result = result.apply(
+            lambda col: col.map(lambda x: x.cpu().numpy() if hasattr(x, "cpu") else x)
         )
 
         logger.success(f"GPU Compute fertig: {result.shape}")
