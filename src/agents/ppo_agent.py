@@ -840,8 +840,16 @@ class PPOAgent:
         # NaN-Guard: ersetze NaN/Inf in Observations bevor sie ins Netz gehen.
         # Ursache: Feature-Engine liefert bei sehr kleinen Datensaetzen (< lookback)
         # NaNs die durch das GRU propagieren und alle Logits auf NaN setzen.
-        states = np.nan_to_num(states, nan=0.0, posinf=1.0, neginf=-1.0)
-        state_tensor = torch.FloatTensor(states).to(self.device)  # (N, state_dim)
+        # states kann ein CUDA-Tensor sein (obs_gpu aus collect_trajectories_vec) —
+        # np.nan_to_num wirft dann TypeError. Deshalb: Tensor-Pfad separat behandeln.
+        if isinstance(states, torch.Tensor):
+            state_tensor = states.to(dtype=torch.float32, device=self.device)
+            state_tensor = torch.nan_to_num(
+                state_tensor, nan=0.0, posinf=1.0, neginf=-1.0
+            )
+        else:
+            states = np.nan_to_num(states, nan=0.0, posinf=1.0, neginf=-1.0)
+            state_tensor = torch.FloatTensor(states).to(self.device)  # (N, state_dim)
 
         training_mode = self.actor.training
         if deterministic:
