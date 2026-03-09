@@ -308,6 +308,25 @@ class BaseNetwork(nn.Module):
         Forward pass.
         x: (batch_size, state_dim) or (batch_size, seq_len, state_dim)
         """
+        # NaN-Guard auf Input: verhindert NaN-Propagation durch LayerNorm/GRU.
+        # Ursache: einzelne Envs koennen NaN-Observations liefern (z.B. leere
+        # Preishistorie am Episodenanfang). Ein NaN im GRU-Input infiziert den
+        # gesamten hidden state und alle folgenden Schritte.
+        x = torch.nan_to_num(x, nan=0.0, posinf=1.0, neginf=-1.0)
+
+        # NaN-Guard auf Hidden State: wenn ein vorheriger Schritt NaN produziert
+        # hat (z.B. durch Gradient Explosion), wird der hidden state ebenfalls
+        # infiziert. Hier sanieren wir ihn bevor er ins GRU geht.
+        if hidden is not None:
+            if isinstance(hidden, tuple):
+                # LSTM: (h, c) beide sanieren
+                hidden = tuple(
+                    torch.nan_to_num(h, nan=0.0, posinf=1.0, neginf=-1.0)
+                    for h in hidden
+                )
+            else:
+                hidden = torch.nan_to_num(hidden, nan=0.0, posinf=1.0, neginf=-1.0)
+
         # Handle input shape (add sequence dim if missing for RNN)
         if hasattr(self, "rnn") and self.rnn is not None:
             if x.dim() == 2:
@@ -378,7 +397,13 @@ class ActorNetwork(BaseNetwork):
         # Cast to float32: AMP autocast produziert float16-logits, Categorical
         # validate_args schlaegt dann fehl (IndependentConstraint). float32 cast
         # loest das ohne die AMP-Performance-Vorteile zu verlieren.
-        return Categorical(logits=logits.float()), next_hidden
+        logits = logits.float()
+        # Finaler NaN-Guard: falls trotz Input-Sanierung NaNs durch LayerNorm
+        # oder GRU entstehen (z.B. bei Gradient Explosion), ersetzt durch 0.0
+        # (gleichmaessige Verteilung ueber alle Aktionen — sicherer Fallback).
+        if torch.isnan(logits).any() or torch.isinf(logits).any():
+            logits = torch.nan_to_num(logits, nan=0.0, posinf=10.0, neginf=-10.0)
+        return Categorical(logits=logits), next_hidden
 
 
 class DualHeadActorNetwork(nn.Module):
