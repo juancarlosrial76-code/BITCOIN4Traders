@@ -10,16 +10,15 @@ this_directory = Path(__file__).parent
 long_description = (this_directory / "README.md").read_text()
 
 setup(
-    name="ai-trading-system",
+    name="bitcoin4traders",
     version="1.0.0",
-    author="Your CTO",
-    author_email="your.email@example.com",
-    description="Institutional-Grade Deep Reinforcement Learning Trading System",
+    author="juancarlosrial76-code",
+    author_email="juancarlosrial76@users.noreply.github.com",
+    description="Institutional-Grade Bitcoin Trading System with Deep Reinforcement Learning",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/ai-trading-system",
-    packages=find_packages(where="src"),
-    package_dir={"": "src"},
+    url="https://github.com/juancarlosrial76-code/BITCOIN4Traders",
+    packages=find_packages(exclude=["tests*", "docs*", "examples*"]),
     classifiers=[
         "Development Status :: 4 - Beta",
         "Intended Audience :: Financial and Insurance Industry",

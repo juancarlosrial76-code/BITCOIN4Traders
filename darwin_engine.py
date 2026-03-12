@@ -111,10 +111,10 @@ try:
     _JOBLIB_AVAILABLE = True
     import multiprocessing as _mp
 
-    # P2: cpu_count()-1 war auf Colab (2 vCPU) immer 1 → kein Parallelismus.
-    # Wir nutzen ALLE verfuegbaren Kerne fuer Evolution (joblib hat eigene
-    # Prozesse, daher kein Konflikt mit dem PyTorch-Training-Thread).
-    # Auf lokalen Rechnern bleibt ein Core fuer das OS frei (cpu_count()-1).
+    # P2: cpu_count()-1 was always 1 on Colab (2 vCPU) → no parallelism.
+    # We use ALL available cores for evolution (joblib has its own
+    # processes, so no conflict with PyTorch training thread).
+    # On local machines, one core remains free for OS (cpu_count()-1).
     _n_cpu = _mp.cpu_count()
     _N_JOBS = _n_cpu if _n_cpu <= 2 else _n_cpu - 1
     logger.info(f"joblib detected - parallel evaluation on {_N_JOBS} cores enabled.")
@@ -379,9 +379,7 @@ def _kernel_ema(closes: np.ndarray, span: int) -> np.ndarray:
 
 
 @njit(cache=True)
-def _kernel_rolling_mean_std(
-    closes: np.ndarray, period: int
-) -> Tuple[np.ndarray, np.ndarray]:
+def _kernel_rolling_mean_std(closes: np.ndarray, period: int) -> Tuple[np.ndarray, np.ndarray]:
     """Rolling mean and sample std (Bessel corrected) in one pass."""
     n = len(closes)
     means = np.full(n, np.nan)
@@ -1035,9 +1033,7 @@ class RNNScout(DarwinBot):
         self.bo += float(rng.normal(0, rate * 0.1))
 
         # Threshold parameters (small perturbation, enforce min gap)
-        self.long_thresh = float(
-            np.clip(self.long_thresh + rng.uniform(-0.05, 0.05), 0.05, 0.8)
-        )
+        self.long_thresh = float(np.clip(self.long_thresh + rng.uniform(-0.05, 0.05), 0.05, 0.8))
         self.short_thresh = float(
             np.clip(self.short_thresh + rng.uniform(-0.05, 0.05), -0.8, -0.05)
         )
@@ -1050,9 +1046,7 @@ class RNNScout(DarwinBot):
                 self.hidden_dim = new_h
                 self._init_weights()  # fresh weights for new size
 
-        self.name = (
-            f"RNN_h{self.hidden_dim}_lt{self.long_thresh:.2f}_st{self.short_thresh:.2f}"
-        )
+        self.name = f"RNN_h{self.hidden_dim}_lt{self.long_thresh:.2f}_st{self.short_thresh:.2f}"
 
     # ------------------------------------------------------------------
     # Evolution: crossover (weight interpolation between two parents)
@@ -1177,12 +1171,8 @@ class MACDScout(DarwinBot):
         self.slow_period = int(
             np.clip(self.slow_period + random.randint(-3, 3), self.fast_period + 5, 50)
         )
-        self.signal_period = int(
-            np.clip(self.signal_period + random.randint(-1, 1), 3, 15)
-        )
-        self.name = (
-            f"MACD_f{self.fast_period}_s{self.slow_period}_sig{self.signal_period}"
-        )
+        self.signal_period = int(np.clip(self.signal_period + random.randint(-1, 1), 3, 15))
+        self.name = f"MACD_f{self.fast_period}_s{self.slow_period}_sig{self.signal_period}"
 
     def crossover(self, other: "DarwinBot") -> "MACDScout":
         assert isinstance(other, MACDScout)
@@ -1233,9 +1223,7 @@ class BollingerScout(DarwinBot):
 
     def mutate(self) -> None:
         self.period = int(np.clip(self.period + random.randint(-3, 3), 5, 60))
-        self.num_std = round(
-            np.clip(self.num_std + random.uniform(-0.2, 0.2), 1.0, 3.5), 2
-        )
+        self.num_std = round(np.clip(self.num_std + random.uniform(-0.2, 0.2), 1.0, 3.5), 2)
         if random.random() < 0.1:  # 10% chance to flip mode
             self.mode = "breakout" if self.mode == "reversion" else "reversion"
         self.name = f"BB_{self.mode}_p{self.period}_std{self.num_std}"
@@ -1353,9 +1341,7 @@ class EliteEvaluator:
     def __init__(self, config: ArenaConfig):
         self.config = config
 
-    def evaluate(
-        self, equity_curve: "pd.Series | np.ndarray", bot: DarwinBot
-    ) -> BotStats:
+    def evaluate(self, equity_curve: "pd.Series | np.ndarray", bot: DarwinBot) -> BotStats:
         """
         Compute all metrics and composite score.
 
@@ -1407,11 +1393,7 @@ class EliteEvaluator:
         std_ret = float(rets.std())
 
         # --- Sharpe ---
-        sharpe = (
-            mean_ret / std_ret * np.sqrt(self.config.sharpe_window)
-            if std_ret > 0
-            else 0.0
-        )
+        sharpe = mean_ret / std_ret * np.sqrt(self.config.sharpe_window) if std_ret > 0 else 0.0
 
         # --- Sortino ---
         downside = rets[rets < 0]
@@ -1432,11 +1414,7 @@ class EliteEvaluator:
 
         # --- Profit-to-Fee Ratio ---
         total_fees_paid = bot.trade_count * bot.fee_rate
-        pfr = (
-            total_return / total_fees_paid
-            if total_fees_paid > 0 and total_return > 0
-            else 0.0
-        )
+        pfr = total_return / total_fees_paid if total_fees_paid > 0 and total_return > 0 else 0.0
 
         # --- Win Rate ---
         win_rate = float((rets > 0).sum() / len(rets)) if len(rets) > 0 else 0.0
@@ -1444,9 +1422,7 @@ class EliteEvaluator:
         # --- Composite Score ---
         pfr_modifier = 1.0 if pfr >= self.config.pfr_threshold else 0.1
         sharpe_gate = max(0.0, sharpe)
-        score = (
-            calmar * 0.5 + recovery_factor * 0.3 + sharpe_gate * 0.2
-        ) * pfr_modifier
+        score = (calmar * 0.5 + recovery_factor * 0.3 + sharpe_gate * 0.2) * pfr_modifier
 
         return BotStats(
             score=score,
@@ -1606,9 +1582,7 @@ class DarwinArena:
     # Population evaluation (parallel or sequential)
     # ------------------------------------------------------------------
 
-    def _evaluate_population(
-        self, population: List[DarwinBot]
-    ) -> List[Tuple[DarwinBot, BotStats]]:
+    def _evaluate_population(self, population: List[DarwinBot]) -> List[Tuple[DarwinBot, BotStats]]:
         """
         Evaluate all bots, optionally in parallel across CPU cores.
 
@@ -1656,9 +1630,7 @@ class DarwinArena:
         for i in range(n_offspring):
             parent_a = random.choice(winners)
             parent_b = random.choice(winners)
-            if random.random() < self.config.crossover_rate and type(parent_a) is type(
-                parent_b
-            ):
+            if random.random() < self.config.crossover_rate and type(parent_a) is type(parent_b):
                 child = parent_a.crossover(parent_b)
             else:
                 child = copy.deepcopy(parent_a)
@@ -1697,10 +1669,7 @@ class DarwinArena:
             population = override
             del self._population_override  # type: ignore[attr-defined]
         else:
-            population = [
-                _spawn_random_bot(self.config, 0, i)
-                for i in range(self.config.pop_size)
-            ]
+            population = [_spawn_random_bot(self.config, 0, i) for i in range(self.config.pop_size)]
 
         gen_iter = _tqdm(
             range(self.config.generations),
@@ -1807,9 +1776,7 @@ class WFVWindow:
     oos_sharpe: float
     oos_max_dd: float
     champion_name: str
-    degradation: (
-        float  # (is_score - oos_score) / abs(is_score)  0=perfect, 1=total decay
-    )
+    degradation: float  # (is_score - oos_score) / abs(is_score)  0=perfect, 1=total decay
 
     def summary(self) -> str:
         dir_emoji = "OK" if self.oos_return > 0 else "WARN"
@@ -1931,9 +1898,7 @@ class WalkForwardValidator:
         )
 
         for fold, (is_df, oos_df) in fold_iter:
-            logger.info(
-                f"WFV Fold {fold} | IS bars={len(is_df)} OOS bars={len(oos_df)}"
-            )
+            logger.info(f"WFV Fold {fold} | IS bars={len(is_df)} OOS bars={len(oos_df)}")
 
             # Train on in-sample
             arena = DarwinArena(data=is_df, config=config, n_jobs=n_jobs, verbose=False)
@@ -1952,9 +1917,7 @@ class WalkForwardValidator:
             oos_score = oos_m["score"]
 
             degradation = (
-                (is_score - oos_score) / max(abs(is_score), 1e-9)
-                if is_score != 0
-                else 0.0
+                (is_score - oos_score) / max(abs(is_score), 1e-9) if is_score != 0 else 0.0
             )
 
             win = WFVWindow(
@@ -2048,9 +2011,7 @@ def load_live_data(
     # --- Resolve API keys ---
     ex_upper = exchange_id.upper()
     key = api_key or os.getenv(f"{ex_upper}_API_KEY", os.getenv("BINANCE_API_KEY", ""))
-    secret = api_secret or os.getenv(
-        f"{ex_upper}_API_SECRET", os.getenv("BINANCE_API_SECRET", "")
-    )
+    secret = api_secret or os.getenv(f"{ex_upper}_API_SECRET", os.getenv("BINANCE_API_SECRET", ""))
 
     exchange_cls = getattr(ccxt, exchange_id, None)
     if exchange_cls is None:
@@ -2070,8 +2031,7 @@ def load_live_data(
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
     except Exception as exc:
         raise RuntimeError(
-            f"Failed to fetch {symbol} from {exchange_id}: {exc}. "
-            "Check connectivity and API keys."
+            f"Failed to fetch {symbol} from {exchange_id}: {exc}. Check connectivity and API keys."
         ) from exc
 
     if not ohlcv:
@@ -2137,9 +2097,7 @@ class TournamentResult:
             "trades": self.trade_count,
             "win_rate": f"{self.win_rate:.1%}",
             "regime_fit": self.regime_fit,
-            "qualified": "YES"
-            if self.qualified
-            else f"NO ({self.disqualified_reason})",
+            "qualified": "YES" if self.qualified else f"NO ({self.disqualified_reason})",
         }
 
 
@@ -2211,9 +2169,7 @@ class StrategyTournament:
 
         Returns 'trending', 'sideways', or 'mixed'.
         """
-        regime_arr = _kernel_market_regime(
-            self._closes, self.adx_period, self.adx_threshold
-        )
+        regime_arr = _kernel_market_regime(self._closes, self.adx_period, self.adx_threshold)
         valid = regime_arr[regime_arr >= 0]
         if len(valid) == 0:
             return "mixed"
@@ -2272,9 +2228,7 @@ class StrategyTournament:
         if pf_net < self.pf_threshold:
             disq_reason = f"PF_net={pf_net:.2f} < {self.pf_threshold}"
         elif stats.max_drawdown > self.max_dd_threshold:
-            disq_reason = (
-                f"MaxDD={stats.max_drawdown:.1%} > {self.max_dd_threshold:.1%}"
-            )
+            disq_reason = f"MaxDD={stats.max_drawdown:.1%} > {self.max_dd_threshold:.1%}"
         elif trade_count < 5:
             disq_reason = f"too few trades ({trade_count})"
 
@@ -2645,11 +2599,7 @@ class LiveTradingGuard:
         regime_arr = _kernel_market_regime(closes)
         valid = regime_arr[regime_arr >= 0]
         pct_trend = float((valid == 1).sum() / len(valid)) if len(valid) > 0 else 0.5
-        regime = (
-            "trending"
-            if pct_trend > 0.6
-            else ("sideways" if pct_trend < 0.4 else "mixed")
-        )
+        regime = "trending" if pct_trend > 0.6 else ("sideways" if pct_trend < 0.4 else "mixed")
 
         approved = all([min_bars_ok, pf_ok, dd_ok, sharpe_ok, wfv_ok])
 
@@ -2791,8 +2741,7 @@ def run_colab(
 
     # 1. Data
     cache_file = (
-        Path(cache_dir)
-        / f"{exchange_id}_{symbol.replace('/', '_')}_{timeframe}_{limit}.parquet"
+        Path(cache_dir) / f"{exchange_id}_{symbol.replace('/', '_')}_{timeframe}_{limit}.parquet"
     )
     print(f"\n[1/3] Fetching data: {symbol} {timeframe} x{limit} bars ...")
     try:
@@ -2803,9 +2752,7 @@ def run_colab(
             exchange_id=exchange_id,
             cache_path=cache_file,
         )
-        print(
-            f"      {len(df)} bars loaded | {df.index[0].date()} -> {df.index[-1].date()}"
-        )
+        print(f"      {len(df)} bars loaded | {df.index[0].date()} -> {df.index[-1].date()}")
     except Exception as exc:
         print(f"      Live fetch failed ({exc}). Falling back to synthetic data.")
         df = generate_synthetic_btc(n_bars=limit, seed=seed)
@@ -3095,9 +3042,7 @@ class MultiverseStats:
     elimination_scenario: str  # Which scenario triggered elimination (if any)
 
     def summary(self) -> str:
-        status = (
-            "ELIMINATED" if self.eliminated else f"SURVIVED ({self.survival_rate:.0%})"
-        )
+        status = "ELIMINATED" if self.eliminated else f"SURVIVED ({self.survival_rate:.0%})"
         return (
             f"{self.bot_name[:28]:<28} | "
             f"MV-Score={self.multiverse_score:>7.3f} | "
@@ -3135,8 +3080,7 @@ class MultiverseEvaluator:
         # Pre-extract close arrays once — avoids re-extracting 155 DataFrames
         # per bot per generation (pure numpy, zero pandas overhead in hot loop).
         self._scenario_closes: Dict[str, np.ndarray] = {
-            name: df["close"].values.astype(np.float64)
-            for name, df in scenarios.items()
+            name: df["close"].values.astype(np.float64) for name, df in scenarios.items()
         }
         self.config = config
         self.max_dd_threshold = max_dd_threshold
@@ -3429,9 +3373,7 @@ class MultiverseArena:
         self._build_scenarios()
 
         # Spawn initial population
-        population = [
-            _spawn_random_bot(self._arena_cfg, 0, i) for i in range(self.cfg.pop_size)
-        ]
+        population = [_spawn_random_bot(self._arena_cfg, 0, i) for i in range(self.cfg.pop_size)]
 
         gen_iter = _tqdm(
             range(self.cfg.generations),
@@ -3455,9 +3397,7 @@ class MultiverseArena:
                     }
                 )
 
-            logger.info(
-                f"MV Gen {gen:>3}/{self.cfg.generations - 1} | {best_mv.summary()}"
-            )
+            logger.info(f"MV Gen {gen:>3}/{self.cfg.generations - 1} | {best_mv.summary()}")
 
             row = {
                 "generation": gen,
@@ -3766,9 +3706,7 @@ def load_champion_from_drive(
             shutil.copy2(src_meta, dst_meta)
             logger.info(f"Champion .json Drive -> local: {dst_meta}")
 
-        return ChampionPersistence.load(
-            str(dst_pkl), str(dst_meta) if src_meta.exists() else None
-        )
+        return ChampionPersistence.load(str(dst_pkl), str(dst_meta) if src_meta.exists() else None)
 
     except Exception as exc:
         logger.warning(f"load_champion_from_drive failed: {exc}")
@@ -3831,9 +3769,7 @@ def load_champion_from_github_raw(
             logger.info(f"Champion downloaded: {url} -> {dst_path}")
             return True
         except Exception as exc:
-            logger.warning(
-                f"load_champion_from_github_raw: Download failed ({url}): {exc}"
-            )
+            logger.warning(f"load_champion_from_github_raw: Download failed ({url}): {exc}")
             return False
 
     dst_pkl = dst_dir / Path(pkl_rel_path).name
@@ -3844,9 +3780,7 @@ def load_champion_from_github_raw(
 
     _download(meta_rel_path, dst_meta)  # .json is optional
 
-    return ChampionPersistence.load(
-        str(dst_pkl), str(dst_meta) if dst_meta.exists() else None
-    )
+    return ChampionPersistence.load(str(dst_pkl), str(dst_meta) if dst_meta.exists() else None)
 
 
 # ============================================================================
@@ -3897,15 +3831,12 @@ def run_multiverse(
     """
     print("=" * 70)
     print("  MULTIVERSE EVOLUTION ENGINE")
-    print(
-        f"  {n_mc_scenarios * 3 + 5} Scenarios  |  {generations} Generations  |  Pop={pop_size}"
-    )
+    print(f"  {n_mc_scenarios * 3 + 5} Scenarios  |  {generations} Generations  |  Pop={pop_size}")
     print("=" * 70)
 
     # --- 1. Load data ---
     cache_file = (
-        Path(save_dir)
-        / f"{exchange_id}_{symbol.replace('/', '_')}_{timeframe}_{n_bars}.parquet"
+        Path(save_dir) / f"{exchange_id}_{symbol.replace('/', '_')}_{timeframe}_{n_bars}.parquet"
     )
     print(f"\n[1/3] Loading data: {symbol} {timeframe} x{n_bars} bars ...")
     try:
@@ -3916,9 +3847,7 @@ def run_multiverse(
             exchange_id=exchange_id,
             cache_path=cache_file,
         )
-        print(
-            f"      {len(df)} bars loaded | {df.index[0].date()} -> {df.index[-1].date()}"
-        )
+        print(f"      {len(df)} bars loaded | {df.index[0].date()} -> {df.index[-1].date()}")
     except Exception as exc:
         print(f"      Live fetch failed ({exc}). Using synthetic data.")
         df = generate_synthetic_btc(n_bars=n_bars, seed=seed)
@@ -4407,8 +4336,7 @@ def hybrid_main(
         except Exception as exc:
             logger.warning(f"Live data fetch failed: {exc}. Using last cached data.")
             cache_file = (
-                Path(save_dir)
-                / f"binance_{symbol.replace('/', '_')}_{timeframe}_{n_bars}.parquet"
+                Path(save_dir) / f"binance_{symbol.replace('/', '_')}_{timeframe}_{n_bars}.parquet"
             )
             if cache_file.exists():
                 df = pd.read_parquet(cache_file)
@@ -4510,8 +4438,7 @@ def hybrid_main(
                 if synced:
                     logger.info("Champion successfully backed up to Google Drive.")
                     notifier.send(
-                        "<b>Drive Sync OK</b>\n"
-                        f"Champion saved to Drive: {drive_champion_dir}"
+                        f"<b>Drive Sync OK</b>\nChampion saved to Drive: {drive_champion_dir}"
                     )
                 else:
                     logger.warning("Drive sync failed (Drive not mounted?).")
@@ -4549,11 +4476,7 @@ if __name__ == "__main__":
     print(f"\nRunning Walk-Forward Validation (3 folds) ...")
     wfv = WalkForwardValidator(df, n_splits=3, is_ratio=0.7)
     report = wfv.run(arena_config=ArenaConfig(generations=3, pop_size=8, seed=42))
-    print(
-        report[
-            ["is_return", "oos_return", "is_sharpe", "oos_sharpe", "degradation"]
-        ].to_string()
-    )
+    print(report[["is_return", "oos_return", "is_sharpe", "oos_sharpe", "degradation"]].to_string())
 
     print(f"\nFinal Champion : {champion.name}")
     print(f"Strategy Type  : {type(champion).__name__}")

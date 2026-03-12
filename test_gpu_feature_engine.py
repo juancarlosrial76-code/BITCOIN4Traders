@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test-Skript für GPU Feature Engine.
+Test script for GPU Feature Engine.
 
 Usage:
     python test_gpu_feature_engine.py --benchmark --rows 50000
@@ -28,7 +28,7 @@ from src.features.feature_engine import (
 
 
 def create_test_data(n_rows: int = 10000, seed: int = 42) -> pd.DataFrame:
-    """Erstellt synthetische OHLCV Test-Daten."""
+    """Creates synthetic OHLCV test data."""
     np.random.seed(seed)
 
     dates = pd.date_range("2023-01-01", periods=n_rows, freq="1H")
@@ -49,7 +49,7 @@ def create_test_data(n_rows: int = 10000, seed: int = 42) -> pd.DataFrame:
 
 
 def test_basic_functionality():
-    """Testet grundlegende Funktionalität von FeatureEngine."""
+    """Tests basic functionality of FeatureEngine."""
     print("\n" + "=" * 60)
     print("TEST: Basic Functionality")
     print("=" * 60)
@@ -84,9 +84,9 @@ def test_basic_functionality():
 
     nan_count = train_features.isnull().sum().sum()
     if nan_count == 0:
-        print("✓ Keine NaN-Werte")
+        print("✓ No NaN values")
     else:
-        print(f"✗ {nan_count} NaN-Werte gefunden")
+        print(f"✗ {nan_count} NaN values found")
 
     print(f"Feature columns: {list(train_features.columns)}")
 
@@ -94,13 +94,13 @@ def test_basic_functionality():
 
 
 def test_gpu_info():
-    """Zeigt GPU-Informationen an."""
+    """Shows GPU information."""
     print("\n" + "=" * 60)
     print("TEST: GPU Info")
     print("=" * 60)
 
     available = is_gpu_available()
-    print(f"GPU verfügbar: {'✓ JA' if available else '✗ NEIN'}")
+    print(f"GPU available: {'✓ YES' if available else '✗ NO'}")
 
     if available:
         info = get_gpu_info()
@@ -108,58 +108,58 @@ def test_gpu_info():
         print(f"  VRAM: {info['memory_total_gb']:.1f} GB")
         print(f"  Compute Capability: {info['compute_cap']}")
     else:
-        print("  Keine NVIDIA GPU gefunden (nur CPU verfügbar)")
+        print("  No NVIDIA GPU found (only CPU available)")
 
     return True
 
 
 def test_gpu_benchmark(rows: int = 50000, runs: int = 3):
-    """Führt GPU vs CPU Benchmark durch."""
+    """Runs GPU vs CPU benchmark."""
     print("\n" + "=" * 60)
-    print(f"TEST: GPU Benchmark ({rows:,} Zeilen, {runs} Runs)")
+    print(f"TEST: GPU Benchmark ({rows:,} rows, {runs} runs)")
     print("=" * 60)
 
     results = benchmark_gpu_cpu(n_rows=rows, n_runs=runs)
 
-    print("\nZusammenfassung:")
-    print(f"  CPU Zeit: {results['cpu_time_ms']:.1f}±{results['cpu_std_ms']:.1f}ms")
+    print("\nSummary:")
+    print(f"  CPU time: {results['cpu_time_ms']:.1f}±{results['cpu_std_ms']:.1f}ms")
 
     if "gpu_time_ms" in results:
-        print(f"  GPU Zeit: {results['gpu_time_ms']:.1f}±{results['gpu_std_ms']:.1f}ms")
+        print(f"  GPU time: {results['gpu_time_ms']:.1f}±{results['gpu_std_ms']:.1f}ms")
         print(f"  Speedup: {results['speedup']:.1f}x")
 
         if results["speedup"] > 1.0:
-            print(f"  ✓ GPU ist {results['speedup']:.1f}x schneller!")
+            print(f"  ✓ GPU is {results['speedup']:.1f}x faster!")
         else:
-            print(f"  ⚠ GPU ist langsamer (Overhead für diese Grösse)")
+            print(f"  ⚠ GPU is slower (overhead for this size)")
     else:
-        print("  GPU nicht verfügbar")
+        print("  GPU not available")
 
     return results
 
 
 def test_gpu_correctness(rows: int = 10000, tolerance: float = 1e-3):
-    """Verifiziert GPU vs CPU Korrektheit."""
+    """Verifies GPU vs CPU correctness."""
     print("\n" + "=" * 60)
-    print(f"TEST: GPU Correctness ({rows:,} Zeilen, Toleranz: {tolerance})")
+    print(f"TEST: GPU Correctness ({rows:,} rows, tolerance: {tolerance})")
     print("=" * 60)
 
     if not is_gpu_available():
-        print("✗ GPU nicht verfügbar - Überspringe Test")
+        print("✗ GPU not available - skip test")
         return {"passed": False, "reason": "GPU not available"}
 
     results = verify_gpu_correctness(n_rows=rows, tolerance=tolerance)
 
     if results["passed"]:
-        print("✓ Alle Tests bestanden! GPU-Berechnung ist korrekt.")
+        print("✓ All tests passed! GPU calculation is correct.")
     else:
-        print("✗ Tests fehlgeschlagen!")
+        print("✗ Tests failed!")
 
     return results
 
 
 def test_performance_scaling():
-    """Testet Performance bei verschiedenen Datenmengen."""
+    """Tests performance with different data sizes."""
     print("\n" + "=" * 60)
     print("TEST: Performance Scaling")
     print("=" * 60)
@@ -168,7 +168,7 @@ def test_performance_scaling():
     results = []
 
     if not is_gpu_available():
-        print("⚠ GPU nicht verfügbar - nur CPU-Messung")
+        print("⚠ GPU not available - CPU only measurement")
 
     for size in sizes:
         df = create_test_data(n_rows=size, seed=42)
@@ -197,7 +197,7 @@ def test_performance_scaling():
             }
         )
 
-        print(f"  {size:>6,} Zeilen: {cpu_time:>8.1f}ms")
+        print(f"  {size:>6,} rows: {cpu_time:>8.1f}ms")
 
     return results
 
@@ -238,16 +238,10 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="GPU Feature Engine Tests")
     parser.add_argument("--benchmark", action="store_true", help="Run benchmark")
-    parser.add_argument(
-        "--verify", action="store_true", help="Run correctness verification"
-    )
+    parser.add_argument("--verify", action="store_true", help="Run correctness verification")
     parser.add_argument("--all", action="store_true", help="Run all tests")
-    parser.add_argument(
-        "--rows", type=int, default=50000, help="Number of rows for tests"
-    )
-    parser.add_argument(
-        "--quick", action="store_true", help="Quick test with 1000 rows"
-    )
+    parser.add_argument("--rows", type=int, default=50000, help="Number of rows for tests")
+    parser.add_argument("--quick", action="store_true", help="Quick test with 1000 rows")
 
     args = parser.parse_args()
 

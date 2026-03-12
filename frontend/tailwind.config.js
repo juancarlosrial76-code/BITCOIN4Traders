@@ -56,6 +56,13 @@ export default {
           DEFAULT: "#ef4444",
           foreground: "#ffffff",
         },
+        "bitcoin-orange": {
+          DEFAULT: "#F7931A",
+          foreground: "#ffffff",
+        },
+        "text-primary": "hsl(var(--text-primary))",
+        "text-secondary": "hsl(var(--text-secondary))",
+        "text-muted": "hsl(var(--text-muted))",
       },
       borderRadius: {
         lg: "var(--radius)",

@@ -1,27 +1,27 @@
 """
-Stress-Test Data Generator für Trading-RL.
+Stress-Test Data Generator for Trading-RL.
 
-Generiert synthetische Markt-Szenarien für Robustness-Training:
+Generates synthetic market scenarios for robustness training:
 - Black Swan Events
-- Volatilitätsspikes
+- Volatility Spikes
 - Flash Crashes
 - Long Bear Markets
 - Extreme Whipsaws
 - Liquidity Crises
 
-Diese Szenarien trainieren den Agent, auch in Stress-Perioden
-korrekte Entscheidungen zu treffen.
+These scenarios train the agent to make correct decisions even during
+stress periods.
 
 Usage:
     from data_generation.stress_scenarios import generate_stress_dataset
 
-    # Szenario: Flash Crash
+    # Scenario: Flash Crash
     df = generate_stress_dataset(scenario="flash_crash", length=5000)
 
-    # Szenario: Volatility Spike
+    # Scenario: Volatility Spike
     df = generate_stress_dataset(scenario="volatility_spike", length=5000)
 
-    # Alle Szenarien kombiniert
+    # All scenarios combined
     df = generate_stress_dataset(scenario="all", length=10000)
 """
 
@@ -34,7 +34,7 @@ from loguru import logger
 
 @dataclass
 class StressConfig:
-    """Konfiguration für Stress-Szenarien."""
+    """Configuration for stress scenarios."""
 
     base_volatility: float = 0.02
     crash_probability: float = 0.001
@@ -44,7 +44,7 @@ class StressConfig:
 
 
 def set_seed(seed: int):
-    """Setzt den Random Seed für reproduzierbare Ergebnisse."""
+    """Set random seed for reproducible results."""
     np.random.seed(seed)
 
 
@@ -75,20 +75,20 @@ def generate_flash_crash(
     seed: int = 42,
 ) -> pd.DataFrame:
     """
-    Generiert ein Flash-Crash Szenario.
+    Generates a Flash-Crash scenario.
 
-    Szenario: Plötzlicher starker Drop mit schneller Erholung.
-    Ziel: Agent lernt, nicht in Panik zu verkaufen.
+    Scenario: Sudden strong drop with quick recovery.
+    Goal: Agent learns not to panic sell.
 
     Args:
-        length: Gesamtlänge des Datensatzes
-        crash_depth: Maximaler Drop (30% = 0.30)
-        crash_duration: Wie schnell der Crash passiert (Bars)
-        recovery_rate: Erholungsgeschwindigkeit
+        length: Total length of the dataset
+        crash_depth: Maximum drop (30% = 0.30)
+        crash_duration: How fast the crash happens (bars)
+        recovery_rate: Recovery speed
         seed: Random seed
 
     Returns:
-        DataFrame mit OHLCV Daten
+        DataFrame with OHLCV data
     """
     set_seed(seed)
 
@@ -113,7 +113,7 @@ def generate_flash_crash(
     high = np.maximum(high, close)
 
     volume = np.random.uniform(1000, 5000, length)
-    volume[crash_start:crash_end] *= 5  # Volume Spike während Crash
+    volume[crash_start:crash_end] *= 5  # Volume Spike during Crash
 
     open_prices = close.copy()
     open_prices[1:] = close[:-1]
@@ -140,19 +140,19 @@ def generate_volatility_spike(
     seed: int = 42,
 ) -> pd.DataFrame:
     """
-    Generiert ein High-Volatility Szenario.
+    Generates a High-Volatility scenario.
 
-    Szenario: Mehrmalige hohe Volatilität ohne klare Richtung.
-    Ziel: Agent lernt, in unruhigen Märkten Positionen zu reduzieren.
+    Scenario: Multiple periods of high volatility without clear direction.
+    Goal: Agent learns to reduce positions in choppy markets.
 
     Args:
-        length: Gesamtlänge des Datensatzes
-        volatility_multiplier: Wie viel höher die Volatilität ist
-        spike_duration: Länge des High-Volatility Bereichs
+        length: Total length of the dataset
+        volatility_multiplier: How much higher the volatility is
+        spike_duration: Length of the high-volatility period
         seed: Random seed
 
     Returns:
-        DataFrame mit OHLCV Daten
+        DataFrame with OHLCV data
     """
     set_seed(seed)
 
@@ -207,19 +207,19 @@ def generate_bear_market(
     seed: int = 42,
 ) -> pd.DataFrame:
     """
-    Generiert einen langen Bärenmarkt.
+    Generates a long bear market.
 
-    Szenario: Stetiger Abwärtstrend mit lokalen Erholungen.
-    Ziel: Agent lernt, Short-Positionen zu halten und nicht zu früh zu kaufen.
+    Scenario: Steady downtrend with local recoveries.
+    Goal: Agent learns to hold short positions and not buy too early.
 
     Args:
-        length: Gesamtlänge des Datensatzes
-        total_drop: Gesamter Drop über den Zeitraum (50% = 0.50)
-        drawdown_peaks: Anzahl der lokalen Erholungen
+        length: Total length of the dataset
+        total_drop: Total drop over the period (50% = 0.50)
+        drawdown_peaks: Number of local recoveries
         seed: Random seed
 
     Returns:
-        DataFrame mit OHLCV Daten
+        DataFrame with OHLCV data
     """
     set_seed(seed)
 
@@ -244,7 +244,7 @@ def generate_bear_market(
     high = np.maximum(high, close)
 
     volume = np.random.uniform(1000, 5000, length)
-    volume = volume * 1.5  # Mehr Volume in Bärenmärkten
+    volume = volume * 1.5  # More volume in bear markets
 
     open_prices = close.copy()
     open_prices[1:] = close[:-1]
@@ -268,19 +268,19 @@ def generate_whipsaw_market(
     length: int = 5000, amplitude: float = 0.10, frequency: float = 0.1, seed: int = 42
 ) -> pd.DataFrame:
     """
-    Generiert ein extremes Whipsaw-Szenario.
+    Generates an extreme whipsaw scenario.
 
-    Szenario: Ständige Richtungswechsel ohne klare Trends.
-    Ziel: Agent lernt, nicht überzu handeln (Overtrading zu vermeiden).
+    Scenario: Constant direction changes without clear trends.
+    Goal: Agent learns not to overtrade (avoid overtrading).
 
     Args:
-        length: Gesamtlänge des Datensatzes
-        amplitude: Stärke der Swings (10% = 0.10)
-        frequency: Wie häufig die Richtungswechsel sind
+        length: Total length of the dataset
+        amplitude: Strength of swings (10% = 0.10)
+        frequency: How frequent the direction changes are
         seed: Random seed
 
     Returns:
-        DataFrame mit OHLCV Daten
+        DataFrame with OHLCV data
     """
     set_seed(seed)
 
@@ -298,7 +298,7 @@ def generate_whipsaw_market(
     high = np.maximum(high, close)
 
     volume = np.random.uniform(1000, 5000, length)
-    volume = volume * 2  # Hohes Volume bei Whipsaws
+    volume = volume * 2  # High volume during whipsaws
 
     open_prices = close.copy()
     open_prices[1:] = close[:-1]
@@ -325,19 +325,19 @@ def generate_liquidity_crisis(
     seed: int = 42,
 ) -> pd.DataFrame:
     """
-    Generiert ein Liquiditäts-Krise Szenario.
+    Generates a liquidity crisis scenario.
 
-    Szenario: Spreads weiten sich aus, Volume bricht ein.
-    Ziel: Agent lernt, in illiquiden Märkten vorsichtiger zu handeln.
+    Scenario: Spreads widen, volume drops.
+    Goal: Agent learns to trade more carefully in illiquid markets.
 
     Args:
-        length: Gesamtlänge des Datensatzes
-        spread_widen: Wie stark sich Spreads weiten
-        volume_drop: Um wie viel Volume sinkt
+        length: Total length of the dataset
+        spread_widen: How much spreads widen
+        volume_drop: How much volume drops
         seed: Random seed
 
     Returns:
-        DataFrame mit OHLCV Daten
+        DataFrame with OHLCV data
     """
     set_seed(seed)
 
@@ -348,7 +348,7 @@ def generate_liquidity_crisis(
 
     for i in range(crisis_start, crisis_end):
         if i < length:
-            base_returns[i] *= 0.5  # Weniger Bewegung in Krise
+            base_returns[i] *= 0.5  # Less movement during crisis
 
     close = 50000 * np.exp(np.cumsum(base_returns))
 
@@ -395,19 +395,19 @@ def generate_black_swan(
     seed: int = 42,
 ) -> pd.DataFrame:
     """
-    Generiert ein Black-Swan Event Szenario.
+    Generates a Black Swan Event scenario.
 
-    Szenario: Seltene, extreme Moves (20%+ in kurzer Zeit).
-    Ziel: Agent lernt, mit extremen Adverse Moves umzugehen.
+    Scenario: Rare, extreme moves (20%+ in short time).
+    Goal: Agent learns to handle extreme adverse moves.
 
     Args:
-        length: Gesamtlänge des Datensatzes
-        swan_probability: Wahrscheinlichkeit eines Black Swan pro Bar
-        swan_impact: Maximaler Impact eines Black Swan (20% = 0.20)
+        length: Total length of the dataset
+        swan_probability: Probability of a black swan per bar
+        swan_impact: Maximum impact of a black swan (20% = 0.20)
         seed: Random seed
 
     Returns:
-        DataFrame mit OHLCV Daten
+        DataFrame with OHLCV data
     """
     set_seed(seed)
 
@@ -430,7 +430,7 @@ def generate_black_swan(
     high = np.maximum(high, close)
 
     volume = np.random.uniform(1000, 5000, length)
-    volume = volume * 3  # Extreme Volume bei Black Swans
+    volume = volume * 3  # Extreme volume during black swans
 
     open_prices = close.copy()
     open_prices[1:] = close[:-1]
@@ -456,18 +456,18 @@ def generate_mixed_stress_dataset(
     seed: int = 42,
 ) -> pd.DataFrame:
     """
-    Generiert einen gemischten Stress-Datensatz.
+    Generates a mixed stress dataset.
 
-    Kombiniert mehrere Szenarien für umfassendes Stress-Training.
+    Combines multiple scenarios for comprehensive stress training.
 
     Args:
-        scenarios: Liste der Szenarien ('flash_crash', 'volatility_spike', etc.)
-                   Wenn None, werden alle verwendet.
-        length_per_scenario: Länge pro Szenario
+        scenarios: List of scenarios ('flash_crash', 'volatility_spike', etc.)
+                   If None, all are used.
+        length_per_scenario: Length per scenario
         seed: Random seed
 
     Returns:
-        DataFrame mit allen Szenarien kombiniert
+        DataFrame with all scenarios combined
     """
     if scenarios is None:
         scenarios = [
@@ -495,7 +495,7 @@ def generate_mixed_stress_dataset(
             df = scenario_funcs[scenario](length=length_per_scenario, seed=seed + i)
             df["scenario"] = scenario
             all_data.append(df)
-            logger.info(f"Generiert: {scenario} ({len(df)} bars)")
+            logger.info(f"Generated: {scenario} ({len(df)} bars)")
 
     combined = pd.concat(all_data, ignore_index=True)
 
@@ -506,17 +506,17 @@ def generate_stress_dataset(
     scenario: str = "all", length: int = 10000, **kwargs
 ) -> pd.DataFrame:
     """
-    Hauptfunktion zur Generierung von Stress-Szenarien.
+    Main function for generating stress scenarios.
 
     Args:
-        scenario: Name des Szenarios oder 'all' für alle
-                  Optionen: flash_crash, volatility_spike, bear_market,
+        scenario: Name of the scenario or 'all' for all
+                  Options: flash_crash, volatility_spike, bear_market,
                            whipsaw, liquidity_crisis, black_swan, all
-        length: Gesamtlänge des Datensatzes
-        **kwargs: Zusätzliche Parameter für spezifische Szenarien
+        length: Total length of the dataset
+        **kwargs: Additional parameters for specific scenarios
 
     Returns:
-        DataFrame mit OHLCV Daten und 'scenario' Spalte
+        DataFrame with OHLCV data and 'scenario' column
     """
     scenarios_map = {
         "flash_crash": generate_flash_crash,
@@ -538,29 +538,29 @@ def generate_stress_dataset(
     elif scenario in scenarios_map:
         df = scenarios_map[scenario](length=length, **kwargs)
     else:
-        raise ValueError(f"Unbekanntes Szenario: {scenario}")
+        raise ValueError(f"Unknown scenario: {scenario}")
 
-    logger.success(f"Stress-Datensatz generiert: {len(df)} bars")
+    logger.success(f"Stress dataset generated: {len(df)} bars")
 
     return df
 
 
 class StressDataGenerator:
     """
-    Klasse zur Generierung von Stress-Trainingsdaten.
+    Class for generating stress training data.
 
-    Bietet einfachen Zugang zu allen Stress-Szenarien.
+    Provides easy access to all stress scenarios.
 
     Usage:
         generator = StressDataGenerator()
 
-        # Einzelnes Szenario
+        # Single scenario
         df = generator.generate('flash_crash', length=5000)
 
-        # Alle Szenarien
+        # All scenarios
         df = generator.generate_all(length=15000)
 
-        # Training direkt
+        # Training directly
         features = engineer.fit_transform(df)
     """
 
@@ -569,7 +569,7 @@ class StressDataGenerator:
         self.config = StressConfig(seed=seed)
 
     def generate(self, scenario: str, length: int = 5000, **kwargs) -> pd.DataFrame:
-        """Generiert ein spezifisches Szenario."""
+        """Generates a specific scenario."""
         return generate_stress_dataset(
             scenario=scenario,
             length=length,
@@ -578,30 +578,30 @@ class StressDataGenerator:
         )
 
     def generate_all(self, length: int = 15000) -> pd.DataFrame:
-        """Generiert alle Szenarien kombiniert."""
+        """Generates all scenarios combined."""
         return generate_stress_dataset(scenario="all", length=length, seed=self.seed)
 
     def generate_curriculum(
         self, base_length: int = 3000, curriculum: Optional[List[str]] = None
     ) -> Dict[str, pd.DataFrame]:
         """
-        Generiert ein Curriculum von einfachen zu schweren Szenarien.
+        Generates a curriculum from easy to hard scenarios.
 
         Args:
-            base_length: Basis-Länge pro Szenario
-            curriculum: Reihenfolge der Szenarien
+            base_length: Base length per scenario
+            curriculum: Order of scenarios
 
         Returns:
-            Dictionary mit Szenario-Namen als Keys
+            Dictionary with scenario names as keys
         """
         if curriculum is None:
             curriculum = [
-                "volatility_spike",  # Einfach: nur hohe Volatilität
-                "whipsaw",  # Mittelmässig: Richtungswechsel
-                "bear_market",  # Schwer: Abwärtstrend
-                "flash_crash",  # Schwerer: Plötzliche Drops
-                "liquidity_crisis",  # Sehr schwer: Illiquidität
-                "black_swan",  # Am schwersten: Extrem-Events
+                "volatility_spike",  # Easy: just high volatility
+                "whipsaw",  # Medium: direction changes
+                "bear_market",  # Hard: downtrend
+                "flash_crash",  # Harder: sudden drops
+                "liquidity_crisis",  # Very hard: illiquidity
+                "black_swan",  # Hardest: extreme events
             ]
 
         result = {}
@@ -615,7 +615,7 @@ class StressDataGenerator:
 
 def visualize_stress_scenario(df: pd.DataFrame, title: str = "Stress Scenario"):
     """
-    Visualisiert ein Stress-Szenario (für Debugging/Entwicklung).
+    Visualizes a stress scenario (for debugging/development).
     """
     import matplotlib.pyplot as plt
 

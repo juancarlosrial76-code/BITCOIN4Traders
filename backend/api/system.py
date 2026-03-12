@@ -1,5 +1,5 @@
 """
-system.py — Echte System-Metriken mit psutil + Darwin-Engine Logs.
+system.py — Real system metrics with psutil + Darwin Engine logs.
 """
 
 import os
@@ -29,7 +29,7 @@ def _uptime() -> str:
 
 @router.get("/metrics")
 async def get_system_metrics():
-    """Echte CPU/RAM-Metriken via psutil."""
+    """Real CPU/RAM metrics via psutil."""
     try:
         import psutil
 
@@ -38,11 +38,10 @@ async def get_system_metrics():
         ram_used_gb = round(ram.used / (1024**3), 2)
         ram_total_gb = round(ram.total / (1024**3), 2)
 
-        # Champion-Cache Größe
+        # Champion cache size
         cache_dir = PROJECT_ROOT / "data/cache"
         cache_mb = (
-            sum(f.stat().st_size for f in cache_dir.glob("*") if f.is_file())
-            / (1024**2)
+            sum(f.stat().st_size for f in cache_dir.glob("*") if f.is_file()) / (1024**2)
             if cache_dir.exists()
             else 0
         )
@@ -57,7 +56,7 @@ async def get_system_metrics():
             "python": f"{sys.version_info.major}.{sys.version_info.minor}",
         }
     except ImportError:
-        # psutil nicht installiert — Fallback
+        # psutil not installed — fallback
         return {
             "cpu_usage": 0,
             "memory": "psutil not installed",
@@ -72,9 +71,9 @@ async def get_system_metrics():
 @router.get("/logs")
 async def get_logs():
     """
-    Gibt Logs zurück:
-    1. Aus data/cache/bot.log wenn vorhanden (Darwin-Engine Logs)
-    2. Fallback auf statische Einträge
+    Returns logs:
+    1. From data/cache/bot.log if present (Darwin Engine logs)
+    2. Fallback to static entries
     """
     logs = []
 
@@ -103,7 +102,7 @@ async def get_logs():
         except Exception:
             pass
 
-    # Champion-Status als Log-Eintrag
+    # Champion status as log entry
     champion_meta = PROJECT_ROOT / "data/cache/multiverse_champion_meta.json"
     if champion_meta.exists():
         try:
@@ -115,7 +114,7 @@ async def get_logs():
                     "time": meta.get("saved_at", "")[-8:][:8]
                     or datetime.now().strftime("%H:%M:%S"),
                     "level": "INFO",
-                    "message": f"Champion geladen: {meta.get('name')} (Strategie: {meta.get('strategy_type')})",
+                    "message": f"Champion loaded: {meta.get('name')} (Strategy: {meta.get('strategy_type')})",
                 }
             )
         except Exception:
@@ -125,7 +124,7 @@ async def get_logs():
         {
             "time": datetime.now().strftime("%H:%M:%S"),
             "level": "INFO",
-            "message": f"Backend gestartet | Uptime: {_uptime()}",
+            "message": f"Backend started | Uptime: {_uptime()}",
         }
     )
 
@@ -134,9 +133,9 @@ async def get_logs():
         {
             "time": datetime.now().strftime("%H:%M:%S"),
             "level": "INFO" if binance_key else "WARN",
-            "message": "Binance API verbunden"
+            "message": "Binance API connected"
             if binance_key
-            else "Binance API: Mock-Modus (kein API-Key)",
+            else "Binance API: Mock mode (no API key)",
         }
     )
 
@@ -145,7 +144,7 @@ async def get_logs():
 
 @router.get("/endpoints")
 async def get_api_endpoints():
-    """Gibt alle registrierten API-Endpoints zurück."""
+    """Returns all registered API endpoints."""
     import time
 
     endpoints = [
@@ -171,11 +170,7 @@ async def get_api_endpoints():
 
     result = []
     for ep in endpoints:
-        method = (
-            "POST"
-            if any(x in ep for x in ["start", "stop", "train", "login"])
-            else "GET"
-        )
+        method = "POST" if any(x in ep for x in ["start", "stop", "train", "login"]) else "GET"
         result.append(
             {
                 "endpoint": ep,
@@ -222,6 +217,5 @@ async def get_env_variables(current_user: dict = Depends(lambda: None)):
     ]
 
     return [
-        {"name": name, "value": _mask(val), "status": _status(val)}
-        for name, val in vars_to_check
+        {"name": name, "value": _mask(val), "status": _status(val)} for name, val in vars_to_check
     ]

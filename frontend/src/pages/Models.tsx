@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Card, Button } from '../components/ui';
 import { api } from '../api/client';
-import { Brain, Upload, Download, Trash2, Play, Clock, HardDrive } from 'lucide-react';
+import { Brain, Upload, Download, Trash2, Play, Clock, HardDrive, TrendingUp } from 'lucide-react';
 
 export function Models() {
   const [models, setModels] = useState<any[]>([]);
@@ -84,7 +84,7 @@ export function Models() {
           <p className="text-sm text-text-secondary">Avg Training Time</p>
         </Card>
         <Card className="text-center">
-          <TrendingUpIcon size={32} className="mx-auto mb-2 text-purple-400" />
+          <TrendingUp size={32} className="mx-auto mb-2 text-purple-400" />
           <p className="text-2xl font-bold text-text-primary">
             {models.length > 0 ? Math.max(...models.map(m => m.sharpe)).toFixed(2) : '0'}
           </p>
@@ -176,25 +176,5 @@ export function Models() {
         </div>
       </Card>
     </div>
-  );
-}
-
-function TrendingUpIcon({ size, className }: { size: number; className?: string }) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
-      <polyline points="23 6 13.5 15.5 8.5 10.5 1 18" />
-      <polyline points="17 6 23 6 23 12" />
-    </svg>
   );
 }

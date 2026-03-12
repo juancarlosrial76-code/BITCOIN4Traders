@@ -1,0 +1,24 @@
+# colab_bridge — Abhängigkeiten
+# ==============================
+# Pflicht (immer):
+numpy>=1.24
+pandas>=2.0
+loguru>=0.7
+httpx>=0.24
+
+# Lokaler Rechner (Module A):
+ably>=3.1
+ccxt>=4.0
+
+# Colab / Cloud (Module B):
+# ably>=3.1   (bereits oben)
+
+# Control-Plane (FastAPI-Server, optional):
+# pip install colab-rl-bridge[server]
+fastapi>=0.100
+uvicorn[standard]>=0.23
+
+# RL-Modelle (optional):
+# pip install colab-rl-bridge[torch]
+# torch>=2.0
+# stable-baselines3>=2.0

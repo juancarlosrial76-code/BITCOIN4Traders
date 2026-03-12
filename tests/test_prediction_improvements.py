@@ -1,18 +1,18 @@
 """
 Tests: Prediction Improvement Features
-=======================================
-Tests für alle 5 Verbesserungen:
+ ======================================
+Tests for all 5 improvements:
   1. Hurst Exponent Feature in FeatureEngine
-  2. HMM Regime-Wahrscheinlichkeiten als Observation
-  3. Asymmetrischer quadratischer Drawdown-Reward
+  2. HMM Regime Probabilities as Observation
+  3. Asymmetric Quadratic Drawdown Reward
   4. GARCH Volatility Forecast Feature
   5. Dual-Head Actor Network
 
-Jeder Test ist unabhängig und kann einzeln ausgeführt werden:
+Each test is independent and can be executed individually:
     python -m pytest tests/test_prediction_improvements.py -v
     python tests/test_prediction_improvements.py
 
-Prinzip: Kein Crash = Pass. Zusätzlich werden die Werte auf Plausibilität geprüft.
+Principle: No crash = Pass. Additionally, values are checked for plausibility.
 """
 
 import sys
@@ -30,12 +30,12 @@ import pytest
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Hilfsfunktionen
+# Helper functions
 # ──────────────────────────────────────────────────────────────────────────────
 
 
 def _make_price_df(n: int = 500, seed: int = 42) -> pd.DataFrame:
-    """Synthetische OHLCV-Daten für Tests."""
+    """Synthetic OHLCV data for tests."""
     np.random.seed(seed)
     dates = pd.date_range("2022-01-01", periods=n, freq="1h")
     close = 30000.0 * np.cumprod(1 + np.random.normal(0.0001, 0.01, n))
@@ -89,7 +89,7 @@ def _make_mean_reverting_price_df(n: int = 500) -> pd.DataFrame:
 
 
 class TestHurstFeature:
-    """Tests für den Hurst Exponent als Feature in der FeatureEngine."""
+    """Tests for the Hurst Exponent as feature in the FeatureEngine."""
 
     def test_hurst_module_direct(self):
         """HurstExponent Modul direkt testen."""
@@ -106,7 +106,7 @@ class TestHurstFeature:
         print(f"  Random walk Hurst (DFA): {h_rw:.3f} (expected ~0.5)")
 
     def test_hurst_trending_higher_than_random(self):
-        """Trending series sollte höheren Hurst haben als Random Walk."""
+        """Trending series should have higher Hurst than Random Walk."""
         from src.math_tools.hurst_exponent import HurstExponent
 
         calc = HurstExponent(max_lag=40)
@@ -200,19 +200,17 @@ class TestHurstFeature:
         features = engine.fit_transform(df)
 
         nan_count = features["hurst_100"].isna().sum()
-        assert nan_count == 0, (
-            f"hurst_100 has {nan_count} NaN values after fit_transform"
-        )
+        assert nan_count == 0, f"hurst_100 has {nan_count} NaN values after fit_transform"
         print(f"  NaN count in hurst_100: {nan_count} ✓")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# FEATURE 2: HMM Regime-Wahrscheinlichkeiten
+# FEATURE 2: HMM Regime Probabilities
 # ──────────────────────────────────────────────────────────────────────────────
 
 
 class TestHMMRegimeProbabilities:
-    """Tests für HMM Regime-Wahrscheinlichkeiten als Observation-Features."""
+    """Tests for HMM Regime Probabilities as observation features."""
 
     def test_hmm_detector_fit_predict(self):
         """HMMRegimeDetector: fit + predict_proba ohne Crash."""
@@ -233,8 +231,8 @@ class TestHMMRegimeProbabilities:
 
     def test_hmm_probs_shape_in_observation(self):
         """
-        Observation-Vektor sollte 3 extra Dimensionen für HMM-Probs haben.
-        Testet _get_hmm_probs() + _get_observation() direkt.
+        Observation vector should have 3 extra dimensions for HMM probs.
+        Tests _get_hmm_probs() + _get_observation() directly.
         """
         from src.features.feature_engine import FeatureEngine, FeatureConfig
         from src.environment.config_integrated_env import ConfigIntegratedTradingEnv
@@ -297,7 +295,7 @@ class TestHMMRegimeProbabilities:
         print(f"  HMM probs in obs[-3:]: {hmm_probs.round(3)} ✓")
 
     def test_hmm_fallback_flat_priors(self):
-        """_get_hmm_probs() bei nicht-gefi ttetem HMM → flat priors [0.33, 0.33, 0.34]."""
+        """_get_hmm_probs() when HMM not fitted → flat priors [0.33, 0.33, 0.34]."""
         from src.features.feature_engine import FeatureEngine, FeatureConfig
         from src.environment.config_integrated_env import ConfigIntegratedTradingEnv
         from src.environment.config_system import EnvironmentConfig
@@ -491,7 +489,7 @@ class TestAsymmetricDrawdownReward:
 
 
 class TestGARCHFeature:
-    """Tests für den GARCH Volatility Forecast als Feature."""
+    """Tests for the GARCH Volatility Forecast as feature."""
 
     def test_garch_model_fits_and_forecasts(self):
         """GARCHModel.fit() + forecast() ohne Crash."""
@@ -520,7 +518,7 @@ class TestGARCHFeature:
         print(f"  1-step vol forecast: {forecast[0]:.6f}")
 
     def test_garch_high_vol_cluster_detected(self):
-        """GARCH soll nach Volatilitäts-Cluster höhere Forecast-Vola zeigen."""
+        """GARCH should show higher forecast vol after volatility cluster."""
         from src.math_tools.garch_models import GARCHModel
 
         np.random.seed(1)
@@ -544,8 +542,7 @@ class TestGARCHFeature:
             print(f"  Vol forecast normal: {fc_normal:.6f}")
             print(f"  Vol forecast after crash: {fc_crash:.6f}")
             assert fc_crash > fc_normal, (
-                f"GARCH should forecast higher vol after crash: "
-                f"{fc_crash:.6f} vs {fc_normal:.6f}"
+                f"GARCH should forecast higher vol after crash: {fc_crash:.6f} vs {fc_normal:.6f}"
             )
 
     def test_garch_feature_in_engine_when_enabled(self):
@@ -637,9 +634,7 @@ class TestDualHeadActor:
         state = torch.randn(4, 24)  # batch of 4
         dist, hidden = actor(state)
 
-        assert dist.probs.shape == (4, 7), (
-            f"Expected probs shape (4, 7), got {dist.probs.shape}"
-        )
+        assert dist.probs.shape == (4, 7), f"Expected probs shape (4, 7), got {dist.probs.shape}"
         # Each row should sum to 1
         row_sums = dist.probs.sum(dim=-1)
         assert torch.allclose(row_sums, torch.ones(4), atol=1e-5), (
@@ -682,9 +677,7 @@ class TestDualHeadActor:
         )
         # At least 5 actions should have meaningful probability
         n_active = (mean_probs > 1e-3).sum().item()
-        assert n_active >= 5, (
-            f"Only {n_active} actions have meaningful probability: {mean_probs}"
-        )
+        assert n_active >= 5, f"Only {n_active} actions have meaningful probability: {mean_probs}"
         print(f"  {n_active}/7 actions with mean prob > 0.001 ✓")
 
     def test_dual_head_samples_valid_actions(self):
@@ -900,9 +893,7 @@ class TestIntegration:
         space_dim = env.observation_space.shape[0]
         obs_dim = len(obs)
 
-        assert space_dim == obs_dim, (
-            f"observation_space ({space_dim}) != obs ({obs_dim})"
-        )
+        assert space_dim == obs_dim, f"observation_space ({space_dim}) != obs ({obs_dim})"
         print(f"  observation_space.shape[0] = {space_dim}")
         print(f"  len(obs) = {obs_dim}")
         print(f"  CONSISTENT ✓")

@@ -1,8 +1,8 @@
 """
-models.py — Echte RL-Modell-Verwaltung aus darwin_engine.
+models.py — Real RL model management from darwin_engine.
 
-Liest Champion .pkl/.json aus data/cache/ und PPO-Modelle aus data/models/.
-Training wird als Hintergrund-Task gestartet.
+Reads Champion .pkl/.json from data/cache/ and PPO models from data/models/.
+Training is started as background task.
 """
 
 import json
@@ -39,7 +39,7 @@ def _file_size_mb(path: Path) -> str:
 
 
 def _load_champion_entry() -> Optional[dict]:
-    """Liest Champion-Metadaten aus .json."""
+    """Reads Champion metadata from .json."""
     if CHAMPION_META.exists():
         try:
             meta = json.loads(CHAMPION_META.read_text(encoding="utf-8"))
@@ -61,7 +61,7 @@ def _load_champion_entry() -> Optional[dict]:
 
 
 def _load_ppo_entry() -> Optional[dict]:
-    """Liest PPO-Modell-Metadaten aus champion.json."""
+    """Reads PPO model metadata from champion.json."""
     if PPO_META.exists():
         try:
             meta = json.loads(PPO_META.read_text(encoding="utf-8"))
@@ -83,11 +83,11 @@ def _load_ppo_entry() -> Optional[dict]:
 
 
 def _run_training_background():
-    """Führt Darwin-Evolution im Hintergrund aus."""
+    """Runs Darwin evolution in background."""
     global _training_status
     _training_status["running"] = True
     _training_status["started_at"] = datetime.now().isoformat()
-    _training_status["log"] = ["Training gestartet..."]
+    _training_status["log"] = ["Training started..."]
 
     try:
         from darwin_engine import (
@@ -99,19 +99,17 @@ def _run_training_background():
 
         load_dotenv()
 
-        _training_status["log"].append("Daten werden geladen...")
+        _training_status["log"].append("Loading data...")
         try:
             from darwin_engine import load_live_data
 
             df = load_live_data(symbol="BTC/USDT", timeframe="1h", limit=1000)
-            _training_status["log"].append(f"Echte Binance-Daten: {len(df)} Bars")
+            _training_status["log"].append(f"Real Binance data: {len(df)} bars")
         except Exception:
             df = generate_synthetic_btc(n_bars=2000, seed=42)
-            _training_status["log"].append(
-                "Synthetische Daten (Binance nicht erreichbar)"
-            )
+            _training_status["log"].append("Synthetic data (Binance not reachable)")
 
-        _training_status["log"].append("Evolution läuft (5 Generationen)...")
+        _training_status["log"].append("Evolution running (5 generations)...")
         champion = run_multiverse(
             symbol="BTC/USDT",
             timeframe="1h",
@@ -125,14 +123,14 @@ def _run_training_background():
         if champion:
             msg = f"Champion: {champion.name}"
             _training_status["log"].append(msg)
-            # Telegram-Benachrichtigung
+            # Telegram notification
             try:
                 notifier = TelegramNotifier.from_env()
-                notifier.send(f"<b>Training abgeschlossen</b>\n{msg}")
+                notifier.send(f"<b>Training completed</b>\n{msg}")
             except Exception:
                 pass
 
-        # Log speichern
+        # Save log
         TRAINING_LOG.parent.mkdir(parents=True, exist_ok=True)
         TRAINING_LOG.write_text(
             json.dumps(
@@ -146,14 +144,14 @@ def _run_training_background():
         )
 
     except Exception as exc:
-        _training_status["log"].append(f"FEHLER: {exc}")
+        _training_status["log"].append(f"ERROR: {exc}")
     finally:
         _training_status["running"] = False
 
 
 @router.get("/")
 async def get_models():
-    """Gibt alle vorhandenen Modelle zurück (Champion + PPO)."""
+    """Returns all existing models (Champion + PPO)."""
     models = []
     champ = _load_champion_entry()
     if champ:
@@ -163,11 +161,11 @@ async def get_models():
         models.append(ppo)
 
     if not models:
-        # Zeige Info-Eintrag wenn noch kein Training durchgeführt
+        # Show info entry if no training has been done yet
         models.append(
             {
                 "id": 0,
-                "name": "Kein Modell vorhanden",
+                "name": "No model present",
                 "type": "-",
                 "created": "-",
                 "size": "0 MB",
@@ -181,25 +179,25 @@ async def get_models():
 
 @router.post("/train")
 async def train_model(background_tasks: BackgroundTasks):
-    """Startet Darwin-Evolution als Hintergrund-Task."""
+    """Starts Darwin evolution as background task."""
     async with _training_lock:
         if _training_status["running"]:
             return {
                 "status": "already_running",
                 "started_at": _training_status["started_at"],
-                "message": "Training läuft bereits",
+                "message": "Training already running",
             }
         background_tasks.add_task(_run_training_background)
     return {
         "status": "started",
-        "message": "Darwin-Evolution gestartet (5 Generationen)",
+        "message": "Darwin evolution started (5 generations)",
         "timestamp": datetime.now().isoformat(),
     }
 
 
 @router.get("/training/status")
 async def get_training_status():
-    """Gibt aktuellen Trainings-Status zurück."""
+    """Returns current training status."""
     if TRAINING_LOG.exists():
         try:
             last = json.loads(TRAINING_LOG.read_text(encoding="utf-8"))
@@ -218,7 +216,7 @@ async def get_training_status():
 
 @router.get("/training/history")
 async def get_training_history():
-    """Gibt Trainings-Historie aus Log-Datei zurück."""
+    """Returns training history from log file."""
     history = []
 
     if TRAINING_LOG.exists():
@@ -258,7 +256,7 @@ async def get_training_history():
         if history
         else [
             {
-                "model": "Kein Training",
+                "model": "No training",
                 "start": "-",
                 "end": "-",
                 "status": "none",

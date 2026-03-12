@@ -108,7 +108,7 @@ except ImportError:
 
 
 def _load_mem_cfg() -> dict:
-    """Laedt memory_management.yaml (graceful fallback)."""
+    """Load memory_management.yaml (graceful fallback)."""
     try:
         cfg_path = Path("config/memory_management.yaml")
         if cfg_path.exists() and _YAML_OK:
@@ -301,7 +301,7 @@ class AdversarialTrainer:
         self.iteration = 0
         self.total_steps = 0
 
-        # Memory-Konfiguration laden
+        # Load memory configuration
         _mem = _load_mem_cfg()
         self._max_history = _mem.get("history", {}).get("max_entries", 200)
         self._clear_adv_buf = _mem.get("adversary_buffer", {}).get(
@@ -315,7 +315,7 @@ class AdversarialTrainer:
         )
         self._reset_out = _mem.get("ipython", {}).get("reset_output_cache", True)
 
-        # Metrics history (begrenzt auf max_history Eintraege - kein unbegrenztes Wachstum)
+        # Metrics history (limited to max_history entries - no unlimited growth)
         self.history = {
             "trader_rewards": [],
             "trader_returns": [],
@@ -325,7 +325,7 @@ class AdversarialTrainer:
             "episodes": [],
         }
 
-        # Adversary state tracking (werden nach jedem collect_trajectories geloescht)
+        # Adversary state tracking (deleted after each collect_trajectories)
         self.adversary_states = []
         self.adversary_actions = []
         self.adversary_log_probs = []
@@ -536,24 +536,24 @@ class AdversarialTrainer:
         steps_per_env: int,
     ) -> Dict:
         """
-        Collect trajectories mit GPU-CPU Double-Buffering Pipeline.
+        Collect trajectories with GPU-CPU Double-Buffering Pipeline.
 
-        Problem (alt): GPU forward pass und CPU env.step() laufen SEQUENZIELL.
-        GPU wartet während CPU stepped → T4 GPU-Auslastung ~10-20%.
+        Problem (old): GPU forward pass and CPU env.step() run SEQUENTIALLY.
+        GPU waits while CPU steps → T4 GPU utilization ~10-20%.
 
-        Lösung (neu): CUDA Stream Overlap — CPU und GPU laufen PARALLEL:
+        Solution (new): CUDA Stream Overlap — CPU and GPU run PARALLEL:
 
-            Schritt t:   GPU berechnet forward(obs_t)
-                         CPU stepped envs mit actions_{t-1}  ← gleichzeitig!
-            Schritt t+1: GPU berechnet forward(obs_{t+1})
-                         CPU stepped envs mit actions_t       ← gleichzeitig!
+            Step t:   GPU computes forward(obs_t)
+                      CPU steps envs with actions_{t-1}  ← simultaneously!
+            Step t+1: GPU computes forward(obs_{t+1})
+                      CPU steps envs with actions_t       ← simultaneously!
 
-        Implementierung via torch.cuda.Stream:
+        Implementation via torch.cuda.Stream:
         - compute_stream: GPU forward pass (select_action_batch)
-        - transfer_stream: Non-blocking obs nach GPU kopieren
-        - CPU env.step() läuft in ThreadPoolExecutor parallel zum GPU Stream
+        - transfer_stream: Non-blocking obs copy to GPU
+        - CPU env.step() runs in ThreadPoolExecutor parallel to GPU stream
 
-        Erwartete GPU-Auslastung: 10-20% → 60-80% auf T4.
+        Expected GPU utilization: 10-20% → 60-80% on T4.
 
         Parameters
         ----------
@@ -579,7 +579,7 @@ class AdversarialTrainer:
 
         obs = vec_env.reset()  # (N, state_dim)
 
-        # ── CUDA Streams für Overlap ──────────────────────────────────────────
+        # ── CUDA Streams for Overlap ──────────────────────────────────────────
         # compute_stream: GPU forward pass
         # transfer_stream: non-blocking H2D Transfer (obs CPU→GPU)
         if use_cuda:
@@ -589,8 +589,8 @@ class AdversarialTrainer:
             compute_stream = None
             transfer_stream = None
 
-        # Pinned Memory Buffer für schnellen H2D Transfer (non-blocking)
-        # pinned memory ermöglicht DMA-Transfer ohne CPU-Beteiligung
+        # Pinned Memory Buffer for fast H2D Transfer (non-blocking)
+        # pinned memory enables DMA transfer without CPU involvement
         if use_cuda:
             obs_pinned = torch.empty(
                 (n_envs, obs.shape[1]), dtype=torch.float32, pin_memory=True
@@ -598,32 +598,32 @@ class AdversarialTrainer:
         else:
             obs_pinned = None
 
-        # ── Double-Buffering Zustand ─────────────────────────────────────────
-        # Wir halten die Ergebnisse des vorherigen GPU-Schritts fest
-        # damit wir sie speichern während die GPU schon den nächsten berechnet
+        # ── Double-Buffering State ─────────────────────────────────────────
+        # We hold onto the results from the previous GPU step
+        # so we can save them while the GPU is already computing the next one
         prev_actions = None
         prev_log_probs = None
         prev_values = None
         prev_hidden = None
         prev_obs = None
 
-        # Futures für async env.step() (CPU läuft parallel zur GPU)
+        # Futures for async env.step() (CPU runs parallel to GPU)
         from concurrent.futures import Future
 
         step_future: Optional[Future] = None
         step_result = None  # (next_obs, rewards, dones, infos) vom letzten step
 
         def _submit_step(actions_np):
-            """Startet env.step() asynchron — läuft parallel zum GPU forward."""
+            """Start env.step() async - runs parallel to GPU forward."""
             return vec_env._executor.submit(lambda: vec_env.step(actions_np))
 
-        # ── Rollout Loop mit Pipeline ────────────────────────────────────────
+        # ── Rollout Loop with Pipeline ────────────────────────────────────────
         for step_idx in range(steps_per_env):
-            # ── Merke hidden state VOR dem forward pass ───────────────────
-            # WICHTIG: prev_hidden muss h_{t-1} sein (Input zur forward-Berechnung),
-            # nicht h_t (Output). Deshalb HIER setzen, bevor trader_hidden durch
-            # forward() auf h_t aktualisiert wird. Ohne diesen Fix würde beim
-            # Training der falsche (um 1 verschobene) hidden state für BPTT genutzt.
+            # ── Remember hidden state BEFORE the forward pass ───────────────────
+            # IMPORTANT: prev_hidden must be h_{t-1} (input to forward computation),
+            # not h_t (output). That's why we set it HERE, before trader_hidden is
+            # updated by forward() to h_t. Without this fix, the wrong (shifted by 1)
+            # hidden state would be used for BPTT during training.
             prev_hidden = trader_hidden
 
             # ── GPU forward pass (nicht-blockierend) ──────────────────────
@@ -642,24 +642,24 @@ class AdversarialTrainer:
                     self.trader.select_action_batch(obs, trader_hidden)
                 )
 
-            # ── CPU env.step() PARALLEL zum nächsten GPU forward ──────────
-            # Warte auf vorherigen step_future (falls vorhanden)
+            # ── CPU env.step() PARALLEL to next GPU forward ──────────────
+            # Wait for previous step_future (if present)
             if step_future is not None:
                 next_obs, rewards, dones, infos = step_future.result()
             else:
                 next_obs, rewards, dones = None, None, None
                 infos = [{} for _ in range(n_envs)]
 
-            # ── GPU Sync: sicherstellen dass forward pass fertig ist ───────
+            # ── GPU Sync: ensure forward pass is finished ───────
             if use_cuda and compute_stream is not None:
                 compute_stream.synchronize()
 
-            # actions ist jetzt sicher bereit → starte env.step() async
-            # select_action_batch() gibt bereits numpy int64 zurück
+            # actions is now ready → start env.step() async
+            # select_action_batch() already returns numpy int64
             step_future = _submit_step(actions)
 
-            # ── Speichere Transitions vom VORHERIGEN Schritt ──────────────
-            # (prev_* hat den forward pass von t-1, step_result hat rewards von t-1)
+            # ── Save Transitions from the PREVIOUS step ──────────────
+            # (prev_* has the forward pass from t-1, step_result has rewards from t-1)
             # prev_hidden = h_{t-1} (gesetzt VOR dem forward pass oben — korrekt!)
             if prev_actions is not None and next_obs is not None:
                 # ADV-5: Build hidden list for all N envs, then batch-write.
@@ -707,12 +707,12 @@ class AdversarialTrainer:
                             else:
                                 trader_hidden[:, i, :].zero_()
 
-            # ── Schiebe Zustand einen Schritt weiter ──────────────────────
+            # ── Shift state one step forward ──────────────────────
             prev_obs = obs.copy()
             prev_actions = actions
             prev_log_probs = log_probs
             prev_values = values
-            # NICHT: prev_hidden = trader_hidden (wurde an den Anfang des Loops verschoben)
+            # NOT: prev_hidden = trader_hidden (moved to the beginning of the loop)
 
             if next_obs is not None:
                 obs = next_obs
@@ -907,7 +907,7 @@ class AdversarialTrainer:
         n_successful = sum(1 for r in self.adversary_rewards if r > 0)
         success_rate = n_successful / n_challenges if n_challenges > 0 else 0.0
 
-        # Store history (begrenzt - kein unbegrenztes Wachstum)
+        # Store history (limited - no unlimited growth)
         self.history["adversary_rewards"].append(np.mean(self.adversary_rewards))
         self.history["adversary_success"].append(success_rate)
         self._trim_history()
@@ -921,7 +921,7 @@ class AdversarialTrainer:
             "mean_adversary_reward": np.mean(self.adversary_rewards),
         }
 
-        # RAM freigeben: Adversary-Puffer loeschen (konfigurierbar)
+        # Free RAM: Clear adversary buffer (configurable)
         if self._clear_adv_buf:
             self.adversary_states.clear()
             self.adversary_actions.clear()
@@ -1013,19 +1013,19 @@ class AdversarialTrainer:
                 mean_ret = traj_metrics.get("mean_return", 0)
                 self._save_checkpoint(iteration, mean_ret)
 
-            # Store history (begrenzt auf max_history)
+            # Store history (limited to max_history)
             self.history["trader_rewards"].append(traj_metrics["mean_reward"])
             self.history["trader_returns"].append(traj_metrics["mean_return"])
             self.history["episodes"].append(len(traj_metrics["episode_rewards"]))
             self._trim_history()
 
-            # ── RAM + GPU-Speicher freigeben ──────────────────────────────
+            # ── Free RAM + GPU Memory ──────────────────────────────
             if iteration % self._cuda_every == 0:
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
                 gc.collect()
 
-            # ── IPython Output-Cache leeren (Colab) ───────────────────────
+            # ── Clear IPython Output Cache (Colab) ───────────────────────
             if self._reset_out and iteration % self._ipython_every == 0:
                 try:
                     from IPython import get_ipython
@@ -1104,16 +1104,16 @@ class AdversarialTrainer:
 
     def _trim_history(self):
         """
-        Begrenzt alle history-Listen auf self._max_history Eintraege.
-        Verhindert unbegrenztes RAM-Wachstum ueber 500+ Iterationen.
-        0 = kein Limit (fuer lokale Maschinen).
+        Limits all history lists to self._max_history entries.
+        Prevents unlimited RAM growth over 500+ iterations.
+        0 = no limit (for local machines).
         """
         if self._max_history <= 0:
             return
         for key in self.history:
             lst = self.history[key]
             if len(lst) > self._max_history:
-                # Behalte nur die letzten max_history Eintraege
+                # Keep only the last max_history entries
                 self.history[key] = lst[-self._max_history :]
 
     def _log_iteration(
@@ -1244,9 +1244,9 @@ class AdversarialTrainer:
         """Load training checkpoint."""
         logger.info(f"Loading checkpoint from: {path}")
 
-        # PyTorch >= 2.6: weights_only=True ist default, schlaegt fehl wenn
-        # Dataclasses (PPOConfig, AdversarialConfig) im Checkpoint gespeichert sind.
-        # weights_only=False ist sicher, da Checkpoints aus dem eigenen Training stammen.
+        # PyTorch >= 2.6: weights_only=True is default, fails if
+        # dataclasses (PPOConfig, AdversarialConfig) are stored in the checkpoint.
+        # weights_only=False is safe since checkpoints come from our own training.
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
 
         # Load agents
@@ -1258,9 +1258,9 @@ class AdversarialTrainer:
         trader_path = str(path).replace(".pth", "_trader.pth")
         adversary_path = str(path).replace(".pth", "_adversary.pth")
 
-        # Sidecar-Dateien laden (trader_path / adversary_path).
-        # Beim ersten Start ohne vorherigen Checkpoint fehlen diese Dateien – das ist normal.
-        # FileNotFoundError wird als INFO geloggt, nicht als WARNING.
+        # Load sidecar files (trader_path / adversary_path).
+        # On first startup without previous checkpoint these files are missing - this is normal.
+        # FileNotFoundError is logged as INFO, not WARNING.
         _trader_ok = False
         _adversary_ok = False
         if os.path.exists(trader_path):
@@ -1268,10 +1268,10 @@ class AdversarialTrainer:
                 self.trader.load(trader_path)
                 _trader_ok = True
             except Exception as e:
-                logger.warning(f"Fehler beim Laden der Trader-Gewichte: {e}")
+                logger.warning(f"Error loading trader weights: {e}")
         else:
             logger.info(
-                f"Trader-Sidecar nicht vorhanden (OK beim ersten Start): {trader_path}"
+                f"Trader sidecar not present (OK on first startup): {trader_path}"
             )
 
         if os.path.exists(adversary_path):
@@ -1279,16 +1279,16 @@ class AdversarialTrainer:
                 self.adversary.load(adversary_path)
                 _adversary_ok = True
             except Exception as e:
-                logger.warning(f"Fehler beim Laden der Adversary-Gewichte: {e}")
+                logger.warning(f"Error loading adversary weights: {e}")
         else:
             logger.info(
-                f"Adversary-Sidecar nicht vorhanden (OK beim ersten Start): {adversary_path}"
+                f"Adversary sidecar not present (OK on first startup): {adversary_path}"
             )
 
         if not _trader_ok or not _adversary_ok:
             logger.info(
-                "Sidecar-Dateien nicht vollstaendig – starte mit frischen Gewichten "
-                "(Trainingsfortschritt aus Checkpoint wird geladen)."
+                "Sidecar files incomplete - starting with fresh weights "
+                "(training progress from checkpoint will be loaded)."
             )
 
         # Load training state

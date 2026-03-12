@@ -1,8 +1,8 @@
 """
-config.py — Bot/Risk/Data Konfiguration mit JSON-Persistenz.
+config.py — Bot/Risk/Data configuration with JSON persistence.
 
-Einstellungen werden in data/cache/bot_config.json gespeichert
-und überleben Server-Neustarts.
+Settings are saved to data/cache/bot_config.json
+and survive server restarts.
 """
 
 import json
@@ -19,7 +19,7 @@ router = APIRouter()
 
 CONFIG_FILE = PROJECT_ROOT / "data/cache/bot_config.json"
 
-# Default-Konfiguration
+# Default configuration
 _DEFAULTS = {
     "bot": {
         "symbol": "BTCUSDT",
@@ -66,11 +66,11 @@ class DataConfig(BaseModel):
 
 
 def _load_config() -> dict:
-    """Lädt Konfiguration aus Datei, Defaults als Fallback."""
+    """Loads configuration from file, defaults as fallback."""
     if CONFIG_FILE.exists():
         try:
             saved = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-            # Deep merge: saved überschreibt defaults
+            # Deep merge: saved overrides defaults
             result = {}
             for section in ("bot", "risk", "data"):
                 result[section] = {**_DEFAULTS[section], **saved.get(section, {})}
@@ -81,7 +81,7 @@ def _load_config() -> dict:
 
 
 def _save_config(cfg: dict) -> None:
-    """Speichert Konfiguration als JSON."""
+    """Saves configuration as JSON."""
     CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 

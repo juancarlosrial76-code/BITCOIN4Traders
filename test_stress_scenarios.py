@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test-Skript für Stress-Szenarien.
+Test script for stress scenarios.
 
 Usage:
     python test_stress_scenarios.py
@@ -23,7 +23,7 @@ from src.data_generation.stress_scenarios import (
 
 
 def test_all_scenarios():
-    """Testet alle Stress-Szenarien."""
+    """Tests all stress scenarios."""
     print("\n" + "=" * 70)
     print("STRESS SCENARIOS TEST")
     print("=" * 70)
@@ -73,7 +73,7 @@ def test_all_scenarios():
         assert (close > 0).all(), "Non-positive prices found"
 
     print("\n" + "-" * 70)
-    print("Zusammenfassung:")
+    print("Summary:")
     print("-" * 70)
     for r in results:
         print(f"  {r['name']:18s}: DD={r['max_dd']:7.2%}, Vol={r['volatility']:.4f}")
@@ -82,7 +82,7 @@ def test_all_scenarios():
 
 
 def test_mixed_dataset():
-    """Testet den gemischten Stress-Datensatz."""
+    """Tests the mixed stress dataset."""
     print("\n" + "=" * 70)
     print("MIXED STRESS DATASET TEST")
     print("=" * 70)
@@ -101,7 +101,7 @@ def test_mixed_dataset():
 
 
 def test_curriculum():
-    """Testet das Curriculum-System."""
+    """Tests the curriculum system."""
     print("\n" + "=" * 70)
     print("CURRICULUM TEST")
     print("=" * 70)
@@ -119,7 +119,7 @@ def test_curriculum():
 
 
 def benchmark_scenarios():
-    """Benchmark für alle Szenarien."""
+    """Benchmark for all scenarios."""
     print("\n" + "=" * 70)
     print("BENCHMARK")
     print("=" * 70)

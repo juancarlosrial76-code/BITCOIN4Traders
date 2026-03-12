@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BITCOIN4Traders - Dokumentation</title>
+  <link rel="stylesheet" href="manual.css">
+</head>
+<body>
+  <header class="header">
+    <div class="container">
+      <div class="logo">
+        <span class="logo-icon">₿</span>
+        <span>BITCOIN4Traders</span>
+      </div>
+      <nav class="nav">
+        <a href="index.html" class="active">Start</a>
+        <a href="quickstart.html">Schnellstart</a>
+        <a href="trading.html">Trading</a>
+        <a href="configuration.html">Konfiguration</a>
+        <a href="api.html">API</a>
+        <a href="troubleshooting.html">FAQ</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="main">
+    <div class="container">
+      <section class="hero">
+        <h1>BITCOIN4Traders Dokumentation</h1>
+        <p class="subtitle">Institutional-Grade Bitcoin Trading System mit Deep Reinforcement Learning</p>
+        <div class="badges">
+          <span class="badge">Python 3.11+</span>
+          <span class="badge">DRL</span>
+          <span class="badge">FastAPI</span>
+          <span class="badge">React</span>
+        </div>
+      </section>
+
+      <section class="features">
+        <h2>Was ist BITCOIN4Traders?</h2>
+        <p>BITCOIN4Traders ist ein vollständiges Trading-System, das Deep Reinforcement Learning (DRL) mit umfassendem Risikomanagement kombiniert. Das System ist für den institutionellen Einsatz konzipiert und bietet:</p>
+        
+        <div class="feature-grid">
+          <div class="feature-card">
+            <h3>🤖 Darwin Engine</h3>
+            <p>Automatisierte Evolution von Trading-Strategien durch genetische Algorithmen</p>
+          </div>
+          <div class="feature-card">
+            <h3>🧠 Reinforcement Learning</h3>
+            <p>PPO-Algorithmus für optimales Entscheidungslernen</p>
+          </div>
+          <div class="feature-card">
+            <h3>📊 Echtzeit Analytics</h3>
+            <p>Live-Performance-Metriken und Equity-Curve Tracking</p>
+          </div>
+          <div class="feature-card">
+            <h3>🛡️ Risikomanagement</h3>
+            <p>Stop-Loss, Take-Profit und Positionsgrößenkontrolle</p>
+          </div>
+          <div class="feature-card">
+            <h3>☁️ Colab Support</h3>
+            <p>Training in der Cloud mit GPU-Beschleunigung</p>
+          </div>
+          <div class="feature-card">
+            <h3>📈 Backtesting</h3>
+            <p>Walk-Forward-Analysis für robuste Strategien</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="quick-links">
+        <h2>Schnellzugriff</h2>
+        <div class="link-grid">
+          <a href="quickstart.html" class="link-card">
+            <span class="link-icon">🚀</span>
+            <div>
+              <h3>Schnellstart</h3>
+              <p>In 5 Minuten mit dem Trading beginnen</p>
+            </div>
+          </a>
+          <a href="trading.html" class="link-card">
+            <span class="link-icon">📈</span>
+            <div>
+              <h3>Trading Guide</h3>
+              <p>Live Trading nutzen und Orders platzieren</p>
+            </div>
+          </a>
+          <a href="configuration.html" class="link-card">
+            <span class="link-icon">⚙️</span>
+            <div>
+              <h3>Konfiguration</h3>
+              <p>Bot-Parameter und Risikoeinstellungen</p>
+            </div>
+          </a>
+          <a href="api.html" class="link-card">
+            <span class="link-icon">🔌</span>
+            <div>
+              <h3>API Referenz</h3>
+              <p>Programmatischer Zugriff auf alle Funktionen</p>
+            </div>
+          </a>
+        </div>
+      </section>
+
+      <section class="architecture">
+        <h2>System-Architektur</h2>
+        <div class="arch-diagram">
+          <div class="arch-layer">
+            <h4>Frontend</h4>
+            <p>React Dashboard mit Charts & Controls</p>
+          </div>
+          <div class="arch-arrow">↓ REST / WebSocket ↑</div>
+          <div class="arch-layer">
+            <h4>Backend</h4>
+            <p>FastAPI Server mit JWT Auth</p>
+          </div>
+          <div class="arch-arrow">↓</div>
+          <div class="arch-layer">
+            <h4>Trading Engine</h4>
+            <p>Darwin Engine + RL Agent</p>
+          </div>
+          <div class="arch-arrow">↓</div>
+          <div class="arch-layer">
+            <h4>Exchanges</h4>
+            <p>Binance API (Live/Paper)</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="requirements">
+        <h2>Systemanforderungen</h2>
+        <table>
+          <tr>
+            <th>Komponente</th>
+            <th>Minimum</th>
+            <th>Empfohlen</th>
+          </tr>
+          <tr>
+            <td>Python</td>
+            <td>3.11</td>
+            <td>3.11+</td>
+          </tr>
+          <tr>
+            <td>RAM</td>
+            <td>4 GB</td>
+            <td>8 GB+</td>
+          </tr>
+          <tr>
+            <td>Speicher</td>
+            <td>10 GB</td>
+            <td>50 GB+</td>
+          </tr>
+          <tr>
+            <td>GPU (Training)</td>
+            <td>Optional</td>
+            <td>NVIDIA 8GB+</td>
+          </tr>
+        </table>
+      </section>
+
+      <section class="disclaimer">
+        <h2>⚠️ Risikohinweis</h2>
+        <div class="warning-box">
+          <p><strong>Wichtiger Hinweis:</strong> Trading ist mit erheblichen Risiken verbunden. Die vergangene Performance garantiert keine zukünftigen Ergebnisse. Dieses System ist für Bildungs- und Forschungszwecke konzipiert.</p>
+          <p>Nutzen Sie immer zuerst den Paper-Trading-Modus, um Strategien zu testen, bevor Sie echtes Geld einsetzen.</p>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2024 BITCOIN4Traders - MIT License</p>
+      <p>Dokumentation Version 1.0.0</p>
+    </div>
+  </footer>
+</body>
+</html>

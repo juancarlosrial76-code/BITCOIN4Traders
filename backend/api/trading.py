@@ -1,9 +1,9 @@
 """
-trading.py — Live-Trading mit Darwin-Engine Champion für Signale.
+trading.py — Live trading with Darwin-Engine Champion for signals.
 
-- Echte Binance-Orders wenn API-Keys gesetzt
-- Darwin-Champion liefert BUY/SELL/HOLD Signale
-- Paper-Trading Modus wenn kein API-Key
+- Real Binance orders if API keys are set
+- Darwin Champion provides BUY/SELL/HOLD signals
+- Paper trading mode if no API key
 """
 
 import os
@@ -28,7 +28,7 @@ CHAMPION_META = PROJECT_ROOT / "data/cache/multiverse_champion_meta.json"
 CONFIG_FILE = PROJECT_ROOT / "data/cache/bot_config.json"
 
 binance_connector = None
-_champion_cache = None  # gecachter Champion-Bot
+_champion_cache = None  # cached Champion bot
 
 
 def get_binance_connector():
@@ -45,12 +45,12 @@ def get_binance_connector():
                     api_key=api_key, api_secret=api_secret, testnet=testnet
                 )
         except Exception as e:
-            print(f"Binance-Connector Fehler: {e}")
+            print(f"Binance connector error: {e}")
     return binance_connector
 
 
 def _get_champion():
-    """Lädt Darwin-Champion (mit In-Memory Cache)."""
+    """Loads Darwin Champion (with in-memory cache)."""
     global _champion_cache
     if _champion_cache is not None:
         return _champion_cache
@@ -63,14 +63,14 @@ def _get_champion():
                 str(CHAMPION_META) if CHAMPION_META.exists() else None,
             )
         except Exception as e:
-            print(f"Champion laden fehlgeschlagen: {e}")
+            print(f"Champion load failed: {e}")
     return _champion_cache
 
 
 def _get_champion_signal() -> dict:
     """
-    Fragt den Champion nach dem aktuellen Signal.
-    Gibt {'signal': 1|0|-1, 'label': 'LONG'|'FLAT'|'SHORT', 'champion': name} zurück.
+    Queries the Champion for the current signal.
+    Returns {'signal': 1|0|-1, 'label': 'LONG'|'FLAT'|'SHORT', 'champion': name}.
     """
     champion = _get_champion()
     if champion is None:
@@ -78,7 +78,7 @@ def _get_champion_signal() -> dict:
             "signal": 0,
             "label": "FLAT",
             "champion": None,
-            "reason": "kein Champion",
+            "reason": "no champion",
         }
 
     try:
@@ -89,9 +89,7 @@ def _get_champion_signal() -> dict:
 
             df = load_live_data(symbol="BTC/USDT", timeframe="1h", limit=200)
         except Exception:
-            df = generate_synthetic_btc(
-                n_bars=200, seed=int(datetime.now().timestamp()) % 1000
-            )
+            df = generate_synthetic_btc(n_bars=200, seed=int(datetime.now().timestamp()) % 1000)
 
         signals = champion.compute_signals(df["close"].values)
         last_signal = int(signals[-1])
@@ -155,7 +153,7 @@ trading_state = {
 
 @router.get("/status")
 async def get_status():
-    """Gibt Trading-Status + aktuelles Champion-Signal zurück."""
+    """Returns trading status + current Champion signal."""
     connector = get_binance_connector()
     position_value = trading_state["current_position"]
     unrealized = trading_state["unrealized_pnl"]

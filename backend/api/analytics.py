@@ -1,10 +1,10 @@
 """
-analytics.py — Echte Performance-Metriken aus dem Darwin Engine Champion.
+analytics.py — Real performance metrics from the Darwin Engine Champion.
 
-Datenquellen (in Priorität):
-  1. Champion .pkl + .json aus data/cache/
-  2. Gecachte Equity-Kurve (data/cache/equity_curve.json)
-  3. Statischer Fallback wenn kein Champion vorhanden
+Data sources (in priority):
+  1. Champion .pkl + .json from data/cache/
+  2. Cached equity curve (data/cache/equity_curve.json)
+  3. Static fallback if no Champion present
 """
 
 import json
@@ -44,7 +44,7 @@ def _load_wfv() -> dict:
 
 
 def _load_champion_stats() -> dict[str, Any]:
-    """Lädt Champion, führt Mini-Simulation durch, cached Equity-Kurve."""
+    """Loads Champion, runs mini-simulation, caches equity curve."""
     if not CHAMPION_PKL.exists():
         return {}
     try:
@@ -98,7 +98,7 @@ def _load_champion_stats() -> dict[str, Any]:
 
 @router.get("/metrics")
 async def get_metrics():
-    """Echte Metriken des aktuellen Darwin-Engine Champions."""
+    """Real metrics of the current Darwin Engine Champion."""
     meta = _load_meta()
     stats = _load_champion_stats()
     wfv = _load_wfv()
@@ -206,7 +206,7 @@ async def get_metrics():
 
 @router.get("/equity-curve")
 async def get_equity_curve():
-    """Equity-Kurve des Champions (gecacht oder neu berechnet)."""
+    """Equity curve of the Champion (cached or recalculated)."""
     if EQUITY_CACHE.exists():
         try:
             data = json.loads(EQUITY_CACHE.read_text(encoding="utf-8"))
@@ -223,7 +223,7 @@ async def get_equity_curve():
 
 @router.get("/monthly-returns")
 async def get_monthly_returns():
-    """Monatliche Renditen aus der Equity-Kurve."""
+    """Monthly returns from the equity curve."""
     if EQUITY_CACHE.exists():
         try:
             import pandas as pd
@@ -246,7 +246,7 @@ async def get_monthly_returns():
 
 @router.get("/trade-distribution")
 async def get_trade_distribution():
-    """P&L-Verteilung in Buckets aus der Equity-Kurve."""
+    """P&L distribution in buckets from the equity curve."""
     if EQUITY_CACHE.exists():
         try:
             import pandas as pd

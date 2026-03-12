@@ -184,16 +184,13 @@ class ProductionMonitor:
         monitor.stop_monitoring()
     """
 
-    def __init__(
-        self, check_interval_seconds: float = 5.0, metrics_history_size: int = 10000
-    ):
+    def __init__(self, check_interval_seconds: float = 5.0, metrics_history_size: int = 10000):
         self.check_interval = check_interval_seconds
         self.metrics_history = deque(
             maxlen=metrics_history_size
         )  # ring buffer: oldest metrics auto-evicted when full
-        self.alerts = deque(
-            maxlen=1000
-        )  # ring buffer: keeps the 1000 most recent alerts
+        self.alerts = deque(maxlen=1000)  # ring buffer: keeps the 1000 most recent alerts
+
         self.alert_handlers = []
         self.running = False
         self.monitor_thread = None
@@ -215,9 +212,7 @@ class ProductionMonitor:
 
         logger.info("ProductionMonitor initialized")
         logger.info(f"  Check interval: {check_interval_seconds}s")
-        logger.info(
-            f"  Max drawdown threshold: {self.thresholds['max_drawdown_pct']:.1%}"
-        )
+        logger.info(f"  Max drawdown threshold: {self.thresholds['max_drawdown_pct']:.1%}")
 
     def set_threshold(self, metric: str, value: float):
         """Set alert threshold."""
@@ -290,10 +285,7 @@ class ProductionMonitor:
 
     def _check_win_rate(self, metrics: TradingMetrics):
         """Check win rate."""
-        if (
-            metrics.win_rate < self.thresholds["min_win_rate"]
-            and self.trades_today > 20
-        ):
+        if metrics.win_rate < self.thresholds["min_win_rate"] and self.trades_today > 20:
             self._trigger_alert(
                 AlertLevel.WARNING,
                 AlertType.PNL,
@@ -326,7 +318,7 @@ class ProductionMonitor:
         self.alerts.append(alert)
 
         # Log alert
-        # Fix #7: EMERGENCY bekommt eigenes logger.critical Level
+        # Fix #7: EMERGENCY gets its own logger.critical level
         if level == AlertLevel.EMERGENCY:
             log_func = logger.critical
         elif level in [AlertLevel.WARNING, AlertLevel.CRITICAL]:
@@ -392,11 +384,9 @@ class ProductionMonitor:
         return {
             "avg_pnl": sum(m.total_pnl for m in recent_metrics) / len(recent_metrics),
             "max_drawdown": max(m.max_drawdown_pct for m in recent_metrics),
-            "avg_latency": sum(m.latency_ms for m in recent_metrics)
-            / len(recent_metrics),
+            "avg_latency": sum(m.latency_ms for m in recent_metrics) / len(recent_metrics),
             "total_trades": sum(m.open_positions for m in recent_metrics),
-            "avg_exposure": sum(m.exposure_pct for m in recent_metrics)
-            / len(recent_metrics),
+            "avg_exposure": sum(m.exposure_pct for m in recent_metrics) / len(recent_metrics),
         }
 
     def get_unacknowledged_alerts(self) -> List[Alert]:
@@ -471,10 +461,10 @@ class LiveTrader:
         self.is_trading = False
         self.trades_today = 0
 
-        # Fix #6: echte Metrik-History
-        self._trade_history: list = []  # Liste von dicts mit pnl, size, timestamp
-        self._equity_history: list = []  # Equity-Werte fuer Drawdown-Berechnung
-        self._last_latency_ms: float = 0.0  # letzter gemessener Order-Latency
+        # Fix #6: real metric history
+        self._trade_history: list = []  # List of dicts with pnl, size, timestamp
+        self._equity_history: list = []  # Equity values for drawdown calculation
+        self._last_latency_ms: float = 0.0  # Last measured order latency
 
         # Safety flags
         self.emergency_stop = False
@@ -563,29 +553,27 @@ class LiveTrader:
 
             _t0 = _time.monotonic()
 
-            # Send order (placeholder — wird in echter Integration durch ccxt ersetzt)
+            # Send order (placeholder — will be replaced by ccxt in real integration)
             logger.info(f"Executing: {signal}")
             confirmed = True  # placeholder
 
-            self._last_latency_ms = (
-                _time.monotonic() - _t0
-            ) * 1000  # Fix #6: echte Latency
+            self._last_latency_ms = (_time.monotonic() - _t0) * 1000  # Fix #6: echte Latency
 
             if confirmed:
                 self.positions[signal["symbol"]] = signal
                 self.trades_today += 1
 
-                # Fix #6: Trade in History eintragen
+                # Fix #6: Record trade in history
                 self._trade_history.append(
                     {
                         "timestamp": _time.time(),
                         "symbol": signal.get("symbol"),
                         "side": signal.get("side"),
                         "size": signal.get("size", 0),
-                        "pnl": signal.get("pnl"),  # None bei Entry, Wert bei Exit
+                        "pnl": signal.get("pnl"),  # None at entry, value at exit
                     }
                 )
-                # Equity nach Trade aktualisieren
+                # Update equity after trade
                 _equity = (self.starting_capital or 0) + self.total_pnl
                 self._equity_history.append(_equity)
 
@@ -612,21 +600,19 @@ class LiveTrader:
         return True
 
     def _record_metrics(self):
-        """Record current trading metrics — echte Werte aus Trade-History."""
+        """Record current trading metrics — real values from trade history."""
         import numpy as _np
 
-        # ── Echte Win-Rate aus abgeschlossenen Trades ────────────────────────
-        _closed = [
-            t for t in getattr(self, "_trade_history", []) if t.get("pnl") is not None
-        ]
+        # ── Real win rate from completed trades ────────────────────────
+        _closed = [t for t in getattr(self, "_trade_history", []) if t.get("pnl") is not None]
         _wins = [t for t in _closed if t.get("pnl", 0) > 0]
         win_rate = len(_wins) / len(_closed) if _closed else 0.0
 
-        # ── Echte Average Trade Size ─────────────────────────────────────────
+        # ── Real average trade size ─────────────────────────────────────────
         _sizes = [abs(t.get("size", 0)) for t in _closed]
         avg_trade_size = float(_np.mean(_sizes)) if _sizes else 0.0
 
-        # ── Echter Max Drawdown aus Equity-Kurve ─────────────────────────────
+        # ── Real max drawdown from equity curve ─────────────────────────────
         _equity_history = getattr(self, "_equity_history", [])
         if len(_equity_history) >= 2:
             _eq = _np.array(_equity_history, dtype=float)
@@ -636,8 +622,8 @@ class LiveTrader:
         else:
             max_drawdown_pct = 0.0
 
-        # ── Echter Sharpe (24h, annualisiert) aus PnL-Returns ────────────────
-        _pnl_series = [t.get("pnl", 0) for t in _closed[-24:]]  # letzte 24 Trades
+        # ── Real Sharpe (24h, annualized) from PnL returns ────────────────
+        _pnl_series = [t.get("pnl", 0) for t in _closed[-24:]]  # last 24 trades
         if len(_pnl_series) >= 2:
             _r = _np.array(_pnl_series) / (self.starting_capital + 1e-8)
             sharpe_24h = float(_r.mean() / (_r.std() + 1e-8) * _np.sqrt(252 * 24))
@@ -660,9 +646,7 @@ class LiveTrader:
             max_drawdown_pct=max_drawdown_pct,  # Fix #6: echt berechnet
             win_rate=win_rate,  # Fix #6: echt berechnet
             avg_trade_size=avg_trade_size,  # Fix #6: echt berechnet
-            latency_ms=getattr(
-                self, "_last_latency_ms", 0.0
-            ),  # wird von execute_trade gesetzt
+            latency_ms=getattr(self, "_last_latency_ms", 0.0),  # wird von execute_trade gesetzt
             uptime_seconds=(datetime.now() - self.monitor.start_time).total_seconds(),
         )
 
@@ -679,9 +663,7 @@ class LiveTrader:
         """Handle monitoring alerts."""
         if alert.level == AlertLevel.EMERGENCY:
             logger.error(f"Emergency alert received: {alert.message}")
-            self.emergency_stop = (
-                True  # immediately halt all new trades on next loop iteration
-            )
+            self.emergency_stop = True  # immediately halt all new trades on next loop iteration
         elif alert.level == AlertLevel.CRITICAL and alert.action_required:
             logger.warning(f"Critical alert: {alert.message}")
             # Could trigger position reduction here (e.g., halve sizes to reduce drawdown)
@@ -721,9 +703,7 @@ class PerformanceReporter:
         start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
         # Filter today's metrics
-        today_metrics = [
-            m for m in self.monitor.metrics_history if m.timestamp > start_of_day
-        ]
+        today_metrics = [m for m in self.monitor.metrics_history if m.timestamp > start_of_day]
 
         if not today_metrics:
             return "No trading data for today"

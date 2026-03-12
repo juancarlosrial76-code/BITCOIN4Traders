@@ -174,23 +174,21 @@ class PPOConfig:
     # Early stopping
     target_kl: float = 0.01
 
-    # GPU Optimierungen (werden nur auf CUDA aktiv, ignoriert auf CPU)
+    # GPU optimizations (only active on CUDA, ignored on CPU)
     use_amp: bool = True  # Mixed Precision (float16 forward, float32 grads)
-    use_compile: bool = False  # torch.compile() — PyTorch 2.x, ~20-40% schneller
-    # Deaktiviert by default (inkompatibel mit GRU auf
-    # aelterem CUDA; aktivieren wenn PyTorch >= 2.1)
+    use_compile: bool = False  # torch.compile() — PyTorch 2.x, ~20-40% faster
+    # Disabled by default (incompatible with GRU on
+    # older CUDA; enable when PyTorch >= 2.1)
 
     # ── Feature 5: Dual-Head Actor ────────────────────────────────────────────
-    # Wenn True: Actor hat zwei Köpfe die denselben GRU-Backbone teilen:
+    # If True: Actor has two heads sharing the same GRU backbone:
     #   Head 1 (direction_head): 3 logits  → {Short, Neutral, Long}
     #   Head 2 (sizing_head):    3 logits  → {Full, Half, Quarter}
-    # Gemeinsam spannen sie einen 3×3=9 Aktionsraum auf, der auf die
-    # ursprünglichen 7 Actions gemappt wird (einige Kombinationen gemergt).
-    # Vorteil: Der Agent lernt Richtung und Größe getrennt → bessere Generalisierung.
-    # Wenn False: klassischer Single-Head Actor (n_actions logits).
-    use_dual_head: bool = (
-        False  # Default off; aktivieren per PPOConfig(use_dual_head=True)
-    )
+    # Together they span a 3×3=9 action space, mapped to the
+    # original 7 actions (some combinations merged).
+    # Advantage: The agent learns direction and size separately → better generalization.
+    # If False: classic single-head actor (n_actions logits).
+    use_dual_head: bool = False  # Default off; enable via PPOConfig(use_dual_head=True)
 
 
 class BaseNetwork(nn.Module):
@@ -308,18 +306,18 @@ class BaseNetwork(nn.Module):
         Forward pass.
         x: (batch_size, state_dim) or (batch_size, seq_len, state_dim)
         """
-        # NaN-Guard auf Input: verhindert NaN-Propagation durch LayerNorm/GRU.
-        # Ursache: einzelne Envs koennen NaN-Observations liefern (z.B. leere
-        # Preishistorie am Episodenanfang). Ein NaN im GRU-Input infiziert den
-        # gesamten hidden state und alle folgenden Schritte.
+        # NaN-Guard on Input: prevents NaN propagation through LayerNorm/GRU.
+        # Cause: some envs can produce NaN observations (e.g., empty
+        # price history at episode start). A NaN in GRU input infects the
+        # entire hidden state and all subsequent steps.
         x = torch.nan_to_num(x, nan=0.0, posinf=1.0, neginf=-1.0)
 
-        # NaN-Guard auf Hidden State: wenn ein vorheriger Schritt NaN produziert
-        # hat (z.B. durch Gradient Explosion), wird der hidden state ebenfalls
-        # infiziert. Hier sanieren wir ihn bevor er ins GRU geht.
+        # NaN-Guard on Hidden State: if a previous step produced NaN
+        # (e.g., due to gradient explosion), the hidden state also gets
+        # infected. Here we sanitize it before it goes into GRU.
         if hidden is not None:
             if isinstance(hidden, tuple):
-                # LSTM: (h, c) beide sanieren
+                # LSTM: (h, c) sanitize both
                 hidden = tuple(
                     torch.nan_to_num(h, nan=0.0, posinf=1.0, neginf=-1.0)
                     for h in hidden
@@ -394,13 +392,13 @@ class ActorNetwork(BaseNetwork):
         self, state: torch.Tensor, hidden: Optional[Union[Tuple, torch.Tensor]] = None
     ) -> Tuple[Categorical, Optional[Union[Tuple, torch.Tensor]]]:
         logits, next_hidden = super().forward(state, hidden)
-        # Cast to float32: AMP autocast produziert float16-logits, Categorical
-        # validate_args schlaegt dann fehl (IndependentConstraint). float32 cast
-        # loest das ohne die AMP-Performance-Vorteile zu verlieren.
+        # Cast to float32: AMP autocast produces float16 logits, Categorical
+        # validate_args then fails (IndependentConstraint). The float32 cast
+        # fixes this without losing AMP performance benefits.
         logits = logits.float()
-        # Finaler NaN-Guard: falls trotz Input-Sanierung NaNs durch LayerNorm
-        # oder GRU entstehen (z.B. bei Gradient Explosion), ersetzt durch 0.0
-        # (gleichmaessige Verteilung ueber alle Aktionen — sicherer Fallback).
+        # Final NaN-Guard: if despite input sanitization NaNs emerge from LayerNorm
+        # or GRU (e.g., gradient explosion), replace with 0.0
+        # (uniform distribution over all actions — safe fallback).
         if torch.isnan(logits).any() or torch.isinf(logits).any():
             logits = torch.nan_to_num(logits, nan=0.0, posinf=10.0, neginf=-10.0)
         return Categorical(logits=logits), next_hidden
@@ -410,28 +408,28 @@ class DualHeadActorNetwork(nn.Module):
     """
     Feature 5: Dual-Head Actor Network.
 
-    Teilt den Aktionsraum in zwei orthogonale Entscheidungen:
+    Splits the action space into two orthogonal decisions:
       - Direction Head (3 logits): Short | Neutral | Long
       - Sizing Head   (3 logits): Full (100%) | Half (50%) | Quarter (33%)
 
-    Beide Köpfe teilen denselben GRU-Backbone (feature_extractor + rnn).
-    Die Kombination ergibt einen 3×3=9 kombinierten Aktionsraum, der
-    per DIRECTION_SIZE_TO_ACTION auf die 7 originalen Actions gemappt wird.
+    Both heads share the same GRU backbone (feature_extractor + rnn).
+    The combination results in a 3x3=9 combined action space, which is
+    mapped via DIRECTION_SIZE_TO_ACTION to the 7 original actions.
 
     Mapping:
-        Short+Full    → Action 0  (Short 100%)
-        Short+Half    → Action 1  (Short 50%)
-        Short+Quarter → Action 1  (Short 50%, merge)
-        Neutral+*     → Action 2  (Neutral, ignore size)
-        Long+Quarter  → Action 3  (Long 33%)
-        Long+Half     → Action 4  (Long 50%)
-        Long+Full     → Action 6  (Long 100%)
-        Long+*        → Action 5  (Long 75%, catch-all)
+        Short+Full    -> Action 0  (Short 100%)
+        Short+Half    -> Action 1  (Short 50%)
+        Short+Quarter -> Action 1  (Short 50%, merge)
+        Neutral+*     -> Action 2  (Neutral, ignore size)
+        Long+Quarter  -> Action 3  (Long 33%)
+        Long+Half     -> Action 4  (Long 50%)
+        Long+Full     -> Action 6  (Long 100%)
+        Long+*        -> Action 5  (Long 75%, catch-all)
 
-    Vorteil gegenüber Single-Head:
-    - Agent lernt Richtung und Größe GETRENNT → mehr Training-Signal
-    - Generalisiert besser: z.B. "Long gelernt" + "Full gelernt" = sofort nutzbar
-    - Weniger Aktionen pro Kopf → schnellere Konvergenz
+    Advantage over Single-Head:
+    - Agent learns direction and size SEPARATELY -> more training signal
+    - Generalizes better: e.g., "Long learned" + "Full learned" = immediately usable
+    - Fewer actions per head -> faster convergence
     """
 
     # Mapping: (direction_idx, size_idx) → original action (0-6)
@@ -661,8 +659,8 @@ class PPOAgent:
         self.device = device
 
         # ── Feature 5: Dual-Head Actor ─────────────────────────────────────────
-        # Wenn use_dual_head=True: DualHeadActorNetwork (Direction × Sizing)
-        # Sonst: klassischer Single-Head ActorNetwork
+        # If use_dual_head=True: DualHeadActorNetwork (Direction x Sizing)
+        # Otherwise: classic single-head ActorNetwork
         if getattr(config, "use_dual_head", False):
             self.actor = DualHeadActorNetwork(config).to(device)
             logger.info("  Actor: DualHeadActorNetwork (Direction × Sizing)")
@@ -670,28 +668,26 @@ class PPOAgent:
             self.actor = ActorNetwork(config).to(device)
         self.critic = CriticNetwork(config).to(device)
 
-        # ── GPU Optimierung: torch.compile() ────────────────────────────────
-        # Kompiliert den Computation-Graph einmalig → ~20-40% schneller auf T4/A100.
-        # Nur sinnvoll auf CUDA mit PyTorch >= 2.1. Beim ersten Call etwas langsamer
-        # (warmup), danach dauerhaft schneller.
+        # GPU Optimization: torch.compile()
+        # Compiles the computation graph once -> ~20-40% faster on T4/A100.
+        # Only useful on CUDA with PyTorch >= 2.1. First call is slightly slower
+        # (warmup), then permanently faster.
         _on_cuda = device.startswith("cuda") or device == "cuda"
         if config.use_compile and _on_cuda:
             try:
                 self.actor = torch.compile(self.actor, mode="reduce-overhead")
                 self.critic = torch.compile(self.critic, mode="reduce-overhead")
-                logger.info("  torch.compile() aktiv (mode='reduce-overhead')")
+                logger.info("  torch.compile() active (mode='reduce-overhead')")
             except Exception as e:
-                logger.warning(
-                    f"  torch.compile() fehlgeschlagen, fahre ohne fort: {e}"
-                )
+                logger.warning(f"  torch.compile() failed, continuing without: {e}")
 
-        # ── GPU Optimierung: AMP GradScaler ─────────────────────────────────
-        # GradScaler skaliert den Loss um numerische Underflows in float16 zu vermeiden.
-        # Automatisch deaktiviert wenn nicht auf CUDA oder use_amp=False.
+        # GPU Optimization: AMP GradScaler
+        # GradScaler scales the loss to avoid numerical underflows in float16.
+        # Automatically disabled if not on CUDA or use_amp=False.
         self._amp_enabled = config.use_amp and _on_cuda
         self._scaler = torch.cuda.amp.GradScaler(enabled=self._amp_enabled)
         if self._amp_enabled:
-            logger.info("  Mixed Precision (AMP) aktiv — forward pass in float16")
+            logger.info("  Mixed Precision (AMP) active — forward pass in float16")
 
         # Optimizers & Schedulers
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=config.actor_lr)
@@ -787,7 +783,7 @@ class PPOAgent:
         Select action given state.
         Returns: action, log_prob, value, next_hidden
         """
-        # NaN-Guard: ersetze NaN/Inf in Observations bevor sie ins Netz gehen.
+        # NaN-Guard: replace NaN/Inf in observations before they go into the network.
         state = np.nan_to_num(
             np.asarray(state, dtype=np.float32), nan=0.0, posinf=1.0, neginf=-1.0
         )
@@ -802,15 +798,15 @@ class PPOAgent:
             self.critic.eval()
 
         with torch.no_grad():
-            # AMP: Inference laeuft in float16 auf GPU (~1.7x schneller auf T4/A100).
-            # torch.cuda.amp.autocast ist identisch mit torch.amp.autocast("cuda")
-            # und funktioniert auf allen PyTorch-Versionen >= 1.9.
-            # Auf CPU: autocast(enabled=False) → kein Overhead.
+            # AMP: Inference runs in float16 on GPU (~1.7x faster on T4/A100).
+            # torch.cuda.amp.autocast is identical to torch.amp.autocast("cuda")
+            # and works on all PyTorch versions >= 1.9.
+            # On CPU: autocast(enabled=False) -> no overhead.
             with torch.cuda.amp.autocast(enabled=self._amp_enabled):
-                # Actor forward pass: liefert Action-Distribution + naechsten Hidden State
+                # Actor forward pass: delivers action distribution + next hidden state
                 dist, next_hidden_actor = self.actor(state_tensor, hidden)
 
-                # Critic forward pass: bekommt denselben Hidden State wie der Actor.
+                # Critic forward pass: gets the same hidden state as the actor.
                 value, _ = self.critic(state_tensor, hidden)
 
             if deterministic:
@@ -861,12 +857,12 @@ class PPOAgent:
         values    : np.ndarray  shape (N,)   float — V(s) per env
         next_hidden : same type/shape as hidden — updated recurrent state
         """
-        # (N, state_dim) → GPU
-        # NaN-Guard: ersetze NaN/Inf in Observations bevor sie ins Netz gehen.
-        # Ursache: Feature-Engine liefert bei sehr kleinen Datensaetzen (< lookback)
-        # NaNs die durch das GRU propagieren und alle Logits auf NaN setzen.
-        # states kann ein CUDA-Tensor sein (obs_gpu aus collect_trajectories_vec) —
-        # np.nan_to_num wirft dann TypeError. Deshalb: Tensor-Pfad separat behandeln.
+        # (N, state_dim) -> GPU
+        # NaN-Guard: replace NaN/Inf in observations before they go into the network.
+        # Cause: Feature engine produces NaNs on very small datasets (< lookback)
+        # that propagate through GRU and set all logits to NaN.
+        # states can be a CUDA tensor (obs_gpu from collect_trajectories_vec) --
+        # np.nan_to_num then throws TypeError. Therefore: handle tensor path separately.
         if isinstance(states, torch.Tensor):
             state_tensor = states.to(dtype=torch.float32, device=self.device)
             state_tensor = torch.nan_to_num(
@@ -1138,10 +1134,10 @@ class PPOAgent:
         # bei kleinen Datensaetzen (< lookback-Fenster) NaN produziert.
         _states_raw = np.nan_to_num(_states_raw, nan=0.0, posinf=1.0, neginf=-1.0)
 
-        # Convert to tensors — mit Pinned Memory für schnelleren CPU→GPU Transfer.
-        # Wenn pre-alloc aktiv: numpy arrays sind bereits contiguous float32 → kein
-        # np.array() Kopier-Overhead mehr. torch.from_numpy() referenziert denselben
-        # Speicher (zero-copy), pin_memory() pinnt dann in-place.
+        # Convert to tensors — with Pinned Memory for faster CPU->GPU transfer.
+        # When pre-alloc is active: numpy arrays are already contiguous float32 ->
+        # no np.array() copy overhead anymore. torch.from_numpy() references the same
+        # memory (zero-copy), pin_memory() then pins in-place.
         _pin = self._amp_enabled
 
         def _to_tensor_f32(arr: np.ndarray) -> torch.Tensor:
@@ -1198,13 +1194,13 @@ class PPOAgent:
         kl_divergences = []
 
         for epoch in range(self.config.n_epochs):
-            # Fix #5: Recurrent PPO braucht SEQUENTIELLE Mini-Batches.
-            # Shuffling zerstoert die Zeitreihen-Reihenfolge und macht GRU-BPTT
-            # bedeutungslos (Gradient fliesst durch zufaellige Zustaende).
-            # Fuer MLP-Policies (use_recurrent=False) ist Shuffling weiterhin OK.
+            # Fix #5: Recurrent PPO needs SEQUENTIAL mini-batches.
+            # Shuffling destroys the time-series order and makes GRU-BPTT
+            # meaningless (gradient flows through random states).
+            # For MLP policies (use_recurrent=False) shuffling is still OK.
             if not self.config.use_recurrent:
                 np.random.shuffle(indices)
-            # Bei GRU/LSTM: Indices bleiben in zeitlicher Reihenfolge (0,1,...,T)
+            # For GRU/LSTM: indices stay in temporal order (0,1,...,T)
             epoch_kls = []  # KL only measured for this epoch (not cumulative)
 
             for start_idx in range(0, dataset_size, self.config.batch_size):

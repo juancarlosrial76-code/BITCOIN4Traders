@@ -1,0 +1,152 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# GitHub Actions: colab-rl-bridge → PyPI
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# TRIGGER: Git-Tag mit Muster v*.*.* (z.B. v1.0.0, v1.1.2)
+#
+# EINMALIGE EINRICHTUNG (einmal, dann automatisch):
+# 1. PyPI Account erstellen: https://pypi.org/account/register/
+# 2. PyPI API Token erstellen: https://pypi.org/manage/account/token/
+#    (Scope: "Entire account" beim ersten Mal, danach "Project: colab-rl-bridge")
+# 3. GitHub Secret setzen:
+#    Repo → Settings → Secrets and variables → Actions → New repository secret
+#    Name:  PYPI_API_TOKEN
+#    Value: pypi-AgEIcHlwaS5vcmc...  (den ganzen Token)
+#
+# RELEASE ERSTELLEN:
+#   git tag v1.0.0
+#   git push origin v1.0.0
+#   → GitHub Actions publiziert automatisch zu PyPI
+#
+# DANACH INSTALLIERBAR MIT:
+#   pip install colab-rl-bridge
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Publish colab-rl-bridge to PyPI
+
+on:
+  push:
+    tags:
+      - "v*.*.*"   # Nur bei vX.Y.Z Tags
+
+jobs:
+  # ── Job 1: Tests laufen lassen (Sicherheitsnetz) ──────────────────────────
+  test:
+    name: Run tests before publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install colab_bridge + test deps
+        run: |
+          pip install --upgrade pip
+          pip install ".[dev]" numpy pandas loguru httpx
+
+      - name: Run colab_bridge tests
+        run: |
+          # Nur colab_bridge Tests — nicht das gesamte Projekt
+          if [ -d "tests/colab_bridge" ]; then
+            python -m pytest tests/colab_bridge/ -v --tb=short
+          else
+            echo "Keine Tests gefunden — Basis-Import-Test"
+            python -c "from colab_bridge import bt4t, classify_error; print('Import OK')"
+          fi
+
+  # ── Job 2: Build + Publish zu PyPI ────────────────────────────────────────
+  publish:
+    name: Build and publish to PyPI
+    runs-on: ubuntu-latest
+    needs: test   # Nur wenn tests bestanden
+
+    environment:
+      name: pypi
+      url: https://pypi.org/project/colab-rl-bridge/
+
+    permissions:
+      id-token: write   # Für Trusted Publishing (alternativ zu API Token)
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build tools
+        run: |
+          pip install --upgrade pip build twine
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          echo "VERSION=$TAG" >> $GITHUB_ENV
+          echo "Tag: $TAG"
+
+      - name: Verify pyproject.toml version matches tag
+        run: |
+          TOML_VER=$(python -c "
+          import tomllib
+          with open('pyproject.toml', 'rb') as f:
+              d = tomllib.load(f)
+          print(d['project']['version'])
+          ")
+          echo "pyproject.toml version: $TOML_VER"
+          echo "Git tag version: $VERSION"
+          if [ "$TOML_VER" != "$VERSION" ]; then
+            echo "FEHLER: pyproject.toml version ($TOML_VER) != Git tag ($VERSION)"
+            echo "Bitte pyproject.toml version aktualisieren vor dem Tag."
+            exit 1
+          fi
+
+      - name: Build distribution packages
+        run: |
+          python -m build
+          echo "Erstellte Pakete:"
+          ls -lh dist/
+
+      - name: Check distribution with twine
+        run: |
+          twine check dist/*
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Option A: API Token (empfohlen für Anfänger)
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          # Option B: Trusted Publishing (kein Secret nötig, aber PyPI-Setup nötig)
+          # Einfach password-Zeile löschen und auf PyPI "Trusted Publisher" einrichten
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "colab-rl-bridge v${{ env.VERSION }}"
+          body: |
+            ## colab-rl-bridge v${{ env.VERSION }}
+
+            ### Installation
+            ```bash
+            pip install colab-rl-bridge==${{ env.VERSION }}
+            # Mit Ably + CCXT (lokaler Rechner):
+            pip install "colab-rl-bridge[local]==${{ env.VERSION }}"
+            ```
+
+            ### Verwendung in Colab
+            ```python
+            from colab_bridge.colab_extension import bt4t
+            bt4t.install()
+            ```
+
+            Vollständige Dokumentation: [DOKUMENTATION.md](https://github.com/juancarlosrial76-code/BITCOIN4Traders/blob/main/colab_bridge/DOKUMENTATION.md)
+          files: dist/*
+          draft: false
+          prerelease: false

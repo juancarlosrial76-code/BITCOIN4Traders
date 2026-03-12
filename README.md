@@ -4,10 +4,57 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![PyPI: colab-rl-bridge](https://img.shields.io/pypi/v/colab-rl-bridge.svg)](https://pypi.org/project/colab-rl-bridge/)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/juancarlosrial76-code/BITCOIN4Traders/blob/main/BITCOIN4Traders_Colab.ipynb)
 
 A complete end-to-end trading system implementing state-of-the-art Deep Reinforcement Learning (DRL) with comprehensive risk management and anti-bias validation framework.
+
+---
+
+## colab-rl-bridge — PyPI Paket
+
+Der `colab_bridge/` Ordner ist als eigenständiges PyPI-Paket verfügbar:
+
+```bash
+pip install colab-rl-bridge                  # Basis
+pip install "colab-rl-bridge[local]"         # + ably + ccxt (lokaler Rechner)
+pip install "colab-rl-bridge[server]"        # + fastapi + uvicorn (Control-Server)
+pip install "colab-rl-bridge[all]"           # Alles
+```
+
+### Schnellstart (Colab — erste Zelle)
+
+```python
+import sys, os
+sys.path.insert(0, '/content/drive/MyDrive/BITCOIN4Traders')
+
+os.environ['BT4T_LISTENER_URL'] = 'https://deine-url.trycloudflare.com'
+os.environ['BT4T_API_TOKEN']    = 'bt4t-secret-token'
+os.environ['BT4T_NOTEBOOK_ID']  = 'training_v1'
+
+from colab_bridge.colab_extension import bt4t
+bt4t.install()
+
+# Normaler Training-Loop — nur bt4t.step() hinzufügen:
+for epoch in range(100):
+    loss = train_one_epoch(model, data)
+    if not bt4t.step(epoch=epoch, loss=float(loss)):
+        break  # STOP-Befehl vom lokalen Rechner empfangen
+```
+
+### Was colab-rl-bridge macht
+
+| Feature | Beschreibung |
+|---------|-------------|
+| **Automatische Fehlerbehandlung** | Fängt OOM / NaN-Loss / CUDA-Fehler — repariert Batch-Size / LR im laufenden Prozess |
+| **Fernsteuerung** | PAUSE / RESUME / STOP / CHANGE_LR vom lokalen Rechner aus |
+| **Session-Keepalive** | Verhindert Colab-Timeout durch echte Compute-Aufgaben alle 10 Min |
+| **GPU-Monitor** | Prophylaktische Bereinigung bei >85% GPU-Speicher |
+| **4 Transporte** | Ably (50ms) / Redis (30ms) / Telegram / Google Drive als Fallback |
+| **Modell-Support** | Darwin-Champion (.pkl) / PyTorch (.pth) / Stable-Baselines3 (.zip) / RSI-Fallback |
+
+Vollständige Dokumentation: [colab_bridge/DOKUMENTATION.md](colab_bridge/DOKUMENTATION.md)
 
 ---
 

@@ -81,35 +81,35 @@ from dataclasses import dataclass
 # ============================================================================
 # PERFORMANCE-TIER SYSTEM
 # ============================================================================
-# Das System wählt automatisch die optimale Berechnungsmethode basierend auf
-# der Datenmenge. Drei Tiers:
+# The system automatically selects the optimal computation method based on
+# data size. Three tiers:
 #
-#   TIER 1 — PANDAS   (< 10.000 Zeilen)
-#     Methode : pandas rolling() / ewm()
-#     Wann    : Colab-Training, kleine Datensätze, schnelles Prototyping
-#     Vorteil : Kein Compile-Overhead, sofort startklar
-#     Nachteil: Langsamer bei grossen Daten
+#   TIER 1 — PANDAS   (< 10,000 rows)
+#     Method : pandas rolling() / ewm()
+#     When    : Colab training, small datasets, fast prototyping
+#     Advantage: No compile overhead, immediately ready
+#     Disadvantage: Slower on large data
 #
-#   TIER 2 — NUMPY    (10.000 – 100.000 Zeilen)
-#     Methode : Vektorisierte numpy-Operationen (stride tricks)
-#     Wann    : Mittlere Datensätze, CPU-only Server
-#     Vorteil : ~3-5x schneller als pandas, kein Compile
-#     Nachteil: Höherer RAM-Verbrauch durch Broadcasting
+#   TIER 2 — NUMPY    (10,000 – 100,000 rows)
+#     Method : Vectorized numpy operations (stride tricks)
+#     When    : Medium datasets, CPU-only server
+#     Advantage: ~3-5x faster than pandas, no compile
+#     Disadvantage: Higher RAM usage through broadcasting
 #
-#   TIER 3 — NUMBA    (> 100.000 Zeilen)
-#     Methode : @jit(nopython=True, cache=True) JIT-kompilierte Loops
-#     Wann    : Grosse historische Daten (Tick-Daten, Multi-Asset)
-#     Vorteil : ~10-20x schneller als pandas, cache=True nach erstem Run
-#     Nachteil: Erste Kompilierung dauert 15-20 Min (danach gecacht)
-#               → NIEMALS auf frischer Colab-Instanz ohne Warmup aktivieren
+#   TIER 3 — NUMBA    (> 100,000 rows)
+#     Method : @jit(nopython=True, cache=True) JIT-compiled loops
+#     When    : Large historical data (tick data, multi-asset)
+#     Advantage: ~10-20x faster than pandas, cache=True after first run
+#     Disadvantage: First compilation takes 15-20 min (then cached)
+#               → NEVER activate on fresh Colab instance without warmup
 #
-# Schwellenwerte (anpassbar):
-PERF_TIER_PANDAS_MAX = 10_000  # < 10k  Zeilen → Tier 1 (pandas)
-PERF_TIER_NUMPY_MAX = 100_000  # < 100k Zeilen → Tier 2 (numpy)
-# >= 100k Zeilen → Tier 3 (numba) — nur wenn NUMBA_AVAILABLE = True
+# Thresholds (adjustable):
+PERF_TIER_PANDAS_MAX = 10_000  # < 10k  rows -> Tier 1 (pandas)
+PERF_TIER_NUMPY_MAX = 100_000  # < 100k rows -> Tier 2 (numpy)
+# >= 100k rows -> Tier 3 (numba) — only if NUMBA_AVAILABLE = True
 #
-# Numba wird LAZY geladen — nur wenn tatsächlich gebraucht (>= 100k Zeilen).
-# Kein Import beim Start → kein Compile-Overhead auf kleinen Daten.
+# Numba is loaded LAZY — only when actually needed (>= 100k rows).
+# No import at startup -> no compile overhead on small data.
 # ============================================================================
 
 

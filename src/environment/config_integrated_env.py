@@ -116,8 +116,8 @@ from src.risk.risk_manager import RiskManager, RiskConfig
 from src.risk.risk_metrics_logger import RiskMetricsLogger
 from src.reward.antibias_rewards import RegimeAwareReward, RegimeState
 
-# Feature 2: HMM Regime-Wahrscheinlichkeiten als Observation
-# Optionaler Import — graceful fallback wenn hmmlearn nicht installiert
+# Feature 2: HMM Regime Probabilities as Observation
+# Optional import — graceful fallback when hmmlearn is not installed
 try:
     from src.math_tools.hmm_regime import HMMRegimeDetector, prepare_hmm_features
 
@@ -240,8 +240,8 @@ class ConfigIntegratedTradingEnv(gym.Env):
         # Initialize Risk Management (Phase 4)
         self._init_risk_management()
 
-        # ── Feature 2: HMM Regime-Wahrscheinlichkeiten ────────────────────────
-        # MUSS vor _init_spaces() stehen, da _init_spaces() n_hmm berechnet.
+        # ── Feature 2: HMM Regime Probabilities ────────────────────────
+        # MUST be before _init_spaces() since _init_spaces() calculates n_hmm.
         self._hmm_detector = None
         self._hmm_probs_raw = None
         self._hmm_index_map = None
@@ -250,12 +250,12 @@ class ConfigIntegratedTradingEnv(gym.Env):
         else:
             logger.debug("HMM regime features: disabled")
 
-        # Initialize spaces (nutzt self._hmm_detector für n_hmm)
+        # Initialize spaces (uses self._hmm_detector for n_hmm)
         self._init_spaces()
 
-        # Regime-Aware Reward (verdrahtet aus antibias_rewards.py)
-        # Ersetzt bzw. ergaenzt die 'regime_reward' Komponente in der YAML-Config.
-        # Erkennt automatisch ob 'regime_reward' in config.reward.components steht.
+        # Regime-Aware Reward (wired from antibias_rewards.py)
+        # Replaces/extends the 'regime_reward' component in YAML config.
+        # Automatically detects if 'regime_reward' is in config.reward.components.
         self._has_regime_reward = any(
             c.name == "regime_reward" for c in self.config.reward.components
         )
@@ -274,8 +274,8 @@ class ConfigIntegratedTradingEnv(gym.Env):
                 "  Regime-Aware Reward: inaktiv (kein 'regime_reward' in config)"
             )
 
-        # Curriculum Learning: erlaubte Actions (None = alle erlaubt)
-        # Gesetzt via env.set_allowed_actions([3,4,5,6]) fuer Long-only Phase
+        # Curriculum Learning: allowed Actions (None = all allowed)
+        # Set via env.set_allowed_actions([3,4,5,6]) for Long-only phase
         self._allowed_actions: Optional[list] = None
 
         # Episode state
@@ -941,13 +941,12 @@ class ConfigIntegratedTradingEnv(gym.Env):
                 components_values["transaction_cost"] = -cost_penalty * comp.weight
 
             elif comp.name == "regime_reward":
-                # Regime-Aware Reward: belohnt Long in Bullen-Phasen,
-                # Short in Baeren-Phasen. Bestraft Gegenteil.
-                # Loest den "100% Short" Policy-Kollaps durch Marktbias.
+                # Regime-Aware Reward: rewards Long in Bull phases, Short in Bear phases.
+                # Penalizes opposite. Solves the "100% Short" policy collapse due to market bias.
                 pnl = current_equity - old_equity
                 cost_this_bar = trade_info.get("cost", 0.0)
 
-                # Regime-State aus aktuellem MarketRegime ableiten
+                # Derive regime state from current MarketRegime
                 regime_name = self.current_regime.name.lower()
                 if "bull" in regime_name or "up" in regime_name:
                     regime_int = 2
@@ -956,7 +955,7 @@ class ConfigIntegratedTradingEnv(gym.Env):
                 else:
                     regime_int = 1  # neutral
 
-                # Trendstaerke aus Volatilitaet approximieren (hoehere Vol = staerkerer Trend)
+                # Approximate trend strength from volatility (higher Vol = stronger trend)
                 trend_strength = min(1.0, self.current_regime.volatility / 0.04)
 
                 regime_state = RegimeState(
@@ -1076,11 +1075,11 @@ class ConfigIntegratedTradingEnv(gym.Env):
             ]
         )
 
-        # ── Feature 2: HMM Regime-Wahrscheinlichkeiten ────────────────────────
-        # [p_regime_0, p_regime_1, p_regime_2] — summt auf 1.0
-        # Gibt dem Agenten die explizite Regime-Unsicherheit:
-        # z.B. [0.9, 0.05, 0.05] = sehr sicherer Bull-Markt
-        #      [0.34, 0.33, 0.33] = unklares Regime → kleinere Position
+        # ── Feature 2: HMM Regime Probabilities ────────────────────────
+        # [p_regime_0, p_regime_1, p_regime_2] — sums to 1.0
+        # Gives the agent explicit regime uncertainty:
+        # e.g. [0.9, 0.05, 0.05] = very confident Bull market
+        #      [0.34, 0.33, 0.33] = unclear regime → smaller position
         hmm_probs = self._get_hmm_probs()  # (3,) float32
 
         obs = np.concatenate([feature_values, additional, hmm_probs])
@@ -1138,14 +1137,14 @@ class ConfigIntegratedTradingEnv(gym.Env):
 
     def set_allowed_actions(self, allowed: Optional[list]) -> None:
         """
-        Curriculum Learning: Schraenkt den Action-Space ein.
+        Curriculum Learning: Restricts the action space.
 
-        Ermoeglicht phasenweises Training:
+        Enables phased training:
           Phase 1 (Long only):  env.set_allowed_actions([3, 4, 5, 6])
           Phase 2 (Short only): env.set_allowed_actions([0, 1])
-          Phase 3 (alle):       env.set_allowed_actions(None)
+          Phase 3 (all):       env.set_allowed_actions(None)
 
-        Action-Bedeutung (7 diskrete Positionen):
+        Action meaning (7 discrete positions):
           0: Short 100%  1: Short 50%
           2: Neutral
           3: Long 33%    4: Long 50%    5: Long 75%    6: Long 100%
@@ -1153,30 +1152,30 @@ class ConfigIntegratedTradingEnv(gym.Env):
         Parameters
         ----------
         allowed : list[int] | None
-            Liste erlaubter Action-Indizes. None = alle erlaubt.
+            List of allowed action indices. None = all allowed.
         """
         self._allowed_actions = allowed
         if allowed is not None:
             logger.info(f"Curriculum: allowed_actions={sorted(allowed)}")
         else:
-            logger.info("Curriculum: alle Actions erlaubt (Phase abgeschlossen)")
+            logger.info("Curriculum: all actions allowed (phase completed)")
 
     def _apply_action_mask(self, action: int) -> int:
         """
-        Mappt eine nicht-erlaubte Action auf die naechstgelegene erlaubte.
+        Maps a non-allowed action to the nearest allowed action.
 
-        Strategie: minimale Abweichung (abs(action - candidate)).
-        Bei Gleichstand wird die hoehere Action (Long-Bias) bevorzugt.
+        Strategy: minimal deviation (abs(action - candidate)).
+        On tie, higher action (Long bias) is preferred.
         """
         if self._allowed_actions is None:
             return action
         if action in self._allowed_actions:
             return action
-        # Naechstgelegene erlaubte Action
+        # Nearest allowed action
         return min(self._allowed_actions, key=lambda a: (abs(a - action), -a))
 
     def get_curriculum_info(self) -> dict:
-        """Gibt Curriculum-Status zurueck (fuer Logging/Dashboard)."""
+        """Returns curriculum status (for logging/dashboard)."""
         return {
             "allowed_actions": self._allowed_actions,
             "n_allowed": len(self._allowed_actions) if self._allowed_actions else 7,

@@ -509,24 +509,24 @@ def prepare_hmm_features(price_data: pd.DataFrame, lookback: int = 20) -> pd.Dat
     # Volatility
     df["volatility_20"] = df["returns"].rolling(lookback).std()
 
-    # Volume change — pct_change() produziert inf wenn volume[t-1]==0
+    # Volume change — pct_change() produces inf if volume[t-1]==0
     df["volume_change"] = df["volume"].pct_change()
 
-    # Range (high-low normalized by close) — inf wenn close==0
-    # Sichere Division: close==0 wird zu NaN, dann durch dropna() entfernt
+    # Range (high-low normalized by close) — inf if close==0
+    # Safe division: close==0 becomes NaN, then removed by dropna()
     df["range"] = (df["high"] - df["low"]) / df["close"].replace(0, np.nan)
 
-    # Drop NaN (entfernt Warmup-Zeilen)
+    # Drop NaN (removes warmup rows)
     df = df.dropna()
 
-    # Inf-Bereinigung: pct_change mit volume=0 produziert inf (isnan(inf)==False!)
-    # clip() begrenzt extreme Werte auf ±10 Standardabweichungen
+    # Inf cleanup: pct_change with volume=0 produces inf (isnan(inf)==False!)
+    # clip() limits extreme values to ±10 standard deviations
     feat_cols = ["returns", "volatility_20", "volume_change", "range"]
     for col in feat_cols:
         col_std = df[col].std()
         if col_std > 0:
             df[col] = df[col].clip(lower=-10 * col_std, upper=10 * col_std)
-    # Verbleibende inf/nan (falls std=0) auf 0 setzen
+    # Set remaining inf/nan (if std=0) to 0
     df[feat_cols] = df[feat_cols].replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
     return df[feat_cols]

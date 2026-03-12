@@ -31,7 +31,14 @@ export const api = {
   status: () => fetchApi<{ status: string; timestamp: string; version: string }>('/api/status'),
   
   trading: {
-    getStatus: () => fetchApi<{ is_running: boolean; current_position: number; unrealized_pnl: number; timestamp: string }>('/api/trading/status'),
+    getStatus: () => fetchApi<{ 
+      is_running: boolean; 
+      current_position: number; 
+      unrealized_pnl: number; 
+      timestamp: string;
+      champion_signal?: string;
+      champion_name?: string;
+    }>('/api/trading/status'),
     start: () => fetchApi<{ status: string; timestamp: string }>('/api/trading/start', { method: 'POST' }),
     stop: () => fetchApi<{ status: string; timestamp: string }>('/api/trading/stop', { method: 'POST' }),
     getOrders: () => fetchApi<any[]>('/api/trading/orders'),
@@ -39,6 +46,7 @@ export const api = {
       fetchApi<any>('/api/trading/order', { method: 'POST', body: JSON.stringify(order) }),
     getConfig: () => fetchApi<any>('/api/trading/config'),
     updateConfig: (config: any) => fetchApi<any>('/api/trading/config', { method: 'PUT', body: JSON.stringify(config) }),
+    getBalance: () => fetchApi<{ balance: { USDT: number; BTC: number }; mode: string }>('/api/trading/balance'),
   },
 
   config: {

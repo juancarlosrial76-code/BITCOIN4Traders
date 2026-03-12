@@ -230,9 +230,7 @@ class SharpeIncrementReward(BaseReward):
         self._ret_buf: deque = deque(maxlen=window)
         self._peak_equity: float = 0.0
 
-    def compute(
-        self, pnl, position, prev_position, equity, cost_this_bar, **kwargs
-    ) -> float:
+    def compute(self, pnl, position, prev_position, equity, cost_this_bar, **kwargs) -> float:
         """
         Compute Sharpe increment reward for current step.
 
@@ -320,9 +318,7 @@ class CalmarIncrementReward(BaseReward):
         self._equity_buf: deque = deque(maxlen=window)
         self._peak: float = 0.0
 
-    def compute(
-        self, pnl, position, prev_position, equity, cost_this_bar, **kwargs
-    ) -> float:
+    def compute(self, pnl, position, prev_position, equity, cost_this_bar, **kwargs) -> float:
         """
         Compute Calmar increment reward.
 
@@ -446,9 +442,7 @@ class CostAwareReward(BaseReward):
         self._peak_equity: float = 1.0
         self._trade_count: int = 0
 
-    def compute(
-        self, pnl, position, prev_position, equity, cost_this_bar, **kwargs
-    ) -> float:
+    def compute(self, pnl, position, prev_position, equity, cost_this_bar, **kwargs) -> float:
         """
         Compute cost-aware reward.
 
@@ -618,9 +612,7 @@ class RegimeAwareReward(BaseReward):
         """
         self._regime = regime
 
-    def compute(
-        self, pnl, position, prev_position, equity, cost_this_bar, **kwargs
-    ) -> float:
+    def compute(self, pnl, position, prev_position, equity, cost_this_bar, **kwargs) -> float:
         """
         Compute regime-aware reward.
 
@@ -643,9 +635,7 @@ class RegimeAwareReward(BaseReward):
             Combined reward, clipped to ±5 range.
         """
         # Calculate Sharpe increment component
-        sharpe_inc = self._sharpe.compute(
-            pnl, position, prev_position, equity, cost_this_bar
-        )
+        sharpe_inc = self._sharpe.compute(pnl, position, prev_position, equity, cost_this_bar)
 
         # Position change for cost penalty
         position_change = abs(position - prev_position)
@@ -655,17 +645,17 @@ class RegimeAwareReward(BaseReward):
         self._peak = max(self._peak, equity)
         drawdown = max(0, (self._peak - equity) / (self._peak + 1e-8))
 
-        # Quadratischer Drawdown-Penalty (exponent=2.0, lambda=5.0)
+        # Quadratic drawdown penalty (exponent=2.0, lambda=5.0)
         #
-        # Skalenvergleich vs. früherer Variante (exponent=1.5, lambda=3.0):
-        #   DD=5%:  neu=5.0*0.05^2=0.0125  alt=3.0*0.05^1.5=0.0336  → milder
-        #   DD=20%: neu=5.0*0.20^2=0.2000  alt=3.0*0.20^1.5=0.2683  → milder
-        #   DD=36%: Crossover-Punkt — ab hier ist ^2 strenger als ^1.5
-        #   DD=50%: neu=5.0*0.50^2=1.25    alt=3.0*0.50^1.5=1.061   → strenger
+        # Scale comparison vs. previous version (exponent=1.5, lambda=3.0):
+        #   DD=5%:  new=5.0*0.05^2=0.0125  old=3.0*0.05^1.5=0.0336  → milder
+        #   DD=20%: new=5.0*0.20^2=0.2000  old=3.0*0.20^1.5=0.2683  → milder
+        #   DD=36%: Crossover point — from here ^2 is stricter than ^1.5
+        #   DD=50%: new=5.0*0.50^2=1.25    old=3.0*0.50^1.5=1.061   → stricter
         #
-        # Design-Entscheidung: toleranter bei kleinen Drawdowns (<36%),
-        # strenger bei extremen Drawdowns (>36%). Dies passt zum Crypto-Kontext
-        # (hohe Volatilität erfordert Toleranz für kurze Dips).
+        # Design decision: more tolerant at small drawdowns (<36%),
+        # stricter at extreme drawdowns (>36%). This fits the crypto context
+        # (high volatility requires tolerance for short dips).
         draw_penalty = self.lambda_draw * (drawdown**2.0)
 
         # Regime bonus/penalty

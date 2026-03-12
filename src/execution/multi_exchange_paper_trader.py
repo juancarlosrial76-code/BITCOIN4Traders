@@ -1,11 +1,11 @@
 """
 Multi-Exchange Paper Trading Engine
-=====================================
-Verbindet KuCoin, Binance und Bybit gleichzeitig via ccxt im Paper-Trading
-Modus.  Zweck: Trainingsdaten sammeln, Strategien validieren, OHNE echtes
-Kapital zu riskieren.
+====================================
+Connects KuCoin, Binance, and Bybit simultaneously via ccxt in paper trading
+mode. Purpose: Collect training data, validate strategies, WITHOUT risking
+real capital.
 
-Architektur
+Architecture
 -----------
                 ┌─────────────────────────────────────────────┐
                 │         MultiExchangePaperTrader            │
@@ -16,23 +16,23 @@ Architektur
                        │              │               │
                  OHLCV-Ticker   OHLCV-Ticker    OHLCV-Ticker
                        │              │               │
-                 FeatureEngine (gemeinsam)
+                 FeatureEngine (shared)
                        │
                  DarwinBot / PPOAgent
                        │
-                 PaperPortfolio (simulierte Orders)
+                 PaperPortfolio (simulated orders)
                        │
-                 TrainingDataCollector (OHLCV + Signale speichern)
+                 TrainingDataCollector (save OHLCV + signals)
 
-Paper-Trading-Logik
+Paper-Trading Logic
 -------------------
-- Kein echtes Kapital: Alle Orders werden lokal simuliert.
-- Echter Preis-Feed von allen drei Exchanges via ccxt `fetch_ticker()`.
-- Slippage + Fees werden realitätsnah simuliert (konfigurierbar pro Exchange).
-- Alle Trades werden in `data/paper_trades/` als Parquet gespeichert.
-- Telemetriedaten (OHLCV + Feature-Vektoren) werden kontinuierlich gelogt.
+- No real capital: All orders are simulated locally.
+- Real price feed from all three exchanges via ccxt `fetch_ticker()`.
+- Slippage + fees are simulated realistically (configurable per exchange).
+- All trades are saved as Parquet in `data/paper_trades/`.
+- Telemetry data (OHLCV + feature vectors) are logged continuously.
 
-Verwendung
+Usage
 ----------
     from src.execution.multi_exchange_paper_trader import (
         MultiExchangePaperTrader, PaperTraderConfig
@@ -45,18 +45,18 @@ Verwendung
         exchanges=['kucoin', 'binance', 'bybit'],
     )
     trader = MultiExchangePaperTrader(cfg)
-    trader.run(champion_bot)   # blockierender Loop (Ctrl+C zum Stoppen)
+    trader.run(champion_bot)   # blocking loop (Ctrl+C to stop)
 
-    # Oder in async:
+    # Or async:
     await trader.run_async(champion_bot)
 
-Umgebungsvariablen (optional — ohne Keys nur Public-Feed)
+Environment variables (optional — without keys only public feed)
 ----------------------------------------------------------
     KUCOIN_API_KEY / KUCOIN_API_SECRET / KUCOIN_PASSPHRASE
     BINANCE_API_KEY / BINANCE_API_SECRET
     BYBIT_API_KEY / BYBIT_API_SECRET
 
-Ohne Keys: nur öffentliche Marktdaten (ausreichend für Paper-Trading).
+Without keys: only public market data (sufficient for paper trading).
 """
 
 from __future__ import annotations
@@ -81,21 +81,21 @@ try:
     _CCXT_OK = True
 except ImportError:
     _CCXT_OK = False
-    logger.warning("ccxt nicht installiert.  pip install ccxt")
+    logger.warning("ccxt not installed.  pip install ccxt")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Konfiguration
+# Configuration
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 @dataclass
 class ExchangeFeeConfig:
-    """Reale Gebührenstruktur pro Exchange."""
+    """Real fee structure per exchange."""
 
     maker_fee: float = 0.001  # 0.1%
     taker_fee: float = 0.001
-    slippage: float = 0.0005  # 0.05% Slippage
+    slippage: float = 0.0005  # 0.05% slippage
 
 
 _DEFAULT_FEES: Dict[str, ExchangeFeeConfig] = {
@@ -108,32 +108,32 @@ _DEFAULT_FEES: Dict[str, ExchangeFeeConfig] = {
 @dataclass
 class PaperTraderConfig:
     """
-    Konfiguration für den Multi-Exchange Paper Trader.
+    Configuration for the Multi-Exchange Paper Trader.
 
     Attributes
     ----------
     symbol : str
-        Handelspaar, z.B. 'BTC/USDT'
+        Trading pair, e.g. 'BTC/USDT'
     timeframe : str
-        OHLCV-Timeframe, z.B. '1h'
+        OHLCV timeframe, e.g. '1h'
     initial_capital : float
-        Startkapital in USDT (simuliert)
+        Starting capital in USDT (simulated)
     exchanges : List[str]
-        Liste der Exchanges.  Verfügbar: 'kucoin', 'binance', 'bybit'
+        List of exchanges. Available: 'kucoin', 'binance', 'bybit'
     primary_exchange : str
-        Exchange für Signalgenerierung (Preis-Feed für Bot)
+        Exchange for signal generation (price feed for bot)
     poll_interval_s : float
-        Sekunden zwischen Ticker-Abfragen (pro Exchange)
+        Seconds between ticker queries (per exchange)
     ohlcv_lookback : int
-        Anzahl historischer Bars für Feature-Berechnung
+        Number of historical bars for feature calculation
     data_dir : str
-        Verzeichnis zum Speichern von Paper-Trades + Trainingsdaten
+        Directory to save paper trades + training data
     risk_per_trade : float
-        Max. Kapital-% pro Trade (1%-Regel)
+        Max capital % per trade (1% rule)
     max_drawdown : float
-        Circuit-Breaker: Stopp wenn Drawdown diesen Wert überschreitet
+        Circuit breaker: stop when drawdown exceeds this value
     fee_config : Dict[str, ExchangeFeeConfig]
-        Gebührenstruktur pro Exchange (Standard = reale Werte)
+        Fee structure per exchange (default = real values)
     """
 
     symbol: str = "BTC/USDT"
@@ -146,20 +146,18 @@ class PaperTraderConfig:
     data_dir: str = "data/paper_trades"
     risk_per_trade: float = 0.01  # 1%-Regel
     max_drawdown: float = 0.20  # 20%
-    fee_config: Dict[str, ExchangeFeeConfig] = field(
-        default_factory=lambda: dict(_DEFAULT_FEES)
-    )
+    fee_config: Dict[str, ExchangeFeeConfig] = field(default_factory=lambda: dict(_DEFAULT_FEES))
     log_ohlcv: bool = True  # OHLCV + Signale als Trainingsdaten loggen
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Paper Portfolio (simulierte Kontoführung)
+# Paper Portfolio (simulated account management)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 @dataclass
 class PaperTrade:
-    """Einzelner simulierter Trade."""
+    """Single simulated trade."""
 
     timestamp: datetime
     exchange: str
@@ -174,40 +172,40 @@ class PaperTrade:
 
 class PaperPortfolio:
     """
-    Simuliertes Portfolio mit realistischer Fee- und Slippage-Modellierung.
+    Simulated portfolio with realistic fee and slippage modeling.
 
-    Führt Buch über Cash, offene Position und alle Trades.
+    Tracks cash, open position and all trades.
     """
 
     def __init__(self, initial_capital: float, fee_cfg: ExchangeFeeConfig):
         self.cash = initial_capital
         self.initial_cap = initial_capital
         self.fee_cfg = fee_cfg
-        self.position = 0.0  # Anzahl BTC
+        self.position = 0.0  # Number of BTC
         self.entry_price = 0.0
         self.trades: List[PaperTrade] = []
         self.equity_curve: List[Tuple[datetime, float]] = []
 
     @property
     def equity(self) -> float:
-        """Letzter bekannter Eigenkapital-Wert (aus equity_curve).
-        Fuer den aktuellen Wert current_equity(price) verwenden."""
+        """Last known equity value (from equity_curve).
+        For current value use current_equity(price)."""
         if self.equity_curve:
             return self.equity_curve[-1][1]
-        return self.cash  # Noch kein Tick: nur Cash
+        return self.cash  # No tick yet: only cash
 
     def current_equity(self, price: float) -> float:
-        """Aktuelles Eigenkapital: Cash + offene Position zum aktuellen Preis.
+        """Current equity: Cash + open position at current price.
 
-        Für Short-Positionen (position < 0):
-          cash enthält bereits die Short-Proceeds.
-          Der unrealisierte Verlust = (aktueller Preis - entry) * abs(qty)
+        For short positions (position < 0):
+          cash already contains the short proceeds.
+          Unrealized loss = (current price - entry) * abs(qty)
           → equity = cash - (price - entry_price) * abs(position)
-          Dies ist äquivalent zu: cash + position * price (da position negativ)
-          und entry_price wurde bereits beim Open eingepreist.
+          This is equivalent to: cash + position * price (since position is negative)
+          and entry_price was already priced in at open.
         """
-        # position < 0 für Shorts: cash enthält Short-Proceeds,
-        # position * price subtrahiert den aktuellen Rückkaufwert → korrekt.
+        # position < 0 for shorts: cash contains short proceeds,
+        # position * price subtracts current buyback value → correct.
         return self.cash + self.position * price
 
     @property
@@ -228,25 +226,25 @@ class PaperPortfolio:
         risk_pct: float = 0.01,
     ) -> Optional[PaperTrade]:
         """
-        Führt einen simulierten Market-Order aus.
+        Executes a simulated market order.
 
         Parameters
         ----------
         side        : 'buy' | 'sell'
-        price       : Aktueller Marktpreis
-        exchange    : Exchange-Name (für Gebühren)
-        symbol      : Handelspaar
-        risk_pct    : Anteil des Kapitals das eingesetzt wird
+        price       : Current market price
+        exchange    : Exchange name (for fees)
+        symbol      : Trading pair
+        risk_pct    : Percentage of capital to use
 
-        Position-Logik (Fix #11 – Short-Trading):
-        - position > 0 : Long offen
+        Position logic (Fix #11 – Short trading):
+        - position > 0 : Long open
         - position == 0: Flat
-        - position < 0 : Short offen (qty negativ gespeichert)
+        - position < 0 : Short open (qty stored negative)
 
-        BUY  + position >= 0  → Long eröffnen
-        BUY  + position <  0  → Short schließen (Cover)
-        SELL + position <= 0  → Short eröffnen
-        SELL + position >  0  → Long schließen
+        BUY  + position >= 0  → Open long
+        BUY  + position <  0  → Close short (Cover)
+        SELL + position <= 0  → Open short
+        SELL + position >  0  → Close long
         """
         fee_cfg = self.fee_cfg
         fee_rate = fee_cfg.taker_fee
@@ -270,7 +268,7 @@ class PaperPortfolio:
             self.entry_price = 0.0
 
         elif side == "buy" and self.position >= 0:
-            # ── Long eröffnen ────────────────────────────────────────────────
+            # ── Open long ────────────────────────────────────────────────
             spend = self.cash * risk_pct
             if spend < 10:
                 return None
@@ -284,7 +282,7 @@ class PaperPortfolio:
             self.entry_price = fill_price
 
         elif side == "sell" and self.position > 0:
-            # ── Long schließen ───────────────────────────────────────────────
+            # ── Close long ───────────────────────────────────────────────
             qty = self.position
             proceeds = qty * fill_price
             fee = proceeds * fee_rate
@@ -295,19 +293,19 @@ class PaperPortfolio:
             self.entry_price = 0.0
 
         elif side == "sell" and self.position <= 0:
-            # ── Short eröffnen (Fix #11) ─────────────────────────────────────
-            # Margin-Simulation: blockiere risk_pct als Margin-Reserve
+            # ── Open short (Fix #11) ─────────────────────────────────────
+            # Margin simulation: block risk_pct as margin reserve
             margin = self.cash * risk_pct
             if margin < 10:
                 return None
             qty = margin / fill_price
             fee = qty * fill_price * fee_rate
-            # Bei einem Short erhöhen die Proceeds zunächst den Cash,
-            # aber wir merken uns die Verpflichtung als negative Position.
+            # For a short, proceeds first increase cash,
+            # but we record the obligation as a negative position.
             proceeds = qty * fill_price
             net = proceeds - fee
-            self.cash += net  # Short-Erlöse gutschreiben (Margin simuliert)
-            self.position = -qty  # Negativ = Short
+            self.cash += net  # Credit short proceeds (margin simulated)
+            self.position = -qty  # Negative = Short
             self.entry_price = fill_price
 
         else:
@@ -377,22 +375,22 @@ class PaperPortfolio:
 
 class CCXTConnector:
     """
-    Leichtgewichtiger ccxt-Wrapper für einen einzelnen Exchange.
+    Lightweight ccxt wrapper for a single exchange.
 
-    Unterstützt: kucoin, binance, bybit (und jeden anderen ccxt-Exchange).
-    Ohne API-Keys: nur öffentliche Daten (ausreichend für Paper-Trading).
+    Supports: kucoin, binance, bybit (and any other ccxt exchange).
+    Without API keys: only public data (sufficient for paper trading).
     """
 
     def __init__(self, exchange_id: str):
         if not _CCXT_OK:
-            raise ImportError("ccxt nicht installiert.  pip install ccxt")
+            raise ImportError("ccxt not installed.  pip install ccxt")
 
         self.exchange_id = exchange_id
         cls = getattr(ccxt, exchange_id, None)
         if cls is None:
-            raise ValueError(f"Unbekannte Exchange: {exchange_id}")
+            raise ValueError(f"Unknown exchange: {exchange_id}")
 
-        # Credentials aus Umgebungsvariablen (optional)
+        # Credentials from environment variables (optional)
         prefix = exchange_id.upper()
         kwargs: Dict[str, Any] = {"enableRateLimit": True}
 
@@ -413,24 +411,20 @@ class CCXTConnector:
         )
 
     def fetch_ticker(self, symbol: str) -> Optional[Dict]:
-        """Aktueller Preis (last, bid, ask)."""
+        """Current price (last, bid, ask)."""
         try:
             return self._ex.fetch_ticker(symbol)
         except Exception as e:
             logger.warning(f"[{self.exchange_id}] fetch_ticker failed: {e}")
             return None
 
-    def fetch_ohlcv(
-        self, symbol: str, timeframe: str, limit: int = 200
-    ) -> Optional[pd.DataFrame]:
-        """OHLCV-Daten als DataFrame."""
+    def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
+        """OHLCV data as DataFrame."""
         try:
             raw = self._ex.fetch_ohlcv(symbol, timeframe, limit=limit)
             if not raw:
                 return None
-            df = pd.DataFrame(
-                raw, columns=["timestamp", "open", "high", "low", "close", "volume"]
-            )
+            df = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume"])
             df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
             df.set_index("timestamp", inplace=True)
             return df
@@ -439,7 +433,7 @@ class CCXTConnector:
             return None
 
     def fetch_price(self, symbol: str) -> Optional[float]:
-        """Letzter Handelspreis."""
+        """Last trade price."""
         t = self.fetch_ticker(symbol)
         return float(t["last"]) if t and t.get("last") else None
 
@@ -451,9 +445,9 @@ class CCXTConnector:
 
 class TrainingDataCollector:
     """
-    Speichert OHLCV-Daten + Bot-Signale für späteres RL-Training.
+    Saves OHLCV data + Bot signals for future RL training.
 
-    Schema pro Zeile:
+    Schema per row:
         timestamp | exchange | open | high | low | close | volume |
         signal (-1/0/1) | bot_name | equity
     """
@@ -462,7 +456,7 @@ class TrainingDataCollector:
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._rows: List[Dict] = []
-        self._flush_every = 100  # Auto-flush nach N Zeilen
+        self._flush_every = 100  # Auto-flush after N rows
 
     def record(
         self,
@@ -493,12 +487,12 @@ class TrainingDataCollector:
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         out = self.data_dir / f"training_data_{ts}.parquet"
         df.to_parquet(out, index=False)
-        logger.info(f"TrainingData: {len(df)} Zeilen -> {out}")
+        logger.info(f"TrainingData: {len(df)} rows -> {out}")
         self._rows.clear()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Haupt-Engine
+# Main Engine
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -506,14 +500,14 @@ class MultiExchangePaperTrader:
     """
     Multi-Exchange Paper Trading Engine.
 
-    Verbindet KuCoin, Binance und Bybit gleichzeitig.  Beobachtet echte
-    Preise, generiert Signale mit dem übergebenen Bot/Champion und führt
-    simulierte Orders aus.
+    Connects KuCoin, Binance, and Bybit simultaneously. Observes real
+    prices, generates signals with the passed Bot/Champion and executes
+    simulated orders.
 
     Parameters
     ----------
     config : PaperTraderConfig
-        Vollständige Konfiguration.
+        Complete configuration.
 
     Example
     -------
@@ -535,19 +529,17 @@ class MultiExchangePaperTrader:
             try:
                 self.connectors[ex_id] = CCXTConnector(ex_id)
             except Exception as e:
-                logger.error(f"Exchange {ex_id} konnte nicht verbunden werden: {e}")
+                logger.error(f"Exchange {ex_id} could not be connected: {e}")
 
         if not self.connectors:
-            raise RuntimeError("Keine Exchange konnte verbunden werden.")
+            raise RuntimeError("No exchange could be connected.")
 
-        # Sicherstellen dass primary_exchange verfügbar ist
+        # Ensure primary_exchange is available
         if config.primary_exchange not in self.connectors:
             config.primary_exchange = next(iter(self.connectors))
-            logger.warning(
-                f"primary_exchange nicht verfügbar — verwende '{config.primary_exchange}'"
-            )
+            logger.warning(f"primary_exchange not available — using '{config.primary_exchange}'")
 
-        # Ein Portfolio pro Exchange (separate Buchhaltung)
+        # One portfolio per exchange (separate accounting)
         self.portfolios: Dict[str, PaperPortfolio] = {
             ex_id: PaperPortfolio(
                 initial_capital=config.initial_capital,
@@ -556,38 +548,36 @@ class MultiExchangePaperTrader:
             for ex_id in self.connectors
         }
 
-        # Trainingsdaten-Sammler
+        # Training data collector
         self.collector = TrainingDataCollector(config.data_dir)
 
-        # Zustand
+        # State
         self._running = False
         self._tick_count = 0
         self._last_prices: Dict[str, float] = {}
 
         logger.info(
-            f"MultiExchangePaperTrader bereit | "
+            f"MultiExchangePaperTrader ready | "
             f"Exchanges: {list(self.connectors.keys())} | "
             f"Symbol: {config.symbol} | "
-            f"Kapital: ${config.initial_capital:,.0f}"
+            f"Capital: ${config.initial_capital:,.0f}"
         )
 
     # ------------------------------------------------------------------
-    # Öffentliche API
+    # Public API
     # ------------------------------------------------------------------
 
     def run(self, bot, max_ticks: int = 0) -> None:
         """
-        Blockierender Trading-Loop.
+        Blocking trading loop.
 
         Parameters
         ----------
-        bot       : DarwinBot oder PPOAgent — muss compute_signals(df) haben
-        max_ticks : 0 = unbegrenzt (Ctrl+C zum Stoppen)
+        bot       : DarwinBot or PPOAgent — must have compute_signals(df)
+        max_ticks : 0 = unlimited (Ctrl+C to stop)
         """
         self._running = True
-        logger.warning(
-            f"Paper Trading GESTARTET | {self.cfg.symbol} | Ctrl+C zum Stoppen"
-        )
+        logger.warning(f"Paper Trading STARTED | {self.cfg.symbol} | Ctrl+C to stop")
         try:
             while self._running:
                 if max_ticks > 0 and self._tick_count >= max_ticks:
@@ -596,7 +586,7 @@ class MultiExchangePaperTrader:
                 self._tick_count += 1
                 time.sleep(self.cfg.poll_interval_s)
         except KeyboardInterrupt:
-            logger.warning("Paper Trading gestoppt (KeyboardInterrupt)")
+            logger.warning("Paper Trading stopped (KeyboardInterrupt)")
         finally:
             self._shutdown()
 
@@ -604,7 +594,7 @@ class MultiExchangePaperTrader:
         self._running = False
 
     def get_summary(self) -> Dict[str, Any]:
-        """Summary aller Portfolios."""
+        """Summary of all portfolios."""
         result = {}
         for ex_id, pf in self.portfolios.items():
             price = self._last_prices.get(ex_id, 0.0)
@@ -618,7 +608,7 @@ class MultiExchangePaperTrader:
 
     def print_summary(self) -> None:
         print("\n" + "=" * 60)
-        print("  PAPER TRADING ZUSAMMENFASSUNG")
+        print("  PAPER TRADING SUMMARY")
         print("=" * 60)
         for ex_id, s in self.get_summary().items():
             print(f"\n  {ex_id.upper()}")
@@ -631,24 +621,24 @@ class MultiExchangePaperTrader:
         print("=" * 60)
 
     # ------------------------------------------------------------------
-    # Interner Tick-Loop
+    # Internal Tick Loop
     # ------------------------------------------------------------------
 
     def _tick(self, bot) -> None:
-        """Ein Polling-Zyklus: Preise abrufen → Signal → Order."""
+        """One polling cycle: fetch prices → signal → order."""
         for ex_id, conn in self.connectors.items():
             try:
                 self._process_exchange(ex_id, conn, bot)
             except Exception as e:
-                logger.warning(f"[{ex_id}] Tick-Fehler: {e}")
+                logger.warning(f"[{ex_id}] Tick error: {e}")
 
     def _process_exchange(self, ex_id: str, conn: CCXTConnector, bot) -> None:
-        """Verarbeitet einen Tick für eine einzelne Exchange."""
+        """Process one tick for a single exchange."""
         symbol = self.cfg.symbol
         tf = self.cfg.timeframe
         pf = self.portfolios[ex_id]
 
-        # 1. OHLCV holen (für Feature-Berechnung)
+        # 1. Get OHLCV (for feature calculation)
         df = conn.fetch_ohlcv(symbol, tf, limit=self.cfg.ohlcv_lookback)
         if df is None or len(df) < 10:
             return
@@ -656,31 +646,27 @@ class MultiExchangePaperTrader:
         price = float(df["close"].iloc[-1])
         self._last_prices[ex_id] = price
 
-        # 2. Equity aktualisieren (für DD-Check)
+        # 2. Update equity (for DD check)
         equity = pf.update_equity(price)
 
-        # 3. Circuit-Breaker: Drawdown-Check
+        # 3. Circuit-Breaker: Drawdown check
         if pf.drawdown > self.cfg.max_drawdown:
             logger.warning(
                 f"[{ex_id}] Circuit-Breaker: DD={pf.drawdown * 100:.1f}% > "
                 f"{self.cfg.max_drawdown * 100:.1f}%"
             )
             if pf.position > 0:
-                # Long schließen
-                pf.execute(
-                    "sell", price, ex_id, symbol, risk_pct=self.cfg.risk_per_trade
-                )
+                # Close long
+                pf.execute("sell", price, ex_id, symbol, risk_pct=self.cfg.risk_per_trade)
             elif pf.position < 0:
-                # Short schließen (Cover) – Fix #11
-                pf.execute(
-                    "buy", price, ex_id, symbol, risk_pct=self.cfg.risk_per_trade
-                )
+                # Close short (Cover) – Fix #11
+                pf.execute("buy", price, ex_id, symbol, risk_pct=self.cfg.risk_per_trade)
             return
 
-        # 4. Signal vom Bot
+        # 4. Signal from Bot
         signal = self._get_signal(bot, df, ex_id)
 
-        # 5. Trainingsdaten loggen
+        # 5. Log training data
         if self.cfg.log_ohlcv:
             last_row = df.iloc[-1]
             self.collector.record(
@@ -698,12 +684,10 @@ class MultiExchangePaperTrader:
                 price=price,
             )
 
-        # 6. Order ausführen (Fix #11: signal=-1 öffnet Short wenn keine Long-Position)
+        # 6. Execute order (Fix #11: signal=-1 opens short if no long position)
         if signal == 1:
-            # BUY: schließt Short (Cover) ODER eröffnet Long — execute() entscheidet
-            trade = pf.execute(
-                "buy", price, ex_id, symbol, risk_pct=self.cfg.risk_per_trade
-            )
+            # BUY: closes short (Cover) OR opens long — execute() decides
+            trade = pf.execute("buy", price, ex_id, symbol, risk_pct=self.cfg.risk_per_trade)
             if trade:
                 action = "COVER" if trade.pnl != 0.0 else "BUY"
                 logger.info(
@@ -712,10 +696,8 @@ class MultiExchangePaperTrader:
                 )
 
         elif signal == -1:
-            # SELL: schließt Long ODER eröffnet Short — execute() entscheidet
-            trade = pf.execute(
-                "sell", price, ex_id, symbol, risk_pct=self.cfg.risk_per_trade
-            )
+            # SELL: closes long OR opens short — execute() decides
+            trade = pf.execute("sell", price, ex_id, symbol, risk_pct=self.cfg.risk_per_trade)
             if trade:
                 action = "SHORT" if pf.position < 0 else "SELL"
                 logger.info(
@@ -723,18 +705,18 @@ class MultiExchangePaperTrader:
                     f"| Fee=${trade.fee:.2f} | P&L=${trade.pnl:+.2f}"
                 )
 
-        # 7. Periodisches Status-Log
-        if self._tick_count % 12 == 0:  # ca. jede Stunde bei 5s Poll
+        # 7. Periodic status log
+        if self._tick_count % 12 == 0:  # approx every hour at 5s poll
             logger.warning(
                 f"[{ex_id}] Tick={self._tick_count:,} | "
-                f"Preis=${price:,.2f} | "
+                f"Price=${price:,.2f} | "
                 f"Equity=${equity:,.2f} | "
                 f"DD={pf.drawdown * 100:.1f}%"
             )
 
     def _get_signal(self, bot, df: pd.DataFrame, ex_id: str) -> int:
         """
-        Ruft das Signal vom Bot ab.  Unterstützt DarwinBot und PPOAgent.
+        Gets the signal from the bot. Supports DarwinBot and PPOAgent.
 
         Returns
         -------
@@ -745,11 +727,7 @@ class MultiExchangePaperTrader:
             if hasattr(bot, "compute_signals"):
                 close = df["close"].values.astype(np.float64)
                 sig_arr = bot.compute_signals(close)
-                return (
-                    int(np.sign(sig_arr[-1]))
-                    if sig_arr is not None and len(sig_arr)
-                    else 0
-                )
+                return int(np.sign(sig_arr[-1])) if sig_arr is not None and len(sig_arr) else 0
 
             # PPOAgent API
             if hasattr(bot, "select_action"):
@@ -774,9 +752,9 @@ class MultiExchangePaperTrader:
         return 0
 
     def _shutdown(self) -> None:
-        """Abschluss: Trades speichern, Summary ausgeben."""
+        """Finalize: save trades, print summary."""
         self.collector.flush()
-        # Trade-Log als Parquet speichern
+        # Save trade log as Parquet
         out_dir = Path(self.cfg.data_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         for ex_id, pf in self.portfolios.items():
@@ -785,12 +763,12 @@ class MultiExchangePaperTrader:
                 ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
                 out = out_dir / f"paper_trades_{ex_id}_{ts}.parquet"
                 df_trades.to_parquet(out, index=False)
-                logger.info(f"Trades gespeichert: {out}")
+                logger.info(f"Trades saved: {out}")
         self.print_summary()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Factory-Funktion (für Colab / Skripte)
+# Factory function (for Colab / scripts)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -803,11 +781,11 @@ def create_paper_trader(
     poll_interval_s: float = 5.0,
 ) -> MultiExchangePaperTrader:
     """
-    Erstellt einen MultiExchangePaperTrader mit Standardkonfiguration.
+    Creates a MultiExchangePaperTrader with default configuration.
 
     Parameters
     ----------
-    exchanges : Liste der Exchanges.  None = alle drei (kucoin, binance, bybit)
+    exchanges : List of exchanges. None = all three (kucoin, binance, bybit)
 
     Example
     -------
