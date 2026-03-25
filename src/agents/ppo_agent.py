@@ -1201,6 +1201,20 @@ class PPOAgent:
 
         # Returns = advantage + value baseline (target for V(s))
         returns = advantages + values_arr[:T]
+
+        # NaN/Inf guard: a diverged critic (V → ±∞) or extreme rewards produce
+        # non-finite deltas that silently corrupt the entire training step.
+        # Zero out any non-finite entries so those transitions contribute no
+        # gradient rather than poisoning the whole batch.
+        if not np.isfinite(advantages).all():
+            n_bad = (~np.isfinite(advantages)).sum()
+            logger.warning(f"GAE: {n_bad}/{len(advantages)} non-finite advantages — zeroing")
+            advantages = np.nan_to_num(advantages, nan=0.0, posinf=0.0, neginf=0.0)
+        if not np.isfinite(returns).all():
+            n_bad = (~np.isfinite(returns)).sum()
+            logger.warning(f"GAE: {n_bad}/{len(returns)} non-finite returns — zeroing")
+            returns = np.nan_to_num(returns, nan=0.0, posinf=0.0, neginf=0.0)
+
         return advantages, returns
 
     def train(self, next_value: float = 0.0) -> Dict:
@@ -1252,6 +1266,10 @@ class PPOAgent:
 
         # Step 2: Normalize advantages
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        # Guard: std≈0 (constant rewards + perfect critic) → normalized adv ≈ 0/ε → safe,
+        # but if compute_gae produced NaN that slipped through, clamp it here.
+        advantages = np.nan_to_num(advantages, nan=0.0, posinf=0.0, neginf=0.0)
+        returns = np.nan_to_num(returns, nan=0.0, posinf=0.0, neginf=0.0)
 
         # Store good trajectories in SIL buffer
         if self.use_sil:
@@ -1282,6 +1300,17 @@ class PPOAgent:
         returns_t = _to_tensor_f32(returns).to(self.device, non_blocking=True)
         advantages = advantages_t
         returns = returns_t
+
+        # Old value estimates V_old(s_t) — needed for clipped value loss.
+        # Already stored in the rollout buffer (_values_np) at sample time.
+        # nan_to_num: a diverged critic can write NaN into the buffer; clamp to 0
+        # so the clipped value loss degrades to an unclipped MSE for those steps.
+        if self._buf_capacity > 0:
+            _values_raw = self._values_np[:_n]
+        else:
+            _values_raw = np.array(self.values[:_n], dtype=np.float32)
+        _values_raw = np.nan_to_num(_values_raw, nan=0.0, posinf=0.0, neginf=0.0)
+        old_values = _to_tensor_f32(_values_raw).to(self.device, non_blocking=True)
 
         # P1-B + PPO-3: Pre-move all hidden states to GPU ONCE and stack into a
         # single tensor before the epoch loop.
@@ -1339,6 +1368,7 @@ class PPOAgent:
                 batch_old_log_probs = old_log_probs[batch_indices]
                 batch_advantages = advantages[batch_indices]
                 batch_returns = returns[batch_indices]
+                batch_old_values = old_values[batch_indices]
 
                 batch_hidden = None
                 if has_hidden:
@@ -1422,9 +1452,22 @@ class PPOAgent:
                     # The min() ensures we take the less aggressive update
                     actor_loss = -torch.min(surr1, surr2).mean()
 
-                    # Critic loss: MSE between predicted values and target returns
-                    # This learns the value function V(s) ≈ E[future rewards]
-                    critic_loss = F.mse_loss(critic_values, batch_returns)
+                    # Clipped value loss (PPO paper appendix / CleanRL standard):
+                    # Prevents the critic from making large jumps in a single update.
+                    #
+                    # Without clipping: if V_old ≈ 0 and Return ≈ 100, MSE = 10000 →
+                    # enormous gradient → critic overshoots, destabilises actor.
+                    #
+                    # With clipping: the critic update is bounded by clip_epsilon per
+                    # step, same as the actor. The max() selects the more conservative
+                    # (larger) loss so the critic still improves, just not explosively.
+                    v_clipped = batch_old_values + (
+                        critic_values - batch_old_values
+                    ).clamp(-self.config.clip_epsilon, self.config.clip_epsilon)
+                    critic_loss = torch.max(
+                        F.mse_loss(critic_values, batch_returns),
+                        F.mse_loss(v_clipped, batch_returns),
+                    )
 
                     # Total loss: weighted combination of all components
                     # -actor_loss: We want to maximize this (via minimization)
@@ -1512,7 +1555,7 @@ class PPOAgent:
             "actor_loss": total_actor_loss / max(n_updates, 1),
             "critic_loss": total_critic_loss / max(n_updates, 1),
             "entropy": total_entropy / max(n_updates, 1),
-            "mean_kl": np.mean(kl_divergences),
+            "mean_kl": float(np.mean(kl_divergences)) if kl_divergences else 0.0,
             "sil_loss": sil_loss_val,
             "n_epochs": epoch + 1,
         }
