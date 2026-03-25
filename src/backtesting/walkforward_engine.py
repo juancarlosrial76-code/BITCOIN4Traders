@@ -69,7 +69,7 @@ from loguru import logger
 from datetime import datetime, timedelta
 import json
 
-from agents.ppo_agent import PPOAgent
+from src.agents.ppo_agent import PPOAgent
 
 # Anti-Bias Framework integration
 try:
@@ -136,6 +136,9 @@ class WalkForwardConfig:
 
     # Paths
     results_dir: str = "data/backtests"
+
+    # Capital
+    initial_capital: float = 100_000.0  # Starting equity for equity curve tracking
 
     # Validation
     min_trades: int = 10  # Minimum trades in test period
@@ -372,27 +375,115 @@ class WalkForwardEngine:
 
     def train_on_window(self, train_data: pd.DataFrame, window_id: int) -> Dict:
         """
-        Train agent on training window.
+        Train agent on a walk-forward training window.
+
+        Runs self.config.train_iterations PPO update cycles on the
+        environment loaded with train_data. Each cycle collects a full
+        episode, stores transitions, and calls agent.train().
 
         Parameters:
         -----------
         train_data : pd.DataFrame
-            Training data
+            OHLCV data for the training period
         window_id : int
-            Window identifier
+            Window identifier (used for logging only)
 
         Returns:
         --------
         metrics : dict
-            Training metrics
+            Aggregate training metrics:
+            - actor_loss, critic_loss (mean across iterations)
+            - mean_episode_return
+            - n_episodes
         """
-        logger.info(f"Training on window {window_id}...")
+        logger.info(
+            f"Training window {window_id}: {len(train_data)} bars, "
+            f"{self.config.train_iterations} iterations..."
+        )
 
-        # TODO: Implement training loop
-        # For now, return mock metrics
+        # ── swap in training data ─────────────────────────────────────────────
+        # The env stores data in .price_data / .features — update them
+        if hasattr(self.env, "price_data"):
+            self.env.price_data = train_data
+        if hasattr(self.env, "data"):
+            self.env.data = train_data
+        # Reset step pointer
+        if hasattr(self.env, "current_step"):
+            self.env.current_step = 0
 
-        metrics = {"return": 0.10, "sharpe": 1.5, "trades": 50}
+        actor_losses: list = []
+        critic_losses: list = []
+        episode_returns: list = []
 
+        for iteration in range(self.config.train_iterations):
+            # ── collect one episode ───────────────────────────────────────────
+            obs, _ = self.env.reset()
+            hidden = (
+                self.agent.get_initial_hidden_state()
+                if hasattr(self.agent, "get_initial_hidden_state")
+                else None
+            )
+            done = False
+            episode_reward = 0.0
+            last_value = 0.0
+
+            while not done:
+                action, log_prob, value, hidden = self.agent.select_action(
+                    obs, hidden, deterministic=False
+                )
+                next_obs, reward, terminated, truncated, info = self.env.step(action)
+                done = terminated or truncated
+
+                self.agent.store_transition(
+                    state=obs,
+                    action=action,
+                    reward=reward,
+                    log_prob=float(log_prob),
+                    value=float(value),
+                    done=done,
+                    hidden=hidden,
+                )
+
+                episode_reward += reward
+                last_value = float(value)
+                obs = next_obs
+
+            episode_returns.append(episode_reward)
+
+            # ── PPO update after each episode ─────────────────────────────────
+            train_stats = self.agent.train(next_value=last_value)
+
+            if train_stats:
+                actor_losses.append(train_stats.get("actor_loss", 0.0))
+                critic_losses.append(train_stats.get("critic_loss", 0.0))
+
+            if (iteration + 1) % 50 == 0:
+                logger.info(
+                    f"  Window {window_id} | iter {iteration+1}/{self.config.train_iterations}"
+                    f" | ep_ret={episode_reward:.4f}"
+                    f" | actor_loss={train_stats.get('actor_loss', 0):.4f}"
+                    if train_stats
+                    else f"  Window {window_id} | iter {iteration+1}/{self.config.train_iterations}"
+                    f" | ep_ret={episode_reward:.4f}"
+                )
+
+        metrics = {
+            "return": float(np.mean(episode_returns)) if episode_returns else 0.0,
+            "sharpe": 0.0,  # not computed during training (no OOS equity curve)
+            "trades": 0,    # trade count not tracked during training episodes
+            "actor_loss": float(np.mean(actor_losses)) if actor_losses else 0.0,
+            "critic_loss": float(np.mean(critic_losses)) if critic_losses else 0.0,
+            "n_episodes": len(episode_returns),
+            "final_episode_return": float(episode_returns[-1])
+            if episode_returns
+            else 0.0,
+        }
+
+        logger.info(
+            f"Window {window_id} training done | "
+            f"mean_return={metrics['return']:.4f} | "
+            f"episodes={metrics['n_episodes']}"
+        )
         return metrics
 
     def test_on_window(self, test_data: pd.DataFrame, window_id: int) -> Dict:
@@ -412,6 +503,15 @@ class WalkForwardEngine:
             Test metrics
         """
         logger.info(f"Testing on window {window_id}...")
+
+        # Inject test data into env (mirrors train_on_window data swap)
+        if test_data is not None:
+            if hasattr(self.env, "price_data"):
+                self.env.price_data = test_data
+            if hasattr(self.env, "data"):
+                self.env.data = test_data
+            if hasattr(self.env, "current_step"):
+                self.env.current_step = 0
 
         # Reset environment with test data
         obs, info = self.env.reset()
@@ -493,6 +593,8 @@ class WalkForwardEngine:
                 / (np.std(negative_returns) + 1e-8)
                 * np.sqrt(252)  # only downside vol in denominator
             )
+            # Cap to prevent extreme values when downside vol is tiny
+            sortino = float(np.clip(sortino, -100.0, 100.0))
         else:
             sortino = sharpe  # no losses → use Sharpe as proxy
 
@@ -511,12 +613,18 @@ class WalkForwardEngine:
         else:
             calmar = 0.0
 
-        # Win rate
+        # Win rate + Profit Factor
         if trades:
             winning_trades = sum(1 for t in trades if t["pnl"] > 0)
             win_rate = winning_trades / len(trades)
+            gross_profit = sum(t["pnl"] for t in trades if t["pnl"] > 0)
+            gross_loss = abs(sum(t["pnl"] for t in trades if t["pnl"] < 0))
+            profit_factor = (
+                gross_profit / gross_loss if gross_loss > 0 else float("inf")
+            )
         else:
             win_rate = 0.0
+            profit_factor = 0.0
 
         return {
             "return": total_return,
@@ -525,6 +633,8 @@ class WalkForwardEngine:
             "calmar": calmar,
             "max_drawdown": max_drawdown,
             "win_rate": win_rate,
+            "profit_factor": profit_factor,
+            "n_trades": len(trades),
         }
 
     def run(self) -> List[WindowResult]:
@@ -540,10 +650,20 @@ class WalkForwardEngine:
         logger.info("STARTING WALK-FORWARD ANALYSIS")
         logger.info("=" * 80)
 
-        # Get data date range
-        # (Simplified - in production, extract from env.price_data)
-        start_date = datetime(2020, 1, 1)
-        end_date = datetime(2024, 12, 31)
+        # Extract price data from env — try common attribute names
+        price_data: pd.DataFrame | None = None
+        for _attr in ("price_data", "data"):
+            if hasattr(self.env, _attr):
+                price_data = getattr(self.env, _attr)
+                break
+        if price_data is None:
+            raise ValueError(
+                "WalkForwardEngine.run(): env has neither 'price_data' nor 'data' attribute. "
+                "Cannot determine date range or slice windows."
+            )
+
+        start_date = price_data.index[0].to_pydatetime()
+        end_date = price_data.index[-1].to_pydatetime()
 
         # Create windows
         windows = self.create_windows(start_date, end_date)
@@ -557,11 +677,15 @@ class WalkForwardEngine:
             logger.info(f"  Test:  {test_start.date()} to {test_end.date()}")
             logger.info(f"{'=' * 80}")
 
+            # Slice data for this window
+            train_data = price_data.loc[train_start:train_end]
+            test_data = price_data.loc[test_start:test_end]
+
             # Train
-            train_metrics = self.train_on_window(None, i)
+            train_metrics = self.train_on_window(train_data, i)
 
             # Test (out-of-sample)
-            test_metrics = self.test_on_window(None, i)
+            test_metrics = self.test_on_window(test_data, i)
 
             # Validate
             if test_metrics["max_drawdown"] < -self.config.max_drawdown_threshold:
@@ -756,7 +880,7 @@ if __name__ == "__main__":
             }
             return obs, reward, done, False, info
 
-    from agents.ppo_agent import PPOAgent, PPOConfig
+    from src.agents.ppo_agent import PPOAgent, PPOConfig
 
     config = PPOConfig(state_dim=20, n_actions=3)
     agent = PPOAgent(config)
