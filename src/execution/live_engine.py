@@ -467,6 +467,10 @@ class LiveExecutionEngine:
         self._running = True
         logger.info("✅ Engine live. Symbols: %s", self._cfg.symbols)
 
+        # Startup reconciliation: sync local positions to exchange state
+        # Catches any positions left open from a previous session or partial restart.
+        await self._reconcile_positions(source="startup")
+
         # Run until stopped
         await self._run_loop()
 
@@ -497,6 +501,9 @@ class LiveExecutionEngine:
         The engine is event-driven via WS callbacks.
         This loop checks for circuit breaker and watchdog conditions.
         """
+        _reconcile_tick = 0
+        _RECONCILE_INTERVAL = 60  # reconcile every 60 heartbeats (≈ 60 seconds)
+
         while self._running:
             await asyncio.sleep(1)  # 1-second heartbeat interval
 
@@ -512,6 +519,12 @@ class LiveExecutionEngine:
                     # Circuit breaker tripped – halt immediately
                     await self.stop(reason=self._breaker.trip_reason)
                     return
+
+            # Periodic position reconciliation against exchange
+            _reconcile_tick += 1
+            if _reconcile_tick >= _RECONCILE_INTERVAL:
+                _reconcile_tick = 0
+                await self._reconcile_positions(source="periodic")
 
     # ── Market Data Handler ──────────────────
 
@@ -709,6 +722,73 @@ class LiveExecutionEngine:
         return True
 
     # ── Fill / Status Handlers ───────────────
+
+    # ── Position Reconciliation ───────────────
+
+    async def _reconcile_positions(self, source: str = "periodic") -> None:
+        """
+        Compare local position state against exchange and correct any drift.
+
+        Called at startup (catches leftover positions from a previous session)
+        and periodically every 60 s (catches WebSocket-disconnect desync).
+
+        Drift scenarios handled:
+        - Local=FLAT, Exchange=OPEN  → adopt exchange qty + entry price
+        - Local=OPEN, Exchange=FLAT  → zero out local position
+        - Local qty ≠ Exchange qty   → overwrite local with exchange value
+        Paper-trading mode is skipped (no exchange to compare with).
+        """
+        if self._paper:
+            return  # No exchange state in paper mode
+
+        _QTY_TOLERANCE = Decimal("1e-6")  # Ignore dust differences below this
+
+        for symbol in self._cfg.symbols:
+            local = self._positions[symbol]
+            try:
+                exch = self._connector.get_position(symbol)
+            except Exception as exc:
+                logger.warning(
+                    "RECONCILE [%s] %s: could not fetch exchange position: %s",
+                    source, symbol, exc,
+                )
+                continue
+
+            # Convert exchange position to signed qty (+ long, - short)
+            if exch is not None:
+                exch_qty = Decimal(str(exch.size)) * (
+                    1 if exch.side == "LONG" else -1
+                )
+                exch_entry = Decimal(str(exch.entry_price))
+            else:
+                exch_qty = Decimal(0)
+                exch_entry = Decimal(0)
+
+            qty_diff = abs(local.qty - exch_qty)
+
+            if qty_diff <= _QTY_TOLERANCE:
+                continue  # In sync — nothing to do
+
+            logger.warning(
+                "RECONCILE [%s] %s: local_qty=%s exchange_qty=%s diff=%s — correcting",
+                source, symbol,
+                local.qty, exch_qty, local.qty - exch_qty,
+            )
+
+            # Overwrite local state with exchange truth
+            local.qty = exch_qty
+            local.avg_cost = exch_entry if exch_qty != 0 else Decimal(0)
+
+            # Sync entry price tracker for stop-loss / take-profit
+            if exch_qty != 0 and self._entry_prices.get(symbol) is None:
+                self._entry_prices[symbol] = exch_entry
+            elif exch_qty == 0:
+                self._entry_prices[symbol] = None
+
+            logger.info(
+                "RECONCILE [%s] %s: corrected → qty=%s avg_cost=%s",
+                source, symbol, local.qty, local.avg_cost,
+            )
 
     def _on_fill(self, order: Order, fill: Fill) -> None:
         pos = self._positions.get(order.symbol)
