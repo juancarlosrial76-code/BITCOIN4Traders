@@ -68,6 +68,7 @@ from ..connectors.binance_ws_connector import (
     BinanceWSConnector,
     ReconnectPolicy,
 )
+from ..monitoring.monitor import EngineMonitor
 from ..orders.order_manager import (
     Fill,
     Order,
@@ -374,11 +375,13 @@ class LiveExecutionEngine:
     def __init__(
         self, config: EngineConfig, agent, feature_engine, paper_trading: bool = False,
         db_path: Optional[str] = None,
+        monitor: Optional[EngineMonitor] = None,
     ):
         self._cfg = config
         self._agent = agent
         self._feat = feature_engine
         self._paper = paper_trading  # Paper mode sends no real orders
+        self._monitor = monitor  # Optional live monitoring / alerting
 
         # SQLite persistence for position + cash state.
         # Only active when an explicit db_path is provided (opt-in).
@@ -433,6 +436,9 @@ class LiveExecutionEngine:
 
     async def start(self) -> None:
         logger.info("═══ PHASE 7 LIVE ENGINE STARTING ═══")
+        if self._monitor:
+            await self._monitor.start()
+            self._monitor.attach_engine(self)
         await self._oms.start()  # Initialize order manager (REST session, etc.)
 
         # Fix #8: Fetch initial cash balance from exchange so circuit breaker
@@ -505,6 +511,8 @@ class LiveExecutionEngine:
 
         await self._connector.disconnect()
         await self._oms.stop()
+        if self._monitor:
+            await self._monitor.stop()
         self._print_session_summary()
         logger.info("═══ ENGINE STOPPED ═══")
 
@@ -531,8 +539,16 @@ class LiveExecutionEngine:
                 self._breaker.update_equity(equity)
                 if self._breaker.check(equity):
                     # Circuit breaker tripped – halt immediately
+                    if self._monitor:
+                        self._monitor.on_circuit_breaker(self._breaker.trip_reason)
                     await self.stop(reason=self._breaker.trip_reason)
                     return
+
+                # Update P&L metrics in monitor every heartbeat
+                if self._monitor:
+                    realized = float(sum(p.realized_pnl for p in self._positions.values()))
+                    unrealized = float(equity) - float(self._cash) - realized
+                    self._monitor.update_pnl(realized, unrealized)
 
             # Periodic position reconciliation against exchange
             _reconcile_tick += 1
@@ -554,6 +570,8 @@ class LiveExecutionEngine:
 
         self._last_prices[symbol] = mid
         self._tick_count += 1
+        if self._monitor:
+            self._monitor.on_tick()
 
         # Only run agent every N ticks to avoid over-trading
         if self._tick_count % 10 != 0:
@@ -687,6 +705,8 @@ class LiveExecutionEngine:
 
         submitted = await self._oms.submit_order(order)
         logger.info("Signal %+d → %s", signal, submitted)
+        if self._monitor:
+            self._monitor.on_order_submitted()
 
         # Start timeout watchdog for limit orders (cancel if not filled in time)
         if order.type == OrderType.LIMIT:
@@ -847,6 +867,21 @@ class LiveExecutionEngine:
             float(realized),
             float(self._cash),
         )
+
+        if self._monitor:
+            self._monitor.on_fill(qty=fill.qty, price=fill.price, pnl=realized)
+
+        # Log slippage when available (limit orders only)
+        slip = order.slippage_bps
+        if slip is not None:
+            logger.info(
+                "SLIPPAGE: %s %s slippage=%.2f bps (limit=%.4f fill=%.4f)",
+                order.symbol,
+                order.side.value,
+                float(slip),
+                float(order.limit_price or 0),
+                float(order.avg_fill_price),
+            )
 
         # Persist updated positions after every fill
         if self._db_path is not None:

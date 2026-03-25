@@ -72,6 +72,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -141,7 +142,12 @@ class PaperOrderManager:
     """
 
     def __init__(
-        self, api_key: str, api_secret: str, initial_cash: Decimal = Decimal(10_000)
+        self,
+        api_key: str,
+        api_secret: str,
+        initial_cash: Decimal = Decimal(10_000),
+        slippage_mean_bps: float = 2.0,
+        slippage_std_bps: float = 1.5,
     ):
         self._session = None  # Not needed for paper trading
         self._orders: Dict[str, Order] = {}
@@ -151,13 +157,18 @@ class PaperOrderManager:
         self._lock = asyncio.Lock()
         self._next_eid = 1  # Auto-incrementing simulated exchange order ID
 
+        # Slippage model: half-normal (always adverse), configurable in bps
+        self._slippage_mean_bps = slippage_mean_bps  # Mean adverse slippage
+        self._slippage_std_bps = slippage_std_bps   # Std deviation
+
         # Paper trading account balance
         self.cash: Decimal = initial_cash
         self.trade_log: List[dict] = []
 
         logger.info(
-            "[PAPER] PaperOrderManager initialized – starting capital: $%.2f",
-            float(initial_cash),
+            "[PAPER] PaperOrderManager initialized – capital: $%.2f "
+            "slippage: %.1f±%.1f bps",
+            float(initial_cash), slippage_mean_bps, slippage_std_bps,
         )
 
     # ── Lifecycle ───────────────────────────
@@ -191,12 +202,25 @@ class PaperOrderManager:
             order.transition(OrderStatus.NEW, note=f"[PAPER] exchangeOrderId={eid}")
 
             # Determine fill price: use limit price if set, else 0 (market needs mid)
-            fill_price = order.limit_price if order.limit_price else Decimal(0)
-            if fill_price == 0:
+            base_price = order.limit_price if order.limit_price else Decimal(0)
+            if base_price == 0:
                 logger.warning(
                     "[PAPER] No price for %s – skipping fill.", order.client_order_id
                 )
                 return order
+
+            # Apply adverse slippage: always move price against the trader
+            # BUY  → fill above base_price (pay more)
+            # SELL → fill below base_price (receive less)
+            slippage_bps = abs(random.gauss(
+                self._slippage_mean_bps, self._slippage_std_bps
+            ))
+            slippage_factor = Decimal(str(slippage_bps / 10_000))
+            if order.side == OrderSide.BUY:
+                fill_price = base_price * (1 + slippage_factor)
+            else:
+                fill_price = base_price * (1 - slippage_factor)
+            fill_price = fill_price.quantize(Decimal("0.01"))  # Round to cents
 
             # Calculate commission: price * qty * rate
             commission = fill_price * order.quantity * COMMISSION_RATE
@@ -227,7 +251,9 @@ class PaperOrderManager:
                     "symbol": order.symbol,
                     "side": order.side.value,
                     "qty": float(order.quantity),
-                    "price": float(fill_price),
+                    "base_price": float(base_price),
+                    "fill_price": float(fill_price),
+                    "slippage_bps": float(slippage_bps),
                     "notional": float(notional),
                     "commission": float(commission),
                     "cash_after": float(self.cash),
@@ -237,12 +263,14 @@ class PaperOrderManager:
             order.transition(OrderStatus.FILLED, note="[PAPER] Immediately filled")
 
             logger.info(
-                "[PAPER] FILL: %s %s %.6f %s @ $%.4f | Commission=$%.4f | Cash=$%.2f",
+                "[PAPER] FILL: %s %s %.6f @ $%.4f (base=$%.4f slip=%.2fbps) "
+                "| Commission=$%.4f | Cash=$%.2f",
                 order.symbol,
                 order.side.value,
                 float(order.quantity),
-                order.symbol,
                 float(fill_price),
+                float(base_price),
+                slippage_bps,
                 float(commission),
                 float(self.cash),
             )

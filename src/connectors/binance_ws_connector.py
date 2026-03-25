@@ -570,15 +570,49 @@ class BinanceWSConnector:
             logger.error("User data stream failed to start: %s", exc)
 
     async def _keepalive_listen_key_loop(self) -> None:
+        _MAX_FAILURES = 3  # Re-establish user stream after this many consecutive failures
+        _consecutive_failures = 0
+
         while self._state == ConnState.CONNECTED:
             try:
                 await asyncio.sleep(self._LISTEN_KEY_REFRESH_INTERVAL)
                 await self._refresh_listen_key()
                 logger.debug("ListenKey refreshed.")
+                _consecutive_failures = 0  # Reset on success
             except asyncio.CancelledError:
                 return
             except Exception as exc:
-                logger.error("ListenKey refresh failed: %s", exc)
+                _consecutive_failures += 1
+                logger.error(
+                    "ListenKey refresh failed (%d/%d): %s",
+                    _consecutive_failures, _MAX_FAILURES, exc,
+                )
+                if _consecutive_failures >= _MAX_FAILURES:
+                    logger.warning(
+                        "ListenKey expired or unreachable after %d failures — "
+                        "re-establishing user data stream.",
+                        _consecutive_failures,
+                    )
+                    _consecutive_failures = 0
+                    try:
+                        # Unsubscribe stale key, get a fresh one, re-subscribe
+                        if self._listen_key:
+                            await self.unsubscribe([self._listen_key])
+                        self._listen_key = await self._create_listen_key()
+                        await self.subscribe([self._listen_key])
+                        logger.info(
+                            "User data stream re-established (listenKey=...%s)",
+                            self._listen_key[-8:],
+                        )
+                    except Exception as reopen_exc:
+                        logger.error(
+                            "Failed to re-establish user data stream: %s — "
+                            "triggering full reconnect.",
+                            reopen_exc,
+                        )
+                        # Full WS reconnect as last resort
+                        await self._handle_reconnect()
+                        return
 
     # ── Private: REST helpers ───────────────
 
