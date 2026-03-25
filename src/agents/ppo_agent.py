@@ -1397,7 +1397,7 @@ class PPOAgent:
                     # Fix #4 (Training): Critic receives the same hidden state as Actor.
                     # No more None — Critic now has access to the same temporal context.
                     critic_values, _ = self.critic(batch_states, batch_hidden)
-                    critic_values = critic_values.squeeze()
+                    critic_values = critic_values.squeeze(-1)
 
                     # Compute losses for this mini-batch
                     # --------------------------------------

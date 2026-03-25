@@ -106,6 +106,22 @@ class MetaLearningConfig:
     first_order: bool = False  # Use first-order MAML (faster, less memory)
 
 
+def _meta_loss(predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    """
+    Shape-safe loss for meta-learning:
+    - LongTensor/integer targets → cross_entropy (classification)
+    - FloatTensor with matching shapes → mse_loss (regression)
+    - FloatTensor with mismatched last dim (e.g. (N,3) vs (N,1)) →
+      reduce predictions to 1-D mean so shapes align.
+    """
+    if targets.dtype in (torch.long, torch.int32, torch.int64):
+        return F.cross_entropy(predictions, targets.squeeze())
+    if predictions.shape != targets.shape:
+        # e.g. 3-output model with single regression target (N,1) or (N,)
+        return F.mse_loss(predictions.mean(dim=-1), targets.squeeze())
+    return F.mse_loss(predictions, targets)
+
+
 class MAMLTrader:
     """
     Model-Agnostic Meta-Learning (MAML) for trading.
@@ -191,7 +207,7 @@ class MAMLTrader:
 
             # Forward pass on support examples
             predictions = model(support_x)
-            loss = F.mse_loss(predictions, support_y)
+            loss = _meta_loss(predictions, support_y)
 
             # Backward pass: compute gradients wrt task-adapted parameters
             loss.backward()
@@ -239,7 +255,7 @@ class MAMLTrader:
 
             # Evaluate on query set (held-out data from same task)
             query_predictions = adapted_model(query_x)
-            task_loss = F.mse_loss(query_predictions, query_y)
+            task_loss = _meta_loss(query_predictions, query_y)
 
             meta_loss += task_loss  # Accumulate across tasks
 
@@ -489,7 +505,7 @@ class ContinualLearner:
         for batch_x, batch_y in data_loader:
             self.model.zero_grad()
             output = self.model(batch_x)
-            loss = F.mse_loss(output, batch_y)
+            loss = _meta_loss(output, batch_y)
             loss.backward()
 
             # Accumulate squared gradients (diagonal Fisher approximation)
@@ -562,7 +578,7 @@ class ContinualLearner:
 
                 # Task loss: fit the current data
                 output = self.model(batch_x)
-                task_loss = F.mse_loss(output, batch_y)
+                task_loss = _meta_loss(output, batch_y)
 
                 # EWC penalty: don't deviate from what worked for previous tasks
                 ewc_penalty = self.ewc_loss()

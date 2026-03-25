@@ -25,7 +25,7 @@ class MockExchangeDataLoader:
     def __init__(self):
         np.random.seed(42)
         n_points = 1000
-        self.dates = pd.date_range("2023-01-01", periods=n_points, freq="1H")
+        self.dates = pd.date_range("2023-01-01", periods=n_points, freq="1h")
 
         # Generate realistic price data with trend
         trend = np.linspace(0, 5000, n_points)  # Upward drift over time
@@ -194,7 +194,7 @@ class TestRiskManagementIntegration:
         """Test that circuit breaker works in environment."""
         # Create simple data
         np.random.seed(42)
-        dates = pd.date_range("2023-01-01", periods=200, freq="1H")
+        dates = pd.date_range("2023-01-01", periods=200, freq="1h")
         close = 50000 + np.cumsum(np.random.randn(200) * 100)
 
         price_data = pd.DataFrame(
@@ -253,7 +253,7 @@ class TestAdversarialTrainingIntegration:
         """Test complete training loop with adversary."""
         # Create mock environment
         np.random.seed(42)
-        dates = pd.date_range("2023-01-01", periods=300, freq="1H")
+        dates = pd.date_range("2023-01-01", periods=300, freq="1h")
         close = 50000 + np.cumsum(np.random.randn(300) * 100)
 
         price_data = pd.DataFrame(
@@ -356,8 +356,8 @@ class TestDataIntegrity:
         """Test that feature engineering doesn't leak future data."""
         # Create data with clear train/test split
         np.random.seed(42)
-        train_dates = pd.date_range("2023-01-01", periods=200, freq="1H")
-        test_dates = pd.date_range("2023-01-09", periods=100, freq="1H")
+        train_dates = pd.date_range("2023-01-01", periods=200, freq="1h")
+        test_dates = pd.date_range("2023-01-09", periods=100, freq="1h")
 
         train_data = pd.DataFrame(
             {
@@ -406,7 +406,7 @@ class TestDataIntegrity:
     def test_environment_observation_shape_consistency(self):
         """Test that environment observation shape is consistent."""
         np.random.seed(42)
-        dates = pd.date_range("2023-01-01", periods=200, freq="1H")
+        dates = pd.date_range("2023-01-01", periods=200, freq="1h")
         close = 50000 + np.cumsum(np.random.randn(200) * 100)
 
         price_data = pd.DataFrame(

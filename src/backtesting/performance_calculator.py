@@ -374,7 +374,7 @@ class PerformanceCalculator:
             }
 
         # Consistency metrics
-        monthly_returns = equity.resample("M").last().pct_change().dropna()
+        monthly_returns = equity.resample("ME").last().pct_change().dropna()
         positive_months = (monthly_returns > 0).sum()
         negative_months = (monthly_returns < 0).sum()
         consistency_score = (
