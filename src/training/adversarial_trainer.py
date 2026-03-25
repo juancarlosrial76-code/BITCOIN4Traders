@@ -96,7 +96,7 @@ try:
 except ImportError:
     _YAML_OK = False
 
-from agents.ppo_agent import PPOAgent, PPOConfig
+from src.agents.ppo_agent import PPOAgent, PPOConfig
 
 # Optional unified logging (MLflow + TensorBoard + ExperimentTracker)
 try:
@@ -534,6 +534,7 @@ class AdversarialTrainer:
         self,
         vec_env,  # VecTradingEnv
         steps_per_env: int,
+        use_adversary: bool = False,
     ) -> Dict:
         """
         Collect trajectories with GPU-CPU Double-Buffering Pipeline.
@@ -577,6 +578,20 @@ class AdversarialTrainer:
         self.trader.reset_buffers(capacity=steps_per_env * n_envs)
         trader_hidden = self.trader.get_initial_hidden_state(batch_size=n_envs)
 
+        # Adversary init for VecEnv mode
+        if use_adversary:
+            self.adversary.reset_buffers(capacity=steps_per_env * n_envs)
+            adversary_hidden = self.adversary.get_initial_hidden_state(batch_size=n_envs)
+            self.adversary_states = []
+            self.adversary_actions = []
+            self.adversary_log_probs = []
+            self.adversary_values = []
+            self.adversary_rewards = []
+            self.adversary_dones = []
+            self.adversary_hiddens = []
+        else:
+            adversary_hidden = None
+
         obs = vec_env.reset()  # (N, state_dim)
 
         # ── CUDA Streams for Overlap ──────────────────────────────────────────
@@ -606,6 +621,11 @@ class AdversarialTrainer:
         prev_values = None
         prev_hidden = None
         prev_obs = None
+        # Adversary double-buffering (same pattern as trader)
+        prev_adv_actions = None
+        prev_adv_log_probs = None
+        prev_adv_values = None
+        prev_adv_hidden = None
 
         # Futures for async env.step() (CPU runs parallel to GPU)
         from concurrent.futures import Future
@@ -626,20 +646,33 @@ class AdversarialTrainer:
             # hidden state would be used for BPTT during training.
             prev_hidden = trader_hidden
 
-            # ── GPU forward pass (nicht-blockierend) ──────────────────────
+            # ── Adversary: select modification for all N envs ────────────
+            # Runs synchronously on CPU (cheap compared to trader GPU forward).
+            # Must happen BEFORE the trader sees obs so the modification reaches
+            # the trader's policy network.
+            if use_adversary:
+                prev_adv_hidden = adversary_hidden
+                adv_actions_t, adv_lp_t, adv_val_t, adversary_hidden = (
+                    self.adversary.select_action_batch(obs, adversary_hidden)
+                )
+                obs_for_trader = self._apply_adversary_modification_batch(obs, adv_actions_t)
+            else:
+                obs_for_trader = obs
+
+            # ── GPU forward pass (non-blocking) ──────────────────────────
             if use_cuda and compute_stream is not None and obs_pinned is not None:
                 with torch.cuda.stream(compute_stream):
                     # Non-blocking H2D Transfer
-                    obs_pinned.copy_(torch.from_numpy(obs), non_blocking=True)
+                    obs_pinned.copy_(torch.from_numpy(obs_for_trader), non_blocking=True)
                     obs_gpu = obs_pinned.to(self.trader.device, non_blocking=True)
-                    # Forward pass auf compute_stream
+                    # Forward pass on compute_stream
                     actions, log_probs, values, trader_hidden = (
                         self.trader.select_action_batch(obs_gpu, trader_hidden)
                     )
             else:
                 # CPU-Fallback: synchron
                 actions, log_probs, values, trader_hidden = (
-                    self.trader.select_action_batch(obs, trader_hidden)
+                    self.trader.select_action_batch(obs_for_trader, trader_hidden)
                 )
 
             # ── CPU env.step() PARALLEL to next GPU forward ──────────────
@@ -693,6 +726,33 @@ class AdversarialTrainer:
                 cur_length += 1
                 self.total_steps += n_envs
 
+                # ── Save adversary transitions for this step ──────
+                if use_adversary and prev_adv_actions is not None:
+                    # Adversary reward: wins when trader loses
+                    adv_rewards_batch = -rewards * 0.5
+                    if prev_adv_hidden is not None:
+                        if isinstance(prev_adv_hidden, tuple):
+                            _adv_hiddens = [
+                                tuple(h[:, i:i+1, :].detach() for h in prev_adv_hidden)
+                                for i in range(n_envs)
+                            ]
+                        else:
+                            _adv_hiddens = [
+                                prev_adv_hidden[:, i:i+1, :].detach()
+                                for i in range(n_envs)
+                            ]
+                    else:
+                        _adv_hiddens = [None] * n_envs
+
+                    for i in range(n_envs):
+                        self.adversary_states.append(prev_obs[i])
+                        self.adversary_actions.append(int(prev_adv_actions[i]))
+                        self.adversary_log_probs.append(float(prev_adv_log_probs[i]))
+                        self.adversary_values.append(float(prev_adv_values[i]))
+                        self.adversary_rewards.append(float(adv_rewards_batch[i]))
+                        self.adversary_dones.append(bool(dones[i]))
+                        self.adversary_hiddens.append(_adv_hiddens[i])
+
                 for i in range(n_envs):
                     if dones[i]:
                         ep_rewards[i].append(float(cur_reward[i]))
@@ -706,6 +766,12 @@ class AdversarialTrainer:
                                 trader_hidden[1][:, i, :].zero_()
                             else:
                                 trader_hidden[:, i, :].zero_()
+                        if use_adversary and adversary_hidden is not None:
+                            if isinstance(adversary_hidden, tuple):
+                                adversary_hidden[0][:, i, :].zero_()
+                                adversary_hidden[1][:, i, :].zero_()
+                            else:
+                                adversary_hidden[:, i, :].zero_()
 
             # ── Shift state one step forward ──────────────────────
             prev_obs = obs.copy()
@@ -713,11 +779,16 @@ class AdversarialTrainer:
             prev_log_probs = log_probs
             prev_values = values
             # NOT: prev_hidden = trader_hidden (moved to the beginning of the loop)
+            if use_adversary:
+                prev_adv_actions = adv_actions_t
+                prev_adv_log_probs = adv_lp_t
+                prev_adv_values = adv_val_t
+                # prev_adv_hidden already set at top of loop
 
             if next_obs is not None:
                 obs = next_obs
 
-        # ── Letzten step_future auflösen und letzten Schritt speichern ────
+        # ── Resolve last step_future and save last step ──────────────────
         if step_future is not None and prev_actions is not None:
             next_obs, rewards, dones, infos = step_future.result()
             # ADV-5: same batch-write pattern as the main loop
@@ -748,6 +819,31 @@ class AdversarialTrainer:
             cur_length += 1
             self.total_steps += n_envs
 
+            # Last-step adversary transitions
+            if use_adversary and prev_adv_actions is not None:
+                adv_rewards_batch = -rewards * 0.5
+                if prev_adv_hidden is not None:
+                    if isinstance(prev_adv_hidden, tuple):
+                        _adv_hiddens = [
+                            tuple(h[:, i:i+1, :].detach() for h in prev_adv_hidden)
+                            for i in range(n_envs)
+                        ]
+                    else:
+                        _adv_hiddens = [
+                            prev_adv_hidden[:, i:i+1, :].detach()
+                            for i in range(n_envs)
+                        ]
+                else:
+                    _adv_hiddens = [None] * n_envs
+                for i in range(n_envs):
+                    self.adversary_states.append(prev_obs[i])
+                    self.adversary_actions.append(int(prev_adv_actions[i]))
+                    self.adversary_log_probs.append(float(prev_adv_log_probs[i]))
+                    self.adversary_values.append(float(prev_adv_values[i]))
+                    self.adversary_rewards.append(float(adv_rewards_batch[i]))
+                    self.adversary_dones.append(bool(dones[i]))
+                    self.adversary_hiddens.append(_adv_hiddens[i])
+
             for i in range(n_envs):
                 if dones[i]:
                     ep_rewards[i].append(float(cur_reward[i]))
@@ -758,9 +854,17 @@ class AdversarialTrainer:
 
             obs = next_obs
 
-        # Bootstrap value
+        # Bootstrap values
         _, _, bootstrap_values, _ = self.trader.select_action_batch(obs, trader_hidden)
         next_value = float(bootstrap_values.mean())
+
+        if use_adversary:
+            _, _, adv_bootstrap, _ = self.adversary.select_action_batch(obs, adversary_hidden)
+            adversary_next_value = float(adv_bootstrap.mean())
+            mean_adv_reward = float(np.mean(self.adversary_rewards)) if self.adversary_rewards else 0.0
+        else:
+            adversary_next_value = 0.0
+            mean_adv_reward = 0.0
 
         all_ep_rewards = [r for env_r in ep_rewards for r in env_r]
         all_ep_returns = [r for env_r in ep_returns for r in env_r]
@@ -774,9 +878,9 @@ class AdversarialTrainer:
             "mean_return": float(np.mean(all_ep_returns)) if all_ep_returns else 0.0,
             "mean_length": float(np.mean(all_ep_lengths)) if all_ep_lengths else 0.0,
             "next_value": next_value,
-            "adversary_next_value": 0.0,
-            "adversary_episode_rewards": [],
-            "mean_adversary_reward": 0.0,
+            "adversary_next_value": adversary_next_value,
+            "adversary_episode_rewards": list(self.adversary_rewards) if use_adversary else [],
+            "mean_adversary_reward": mean_adv_reward,
         }
 
     def _apply_adversary_modification(
@@ -854,6 +958,40 @@ class AdversarialTrainer:
         modified_obs = np.clip(modified_obs, -10.0, 10.0)
 
         return modified_obs, challenge_info
+
+    def _apply_adversary_modification_batch(
+        self, obs: np.ndarray, adv_actions: np.ndarray
+    ) -> np.ndarray:
+        """
+        Vectorised adversary modification for VecEnv: applies per-env action to each row.
+
+        Parameters
+        ----------
+        obs : np.ndarray  shape (N, D)
+        adv_actions : np.ndarray  shape (N,)  int64
+
+        Returns
+        -------
+        modified_obs : np.ndarray  shape (N, D)
+        """
+        modified = obs.copy()
+        strength = self.config.adversary_strength
+        N, D = modified.shape
+
+        for i in range(N):
+            a = int(adv_actions[i])
+            if a == 0:
+                modified[i] += np.random.randn(D) * strength * 0.5
+            elif a == 1:
+                n_feat = min(5, D // 2)
+                modified[i, :n_feat] += np.random.randn() * strength
+            elif a == 2:
+                n_inv = max(1, int(D * strength * 0.3))
+                idx = np.random.choice(D, n_inv, replace=False)
+                modified[i, idx] *= -1
+            # a == 3: no modification
+
+        return np.clip(modified, -10.0, 10.0)
 
     def train_trader(self, next_value: float) -> Dict:
         """Train trader agent."""
@@ -966,18 +1104,16 @@ class AdversarialTrainer:
             else self.config.steps_per_iteration
         )
         if _use_vec and vec_env is not None:
-            logger.warning(
+            logger.info(
                 f"VecEnv mode: {vec_env.n_envs} envs x {_steps_per_env} steps "
-                f"= {vec_env.n_envs * _steps_per_env} steps/iter | adversary DISABLED"
+                f"= {vec_env.n_envs * _steps_per_env} steps/iter | adversary ENABLED"
             )
 
         for iteration in range(self.config.n_iterations):
             self.iteration = iteration
 
             # Collect trajectories
-            use_adversary = (
-                not _use_vec and iteration >= self.config.adversary_start_iteration
-            )
+            use_adversary = iteration >= self.config.adversary_start_iteration
 
             # debug level: goes to log file only, not to Colab stdout
             logger.debug(f"\n{'=' * 80}")
@@ -985,7 +1121,7 @@ class AdversarialTrainer:
             logger.debug(f"Adversary active: {use_adversary}")
 
             if _use_vec:
-                traj_metrics = self.collect_trajectories_vec(vec_env, _steps_per_env)
+                traj_metrics = self.collect_trajectories_vec(vec_env, _steps_per_env, use_adversary=use_adversary)
             else:
                 traj_metrics = self.collect_trajectories(
                     self.config.steps_per_iteration, use_adversary=use_adversary
