@@ -83,7 +83,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from loguru import logger
 from torch.distributions import Categorical
-from torch.optim.lr_scheduler import ExponentialLR
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from src.networks.transformer_net import TransformerBackbone
 
@@ -164,7 +164,8 @@ class PPOConfig:
     actor_lr: float = 3e-4
     critic_lr: float = 1e-3
     use_lr_decay: bool = True
-    lr_decay_gamma: float = 0.99
+    lr_decay_gamma: float = 0.99       # kept for backwards-compat (unused)
+    lr_decay_steps: int = 3000         # CosineAnnealingLR T_max (full cycle)
 
     # PPO specific
     gamma: float = 0.99
@@ -750,11 +751,19 @@ class PPOAgent:
         self.critic_scheduler = None
 
         if config.use_lr_decay:
-            self.actor_scheduler = ExponentialLR(
-                self.actor_optimizer, gamma=config.lr_decay_gamma
+            # CosineAnnealingLR: LR follows a cosine curve from lr → eta_min
+            # over T_max steps, then restarts.  Unlike ExponentialLR(0.99) which
+            # reaches LR≈0 after ~500 steps and stays there, cosine annealing
+            # stays in a useful range for the full training run and cycles back.
+            self.actor_scheduler = CosineAnnealingLR(
+                self.actor_optimizer,
+                T_max=config.lr_decay_steps,
+                eta_min=config.actor_lr * 0.01,  # floor at 1% of initial LR
             )
-            self.critic_scheduler = ExponentialLR(
-                self.critic_optimizer, gamma=config.lr_decay_gamma
+            self.critic_scheduler = CosineAnnealingLR(
+                self.critic_optimizer,
+                T_max=config.lr_decay_steps,
+                eta_min=config.critic_lr * 0.01,
             )
 
         # ── Option B: Sliding-window sequence buffer ─────────────────────────
