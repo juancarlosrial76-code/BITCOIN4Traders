@@ -11,7 +11,7 @@ long_description = (this_directory / "README.md").read_text()
 
 setup(
     name="bitcoin4traders",
-    version="1.0.0",
+    version="2.0.0",
     author="juancarlosrial76-code",
     author_email="juancarlosrial76@users.noreply.github.com",
     description="Institutional-Grade Bitcoin Trading System with Deep Reinforcement Learning",

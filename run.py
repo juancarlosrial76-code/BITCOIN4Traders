@@ -37,6 +37,7 @@ import yaml
 from src.connectors.binance_ws_connector import ReconnectPolicy
 from src.execution.live_engine import EngineConfig, LiveExecutionEngine
 from src.monitoring.monitor import EngineMonitor, TelegramNotifier
+from src.config import get_binance_credentials, get_telegram_credentials
 
 logger = logging.getLogger("run")
 
@@ -304,11 +305,16 @@ def build_agent_and_features(cfg: dict):
 def load_config(path: str) -> dict:
     with open(path) as f:
         cfg = yaml.safe_load(f)
-    # Override with env vars (12-factor app style)
-    cfg.setdefault("api_key", os.environ.get("BINANCE_API_KEY", ""))
-    cfg.setdefault("api_secret", os.environ.get("BINANCE_API_SECRET", ""))
-    cfg.setdefault("telegram_token", os.environ.get("TELEGRAM_BOT_TOKEN", ""))
-    cfg.setdefault("telegram_chat_id", os.environ.get("TELEGRAM_CHAT_ID", ""))
+
+    # Use Secrets Manager (Vault → AWS → Environment)
+    api_key, api_secret = get_binance_credentials()
+    telegram_token, telegram_chat_id = get_telegram_credentials()
+
+    # Override with secrets from manager
+    cfg.setdefault("api_key", api_key)
+    cfg.setdefault("api_secret", api_secret)
+    cfg.setdefault("telegram_token", telegram_token)
+    cfg.setdefault("telegram_chat_id", telegram_chat_id)
     return cfg
 
 
@@ -338,14 +344,10 @@ async def main(config_path: str, dry_run: bool = False) -> None:
 
     # ── Logging ──────────────────────────────────────────────────────
     log_level = cfg.get("log_level", "INFO")
-    logging.basicConfig(
-        level=getattr(logging, log_level),
-        format="%(asctime)s │ %(levelname)-8s │ %(name)s │ %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler(cfg.get("log_file", "logs/run.log")),
-        ],
+    from src.config.logging_config import setup_logging
+    setup_logging(
+        level=log_level,
+        log_file=cfg.get("log_file", "logs/run.log"),
     )
 
     if dry_run:

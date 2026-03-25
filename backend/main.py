@@ -16,6 +16,7 @@ import random
 
 from backend.api import trading, config, analytics, models, system, login
 from backend.api.login import get_current_user
+from src.config import get_binance_credentials
 
 
 class ConnectionManager:
@@ -90,8 +91,7 @@ async def lifespan(app: FastAPI):
     try:
         from src.connectors.binance_connector import BinanceConnector
 
-        api_key = os.getenv("BINANCE_API_KEY")
-        api_secret = os.getenv("BINANCE_API_SECRET")
+        api_key, api_secret = get_binance_credentials()
         testnet = os.getenv("BINANCE_TESTNET", "true").lower() == "true"
 
         if api_key and api_secret:
@@ -198,14 +198,31 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type"],
 )
 
+# ── API v1 routes ─────────────────────────────────────────────────────────────
+# All routes are versioned under /api/v1/ for forward-compatibility.
+# Legacy /api/<resource> paths are kept as aliases for existing clients.
+
 # Public routes (no auth required)
-app.include_router(login.router, prefix="/api/auth", tags=["auth"])
+app.include_router(login.router, prefix="/api/v1/auth", tags=["auth"])
+app.include_router(login.router, prefix="/api/auth", tags=["auth"])   # legacy alias
 
 # Protected routes (JWT required)
 app.include_router(
     trading.router,
+    prefix="/api/v1/trading",
+    tags=["trading"],
+    dependencies=[Depends(get_current_user)],
+)
+app.include_router(
+    trading.router,
     prefix="/api/trading",
     tags=["trading"],
+    dependencies=[Depends(get_current_user)],
+)
+app.include_router(
+    config.router,
+    prefix="/api/v1/config",
+    tags=["config"],
     dependencies=[Depends(get_current_user)],
 )
 app.include_router(
@@ -216,14 +233,32 @@ app.include_router(
 )
 app.include_router(
     analytics.router,
+    prefix="/api/v1/analytics",
+    tags=["analytics"],
+    dependencies=[Depends(get_current_user)],
+)
+app.include_router(
+    analytics.router,
     prefix="/api/analytics",
     tags=["analytics"],
     dependencies=[Depends(get_current_user)],
 )
 app.include_router(
     models.router,
+    prefix="/api/v1/models",
+    tags=["models"],
+    dependencies=[Depends(get_current_user)],
+)
+app.include_router(
+    models.router,
     prefix="/api/models",
     tags=["models"],
+    dependencies=[Depends(get_current_user)],
+)
+app.include_router(
+    system.router,
+    prefix="/api/v1/system",
+    tags=["system"],
     dependencies=[Depends(get_current_user)],
 )
 app.include_router(
@@ -236,16 +271,17 @@ app.include_router(
 
 @app.get("/", tags=["root"])
 async def root():
-    return {"message": "BITCOIN4Traders API", "version": "1.0.0", "docs": "/docs"}
+    return {"message": "BITCOIN4Traders API", "version": "2.0.0", "docs": "/docs"}
 
 
+@app.get("/api/v1/status", tags=["root"])
 @app.get("/api/status", tags=["root"])
 async def get_status():
     binance_status = "connected" if binance_connector else "mock"
     return {
         "status": "running",
         "timestamp": datetime.now().isoformat(),
-        "version": "1.0.0",
+        "version": "2.0.0",
         "binance": binance_status,
     }
 

@@ -115,18 +115,18 @@ PERF_TIER_NUMPY_MAX = 100_000  # < 100k rows -> Tier 2 (numpy)
 
 def _detect_performance_tier(n_rows: int) -> int:
     """
-    Bestimmt den optimalen Performance-Tier basierend auf Datenmenge.
+    Determines the optimal performance tier based on dataset size.
 
     Args:
-        n_rows: Anzahl der Zeilen im Datensatz
+        n_rows: Number of rows in the dataset
 
     Returns:
-        1 = Pandas (klein), 2 = NumPy (mittel), 3 = Numba (gross)
+        1 = Pandas (small), 2 = NumPy (medium), 3 = Numba (large)
 
     Example:
         >>> _detect_performance_tier(200)    # → 1 (pandas)
         >>> _detect_performance_tier(50_000) # → 2 (numpy)
-        >>> _detect_performance_tier(200_000)# → 3 (numba, falls verfügbar)
+        >>> _detect_performance_tier(200_000)# → 3 (numba, if available)
     """
     if n_rows < PERF_TIER_PANDAS_MAX:
         return 1
@@ -138,24 +138,24 @@ def _detect_performance_tier(n_rows: int) -> int:
 
 def _load_numba_jit():
     """
-    Lädt Numba LAZY — nur wenn wirklich gebraucht (>= 100k Zeilen).
+    Loads Numba LAZILY — only when actually needed (>= 100k rows).
 
     Returns:
-        jit-Funktion oder None wenn Numba nicht installiert ist.
+        jit function or None if Numba is not installed.
 
-    WICHTIG: Dieser Import triggert die JIT-Kompilierung NICHT sofort.
-    Die Kompilierung passiert erst beim ersten Aufruf einer @jit-Funktion.
-    Mit cache=True wird das Ergebnis gespeichert → ab dem zweiten Mal sofort.
+    IMPORTANT: This import does NOT trigger JIT compilation immediately.
+    Compilation happens on the first call to a @jit function.
+    With cache=True the result is stored → instant from the second run onward.
     """
     try:
         from numba import jit
 
-        logger.info("Numba verfügbar — Tier 3 (JIT) aktiv für grosse Datensätze")
+        logger.info("Numba available — Tier 3 (JIT) active for large datasets")
         return jit
     except ImportError:
         logger.warning(
-            "Numba nicht installiert — Tier 2 (numpy) wird verwendet. "
-            "Für Tier 3: pip install numba"
+            "Numba not installed — falling back to Tier 2 (numpy). "
+            "For Tier 3: pip install numba"
         )
         return None
 
@@ -219,6 +219,11 @@ class FeatureConfig:
     scaler_path: Path
     dropna_strategy: str
     min_valid_rows: int
+    # Timeframe in minutes — used to compute the correct annualization factor.
+    # Examples: 1=1m, 5=5m, 15=15m, 60=1h (default), 240=4h, 1440=daily
+    timeframe_minutes: int = 60
+    # Optional: run LeakDetector after fit_transform to catch look-ahead bias
+    check_leakage: bool = False
 
 
 class FeatureEngine:
@@ -304,6 +309,11 @@ class FeatureEngine:
         self.config = config
         self.is_fitted = False
 
+        # Annualization factor: number of periods per year for this timeframe.
+        # Formula: 252 trading days × (1440 min/day) / timeframe_minutes
+        tf_min = getattr(config, "timeframe_minutes", 60)
+        self._ann_factor: float = (252 * 1440) / tf_min
+
         # Initialize scaler
         self.scaler = self._init_scaler()
 
@@ -314,6 +324,7 @@ class FeatureEngine:
         logger.info(f"  Volatility window: {config.volatility_window}")
         logger.info(f"  OU window: {config.ou_window}")
         logger.info(f"  Scaler: {config.scaler_type}")
+        logger.info(f"  Timeframe: {tf_min}m  ann_factor: {self._ann_factor:.0f}")
 
     def _init_scaler(self):
         """Initialize scaler based on config."""
@@ -380,10 +391,10 @@ class FeatureEngine:
         feature_cols = self._get_feature_columns(df)
         df[feature_cols] = self.scaler.fit_transform(df[feature_cols])
 
-        # P1-C: Entferne feature_names_in_ damit transform_single() numpy arrays
-        # ohne sklearn-UserWarning uebergeben kann (Scaler wurde auf DataFrame
-        # gefittet, transform_single() uebergibt rohes ndarray — kein Fehler,
-        # nur ein informationsloser Warning der Logs zumuellet).
+        # P1-C: Remove feature_names_in_ so that transform_single() can pass numpy
+        # arrays without a sklearn UserWarning (scaler was fitted on a DataFrame,
+        # transform_single() passes a raw ndarray — not an error, just an
+        # uninformative warning that clutters the logs).
         if hasattr(self.scaler, "feature_names_in_"):
             del self.scaler.feature_names_in_
 
@@ -395,7 +406,32 @@ class FeatureEngine:
 
         logger.success(f"FeatureEngine fitted on {len(df)} rows")
 
+        # Optional: run LeakDetector to catch look-ahead bias in features
+        if getattr(self.config, "check_leakage", False):
+            self._run_leak_check(df)
+
         return df
+
+    def _run_leak_check(self, df: pd.DataFrame) -> None:
+        """Run LeakDetector against future returns. Logs warnings on suspected leakage."""
+        try:
+            from src.validation.antibias_walkforward import LeakDetector
+
+            feature_cols = [
+                c for c in df.columns
+                if c not in ("open", "high", "low", "close", "volume")
+            ]
+            X = df[feature_cols].ffill().fillna(0).values
+            future_ret = df["close"].pct_change(1).shift(-1).fillna(0).values
+            if X.shape[0] < 20 or X.shape[1] == 0:
+                logger.warning("LeakDetector skipped: insufficient data.")
+                return
+            detector = LeakDetector()
+            detector.check_feature_future_correlation(
+                X=X, future_returns=future_ret, feature_names=feature_cols, lag=1
+            )
+        except Exception as exc:
+            logger.warning(f"LeakDetector error (non-fatal): {exc}")
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -463,26 +499,26 @@ class FeatureEngine:
         buffer_size: int = 100,
     ) -> Optional[np.ndarray]:
         """
-        Live-Tick-Transform — O(1) inkrementelle Berechnung pro Tick.
+        Live-Tick-Transform — O(1) incremental computation per tick.
 
-        P1-C Optimierung: Die alte Implementierung baute bei jedem Tick einen
-        100-row DataFrame auf und berechnete alle 11 Indikatoren ueber rolling().
-        Das waren ~100 Pandas-Operationen um am Ende genau 1 Zeile zu nutzen.
+        P1-C Optimization: The old implementation rebuilt a 100-row DataFrame on
+        every tick and computed all 11 indicators via rolling(). That was ~100
+        pandas operations just to use exactly 1 row at the end.
 
-        Neue Implementierung: Inkrementelle EMA/Volatilitaet/RSI-Akkumulatoren
-        pro Symbol — jeder Tick ist O(1), kein DataFrame-Aufbau, kein pandas.
-        Fallback auf den alten DataFrame-Pfad wenn Warmup noch nicht abgeschlossen.
+        New implementation: Incremental EMA/volatility/RSI accumulators per
+        symbol — each tick is O(1), no DataFrame construction, no pandas.
+        Falls back to the old DataFrame path if warmup is not yet complete.
 
         Parameters
         ----------
-        symbol      : Handelspaar (z.B. 'BTCUSDT')
-        price       : Aktueller Mid-Preis
-        buffer_size : Warmup-Ticks bis erste Ausgabe (muss > laengstes Fenster = 50)
+        symbol      : Trading pair (e.g. 'BTCUSDT')
+        price       : Current mid-price
+        buffer_size : Warmup ticks until first output (must be > longest window = 50)
         """
         if not self.is_fitted:
             raise RuntimeError("FeatureEngine not fitted. Call fit_transform() first.")
 
-        # ── Zustandsinitialisierung pro Symbol ────────────────────────────────
+        # ── Per-symbol state initialization ───────────────────────────────────
         if not hasattr(self, "_live_state"):
             self._live_state: Dict[str, Dict] = {}
 
@@ -490,14 +526,14 @@ class FeatureEngine:
 
         if symbol not in self._live_state:
             self._live_state[symbol] = {
-                "prices": [],  # Kurz-Buffer fuer Warmup + rolling_std (50)
-                "n": 0,  # Zaehler
-                # EMA-Kerne (alpha = 2/(span+1))
+                "prices": [],  # Short buffer for warmup + rolling_std (50)
+                "n": 0,  # Counter
+                # EMA kernels (alpha = 2/(span+1))
                 "ema12": p,
                 "ema26": p,
                 "ema9": p,  # MACD
                 "ema_mean20": p,  # rolling mean approx.
-                # Welford-Varianz (rolling 20 / 50 approx. via EWM)
+                # Welford variance (rolling 20 / 50 approx. via EWM)
                 "ewvar20": 0.0,
                 "ewvar50": 0.0,
                 # RSI: Wilder smoothing (alpha = 1/14)
@@ -515,29 +551,29 @@ class FeatureEngine:
         buf = st["prices"]
         buf.append(p)
 
-        # ── Warmup: fuelle Buffer bis buffer_size Ticks vorhanden ─────────────
+        # ── Warmup: fill buffer until buffer_size ticks are available ────────
         if st["n"] < buffer_size:
-            # Akkumulatoren aktualisieren (auch im Warmup damit sie sinnvolle
-            # Startwerte haben wenn wir live gehen)
+            # Update accumulators (also during warmup so they have sensible
+            # starting values when we go live)
             self._update_incremental_state(st, p)
             return None
 
-        # Nur die letzten 51 Preise behalten (für Differenz-Checks)
+        # Keep only the last 51 prices (for delta checks)
         if len(buf) > 51:
             st["prices"] = buf[-51:]
 
-        # ── Inkrementelle Indikator-Berechnung ────────────────────────────────
+        # ── Incremental indicator calculation ────────────────────────────────
         self._update_incremental_state(st, p)
 
         # Log Return
         prev = st["prices"][-2] if len(st["prices"]) >= 2 else p
         log_ret = float(np.log(p / prev + 1e-10))
 
-        # Volatilität (EWM-Varianz approximiert rolling std)
-        vol20 = float(np.sqrt(max(st["ewvar20"], 0.0)) * np.sqrt(252))
-        vol50 = float(np.sqrt(max(st["ewvar50"], 0.0)) * np.sqrt(252))
+        # Volatility (EWM variance approximates rolling std)
+        vol20 = float(np.sqrt(max(st["ewvar20"], 0.0)) * np.sqrt(self._ann_factor))
+        vol50 = float(np.sqrt(max(st["ewvar50"], 0.0)) * np.sqrt(self._ann_factor))
 
-        # Rolling Mean (EMA12 als Proxy für rolling(20).mean())
+        # Rolling Mean (EMA12 as proxy for rolling(20).mean())
         rolling_mean = st["ema_mean20"]
 
         # MACD
@@ -545,7 +581,7 @@ class FeatureEngine:
         macd_signal = st["ema9"]
         macd_hist = macd_line - macd_signal
 
-        # RSI (0-100 normiert)
+        # RSI (0-100 normalized)
         total = st["avg_gain"] + st["avg_loss"]
         rsi = 50.0 if total < 1e-10 else 100.0 * st["avg_gain"] / total
 
@@ -558,7 +594,7 @@ class FeatureEngine:
         # OU-Score
         ou_score = (p - st["ou_mean"]) / (st["ou_std"] + 1e-10)
 
-        # Feature-Vektor zusammenbauen (Reihenfolge muss mit train_stats uebereinstimmen)
+        # Assemble feature vector (order must match train_stats)
         raw = np.array(
             [
                 log_ret,
@@ -581,7 +617,7 @@ class FeatureEngine:
         if not np.all(np.isfinite(raw)):
             return None
 
-        # Standardisieren mit Train-Statistiken (entspricht scaler.transform())
+        # Standardize with training statistics (equivalent to scaler.transform())
         try:
             feat_scaled = self.scaler.transform(raw.reshape(1, -1))[0].astype(
                 np.float32
@@ -595,11 +631,11 @@ class FeatureEngine:
         return feat_scaled
 
     def _update_incremental_state(self, st: Dict, p: float) -> None:
-        """Aktualisiert alle EMA/Varianz/RSI-Akkumulatoren mit einem neuen Preis p."""
+        """Updates all EMA/variance/RSI accumulators with a new price p."""
         a12 = 2.0 / (12 + 1)
         a26 = 2.0 / (26 + 1)
         a9 = 2.0 / (9 + 1)
-        a_m20 = 2.0 / (20 + 1)  # EMA fuer rolling mean
+        a_m20 = 2.0 / (20 + 1)  # EMA for rolling mean
         b20 = 2.0 / (20 + 1)  # EWM variance decay
         b50 = 2.0 / (50 + 1)
 
@@ -676,15 +712,13 @@ class FeatureEngine:
         # For hourly data: 252 trading days * 24 hours = 6048 periods/year
         df["volatility_20"] = (
             df["log_ret"].rolling(window=self.config.volatility_window).std()
-            * np.sqrt(
-                252 * 24
-            )  # Annualize hourly vol: σ_hourly * sqrt(trading hours/year)
+            * np.sqrt(self._ann_factor)
         )
 
         # Additional volatility window (50-period for longer-term regime)
         df["volatility_50"] = (
             df["log_ret"].rolling(window=50).std()
-            * np.sqrt(252 * 24)  # Same annualization factor
+            * np.sqrt(self._ann_factor)
         )
 
         # 3. Rolling statistics (for OU score)
@@ -746,10 +780,10 @@ class FeatureEngine:
         # H > 0.55: trending market  → follow momentum
         # H < 0.45: mean-reverting   → use OU/RSI contrarian signals
         # H ≈ 0.5 : random walk      → reduce position size
-        # PERFORMANCE GUARD: Hurst DFA ist O(n²).
-        # - Unter 500 Zeilen: kein Signal (neutral 0.5)
-        # - Über 5000 Zeilen: nur die letzten 5000 Zeilen verwenden (Rolling-Cap)
-        #   um O(n²) bei grossen Datasets (52k+ Zeilen) zu verhindern.
+        # PERFORMANCE GUARD: Hurst DFA is O(n²).
+        # - Below 500 rows: no signal (neutral 0.5)
+        # - Above 5000 rows: use only the last 5000 rows (rolling cap)
+        #   to prevent O(n²) on large datasets (52k+ rows).
         _MAX_HURST_ROWS = 5000
         if len(df) >= 500 and _HURST_AVAILABLE:
             if len(df) > _MAX_HURST_ROWS:
@@ -987,9 +1021,9 @@ class FeatureEngine:
     def _store_train_stats(self, df: pd.DataFrame):
         """Store training statistics for later use in transform.
 
-        NaN-sicher: alle Statistiken werden erst nach _handle_nan() berechnet.
-        Falls eine Spalte trotzdem NaN-Werte hat, werden sichere Fallbacks
-        verwendet (0 fuer Mittelwerte, 1 fuer Standardabweichungen).
+        NaN-safe: all statistics are computed after _handle_nan().
+        If a column still contains NaN values, safe fallbacks are used
+        (0 for means, 1 for standard deviations).
         """
 
         def _safe_mean(col: str, fallback: float = 0.0) -> float:
@@ -1042,7 +1076,7 @@ class FeatureEngine:
         elif self.config.dropna_strategy == "drop_all":
             df = df.dropna()
             if len(df) == 0 and initial_rows > 0:
-                # Alle Zeilen hatten NaN → forward-fill als Rettungsanker
+                # All rows had NaN → forward-fill as fallback anchor
                 logger.warning(
                     "drop_all removed all rows — falling back to forward_fill."
                 )
@@ -1056,18 +1090,18 @@ class FeatureEngine:
         if dropped > 0:
             logger.info(f"Dropped {dropped} rows (NaN handling)")
 
-        # Validate minimum rows — im Live-Betrieb nie crashen, Annahme treffen
+        # Validate minimum rows — never crash in live operation, make assumption
         if len(df) < self.config.min_valid_rows:
             if len(df) == 0:
-                # Komplett leer: ffill vom letzten bekannten Stand nicht moeglich
-                # -> leeres DataFrame zurueckgeben, Aufrufer entscheidet
+                # Completely empty: ffill from last known state not possible
+                # -> return empty DataFrame, caller decides
                 logger.warning(
                     f"NaN handling produced empty DataFrame "
                     f"(initial={initial_rows} rows). "
                     f"Returning empty — caller must handle."
                 )
             else:
-                # Zu wenig Zeilen: Warnung aber weitermachen
+                # Too few rows: warn but continue
                 logger.warning(
                     f"Insufficient data after NaN handling: {len(df)} rows "
                     f"(minimum: {self.config.min_valid_rows}). "
@@ -1167,34 +1201,182 @@ class FeatureEngine:
 # ============================================================================
 # PERFORMANCE-TIER ROLLING FUNCTIONS
 # ============================================================================
-# Drei Implementierungen derselben Logik — automatische Auswahl via
-# _detect_performance_tier(n_rows). Neue Methoden hier hinzufügen:
+# Three implementations of the same logic — automatic selection via
+# _detect_performance_tier(n_rows). Add new methods here:
 #
-#   1. _rolling_mean_tier1()  — pandas  (< 10k Zeilen)
-#   2. _rolling_mean_tier2()  — numpy   (10k–100k Zeilen)
-#   3. _rolling_mean_tier3()  — numba   (> 100k Zeilen, lazy loaded)
+#   1. _rolling_mean_tier1()  — pandas  (< 10k rows)
+#   2. _rolling_mean_tier2()  — numpy   (10k–100k rows)
+#   3. _rolling_mean_tier3()  — numba   (> 100k rows, lazy loaded)
 #
 # Public API: compute_rolling_mean(arr, window) / compute_rolling_std(arr, window)
-# → wählt automatisch den richtigen Tier.
+# → automatically selects the correct tier.
 # ============================================================================
+
+# ============================================================================
+# FEATURE ANALYSIS UTILITIES
+# ============================================================================
+
+
+def compute_feature_importance(
+    X: "pd.DataFrame", y: "pd.Series"
+) -> "pd.DataFrame":
+    """
+    Compute Mutual Information between each feature and the target.
+
+    Uses sklearn's mutual_info_regression which is non-parametric (works with
+    nonlinear relationships) and model-agnostic. Good first-pass filter for
+    identifying features with zero or near-zero predictive power.
+
+    Parameters
+    ----------
+    X : pd.DataFrame
+        Feature matrix (N × F). NaN values are forward-filled then zero-filled.
+    y : pd.Series
+        Regression target (e.g. next-step returns), length N.
+
+    Returns
+    -------
+    pd.DataFrame with columns ['feature', 'mutual_info'] sorted descending.
+
+    Example
+    -------
+    >>> importance = compute_feature_importance(features_df, returns_series)
+    >>> print(importance.head(10))
+    """
+    from sklearn.feature_selection import mutual_info_regression
+
+    X_clean = X.ffill().fillna(0)
+    mi = mutual_info_regression(X_clean, y, random_state=42)
+    result = (
+        pd.DataFrame({"feature": X.columns, "mutual_info": mi})
+        .sort_values("mutual_info", ascending=False)
+        .reset_index(drop=True)
+    )
+    low_info = result[result["mutual_info"] < 0.01]["feature"].tolist()
+    if low_info:
+        logger.warning(
+            f"compute_feature_importance: {len(low_info)} features with MI < 0.01 "
+            f"(likely zero predictive power): {low_info}"
+        )
+    return result
+
+
+def compute_vif(X: "pd.DataFrame") -> "pd.DataFrame":
+    """
+    Compute Variance Inflation Factor (VIF) for each feature.
+
+    VIF_i = 1 / (1 - R²_i) where R²_i is how well feature i is explained
+    by all other features. VIF > 10 indicates severe multicollinearity.
+
+    Uses the correlation-matrix approach (no statsmodels dependency):
+        VIF_i = diag(inv(corr_matrix))[i]
+
+    Parameters
+    ----------
+    X : pd.DataFrame
+        Feature matrix. Constant columns are skipped.
+
+    Returns
+    -------
+    pd.DataFrame with columns ['feature', 'vif'] sorted descending.
+
+    Example
+    -------
+    >>> vif_df = compute_vif(features_df)
+    >>> high_vif = vif_df[vif_df['vif'] > 10]
+    """
+    X_clean = X.ffill().fillna(0)
+    # Drop constant columns (VIF undefined)
+    non_const = X_clean.loc[:, X_clean.std() > 1e-10]
+    corr = np.corrcoef(non_const.values, rowvar=False)
+    # Regularize to avoid singular matrix
+    corr = corr + np.eye(corr.shape[0]) * 1e-8
+    try:
+        inv_corr = np.linalg.inv(corr)
+    except np.linalg.LinAlgError:
+        inv_corr = np.linalg.pinv(corr)
+    vif_values = np.diag(inv_corr)
+    result = (
+        pd.DataFrame({"feature": non_const.columns, "vif": vif_values})
+        .sort_values("vif", ascending=False)
+        .reset_index(drop=True)
+    )
+    high_vif = result[result["vif"] > 10]["feature"].tolist()
+    if high_vif:
+        logger.warning(
+            f"compute_vif: {len(high_vif)} features with VIF > 10 "
+            f"(severe multicollinearity): {high_vif}"
+        )
+    return result
+
+
+def drop_redundant_features(
+    X: "pd.DataFrame",
+    vif_threshold: float = 10.0,
+    corr_threshold: float = 0.95,
+) -> "pd.DataFrame":
+    """
+    Remove features with extreme multicollinearity.
+
+    Two-stage filter:
+    1. Drop pairwise correlations > corr_threshold (keep first of each pair).
+    2. Drop features with VIF > vif_threshold.
+
+    Parameters
+    ----------
+    X : pd.DataFrame
+        Feature matrix.
+    vif_threshold : float
+        VIF cutoff (default 10.0).
+    corr_threshold : float
+        Pairwise correlation cutoff (default 0.95).
+
+    Returns
+    -------
+    pd.DataFrame with redundant columns removed.
+    """
+    X_clean = X.ffill().fillna(0)
+
+    # Stage 1: pairwise correlation filter
+    corr_matrix = X_clean.corr().abs()
+    upper = corr_matrix.where(
+        np.triu(np.ones(corr_matrix.shape), k=1).astype(bool)
+    )
+    drop_corr = [col for col in upper.columns if any(upper[col] > corr_threshold)]
+    if drop_corr:
+        logger.info(f"drop_redundant_features: dropping {len(drop_corr)} highly correlated features: {drop_corr}")
+    X_reduced = X_clean.drop(columns=drop_corr)
+
+    # Stage 2: VIF filter
+    if X_reduced.shape[1] >= 2:
+        vif_df = compute_vif(X_reduced)
+        drop_vif = vif_df[vif_df["vif"] > vif_threshold]["feature"].tolist()
+        if drop_vif:
+            logger.info(f"drop_redundant_features: dropping {len(drop_vif)} high-VIF features: {drop_vif}")
+        X_reduced = X_reduced.drop(columns=drop_vif, errors="ignore")
+
+    logger.info(
+        f"drop_redundant_features: {X.shape[1]} → {X_reduced.shape[1]} features retained"
+    )
+    return X_reduced
 
 
 # ── Tier 1: Pandas ──────────────────────────────────────────────────────────
 def _rolling_mean_tier1(arr: np.ndarray, window: int) -> np.ndarray:
-    """Tier 1 (pandas): Rolling mean. Für < 10.000 Zeilen."""
+    """Tier 1 (pandas): Rolling mean. For < 10,000 rows."""
     return pd.Series(arr).rolling(window=window, min_periods=1).mean().values
 
 
 def _rolling_std_tier1(arr: np.ndarray, window: int) -> np.ndarray:
-    """Tier 1 (pandas): Rolling std. Für < 10.000 Zeilen."""
+    """Tier 1 (pandas): Rolling std. For < 10,000 rows."""
     return pd.Series(arr).rolling(window=window, min_periods=1).std(ddof=0).values
 
 
 # ── Tier 2: NumPy (stride tricks) ───────────────────────────────────────────
 def _rolling_mean_tier2(arr: np.ndarray, window: int) -> np.ndarray:
     """
-    Tier 2 (numpy): Rolling mean via cumsum — O(n), kein Python-Loop.
-    Für 10.000–100.000 Zeilen (~3-5x schneller als pandas).
+    Tier 2 (numpy): Rolling mean via cumsum — O(n), no Python loop.
+    For 10,000–100,000 rows (~3-5x faster than pandas).
     """
     result = np.empty(len(arr), dtype=np.float64)
     result[:] = np.nan
@@ -1202,7 +1384,7 @@ def _rolling_mean_tier2(arr: np.ndarray, window: int) -> np.ndarray:
         return result
     cumsum = np.cumsum(np.insert(arr.astype(np.float64), 0, 0))
     result[window - 1 :] = (cumsum[window:] - cumsum[:-window]) / window
-    # Warmup-Periode (< window): progressive means
+    # Warmup period (< window): progressive means
     for i in range(min(window - 1, len(arr))):
         result[i] = np.mean(arr[: i + 1])
     return result
@@ -1210,8 +1392,8 @@ def _rolling_mean_tier2(arr: np.ndarray, window: int) -> np.ndarray:
 
 def _rolling_std_tier2(arr: np.ndarray, window: int) -> np.ndarray:
     """
-    Tier 2 (numpy): Rolling std via cumsum² — O(n), kein Python-Loop.
-    Für 10.000–100.000 Zeilen (~3-5x schneller als pandas).
+    Tier 2 (numpy): Rolling std via cumsum² — O(n), no Python loop.
+    For 10,000–100,000 rows (~3-5x faster than pandas).
     """
     result = np.empty(len(arr), dtype=np.float64)
     result[:] = np.nan
@@ -1231,24 +1413,24 @@ def _rolling_std_tier2(arr: np.ndarray, window: int) -> np.ndarray:
 # ── Tier 3: Numba (lazy loaded) ──────────────────────────────────────────────
 def _build_numba_functions():
     """
-    Erstellt Numba-JIT-Funktionen LAZY — nur wenn tatsächlich aufgerufen.
+    Builds Numba JIT functions LAZILY — only when actually called.
 
-    WARUM LAZY?
-    Numba kompiliert beim ersten Aufruf einer @jit-Funktion, nicht beim Import.
-    Durch lazy loading vermeiden wir den 15-20 Min Compile-Overhead auf
-    Systemen die Tier 3 nie brauchen (Colab mit < 100k Zeilen).
+    WHY LAZY?
+    Numba compiles on the first call to a @jit function, not at import time.
+    Lazy loading avoids the 15-20 min compile overhead on systems that never
+    need Tier 3 (Colab with < 100k rows).
 
-    WANN SINNVOLL?
-    - Datensatz > 100.000 Zeilen (Tick-Daten, Multi-Asset, Multi-Year)
-    - Wiederholte Trainingsläufe auf demselben System (cache=True greift)
-    - Dedizierter Server (kein Colab-Neustart-Problem)
+    WHEN USEFUL?
+    - Dataset > 100,000 rows (tick data, multi-asset, multi-year)
+    - Repeated training runs on the same system (cache=True kicks in)
+    - Dedicated server (no Colab restart problem)
 
     CACHE:
-    cache=True speichert den kompilierten Code in __pycache__/.
-    Nach erstem Compile: sofort verfügbar (< 1 Sekunde).
+    cache=True stores the compiled code in __pycache__/.
+    After first compile: immediately available (< 1 second).
 
     Returns:
-        Tuple (rolling_mean_fn, rolling_std_fn) oder None wenn Numba fehlt.
+        Tuple (rolling_mean_fn, rolling_std_fn) or None if Numba is missing.
     """
     jit = _load_numba_jit()
     if jit is None:
@@ -1256,7 +1438,7 @@ def _build_numba_functions():
 
     @jit(nopython=True, cache=True)
     def _rolling_mean_numba(arr, window):
-        """Tier 3 (numba): Rolling mean — ~10-20x schneller als pandas."""
+        """Tier 3 (numba): Rolling mean — ~10-20x faster than pandas."""
         n = len(arr)
         result = np.zeros(n)
         for i in range(n):
@@ -1269,7 +1451,7 @@ def _build_numba_functions():
 
     @jit(nopython=True, cache=True)
     def _rolling_std_numba(arr, window):
-        """Tier 3 (numba): Rolling std — ~10-20x schneller als pandas."""
+        """Tier 3 (numba): Rolling std — ~10-20x faster than pandas."""
         n = len(arr)
         result = np.zeros(n)
         for i in range(n):
@@ -1288,33 +1470,33 @@ def _build_numba_functions():
     return _rolling_mean_numba, _rolling_std_numba
 
 
-# Lazy-Cache für Numba-Funktionen (werden nur einmal gebaut)
+# Lazy cache for Numba functions (built only once)
 _numba_rolling_mean = None
 _numba_rolling_std = None
-_numba_attempted = False  # verhindert wiederholte Import-Versuche
+_numba_attempted = False  # prevents repeated import attempts
 
 
 # ── Public API ───────────────────────────────────────────────────────────────
 def compute_rolling_mean(arr: np.ndarray, window: int) -> np.ndarray:
     """
-    Rolling mean — automatische Tier-Auswahl basierend auf Datenmenge.
+    Rolling mean — automatic tier selection based on dataset size.
 
-    Tier 1 (pandas)  : < 10.000 Zeilen  — sofort, kein Overhead
-    Tier 2 (numpy)   : 10k–100k Zeilen  — ~3-5x schneller
-    Tier 3 (numba)   : > 100k Zeilen    — ~10-20x schneller (lazy compile)
+    Tier 1 (pandas)  : < 10,000 rows  — immediate, no overhead
+    Tier 2 (numpy)   : 10k–100k rows  — ~3-5x faster
+    Tier 3 (numba)   : > 100k rows    — ~10-20x faster (lazy compile)
 
     Args:
         arr   : 1D numpy array (float)
-        window: Rolling window Grösse
+        window: Rolling window size
 
     Returns:
-        1D numpy array derselben Länge mit rolling means.
-        Warmup-Periode (< window) nutzt progressive means (kein NaN).
+        1D numpy array of the same length with rolling means.
+        Warmup period (< window) uses progressive means (no NaN).
 
     Example:
         >>> data = np.random.randn(500)
         >>> means = compute_rolling_mean(data, window=20)
-        # → Tier 1 (pandas) da 500 < 10.000
+        # → Tier 1 (pandas) since 500 < 10,000
     """
     global _numba_rolling_mean, _numba_rolling_std, _numba_attempted
 
@@ -1331,30 +1513,30 @@ def compute_rolling_mean(arr: np.ndarray, window: int) -> np.ndarray:
         if not _numba_attempted:
             _numba_attempted = True
             logger.info(
-                f"Datensatz gross ({n:,} Zeilen) — lade Numba Tier 3. "
-                f"Erste Kompilierung dauert ~1-3 Min (danach gecacht)."
+                f"Large dataset ({n:,} rows) — loading Numba Tier 3. "
+                f"First compilation takes ~1-3 min (cached afterward)."
             )
             _numba_rolling_mean, _numba_rolling_std = _build_numba_functions()
 
         if _numba_rolling_mean is not None:
             return _numba_rolling_mean(arr.astype(np.float64), window)
         else:
-            logger.warning("Numba nicht verfügbar — Fallback auf Tier 2 (numpy)")
+            logger.warning("Numba not available — falling back to Tier 2 (numpy)")
             return _rolling_mean_tier2(arr, window)
 
 
 def compute_rolling_std(arr: np.ndarray, window: int) -> np.ndarray:
     """
-    Rolling std — automatische Tier-Auswahl basierend auf Datenmenge.
+    Rolling std — automatic tier selection based on dataset size.
 
-    Siehe compute_rolling_mean() für vollständige Dokumentation.
+    See compute_rolling_mean() for full documentation.
 
     Args:
         arr   : 1D numpy array (float)
-        window: Rolling window Grösse
+        window: Rolling window size
 
     Returns:
-        1D numpy array mit rolling standard deviations (population std).
+        1D numpy array with rolling standard deviations (population std).
     """
     global _numba_rolling_mean, _numba_rolling_std, _numba_attempted
 
@@ -1371,19 +1553,19 @@ def compute_rolling_std(arr: np.ndarray, window: int) -> np.ndarray:
         if not _numba_attempted:
             _numba_attempted = True
             logger.info(
-                f"Datensatz gross ({n:,} Zeilen) — lade Numba Tier 3. "
-                f"Erste Kompilierung dauert ~1-3 Min (danach gecacht)."
+                f"Large dataset ({n:,} rows) — loading Numba Tier 3. "
+                f"First compilation takes ~1-3 min (cached afterward)."
             )
             _numba_rolling_mean, _numba_rolling_std = _build_numba_functions()
 
         if _numba_rolling_std is not None:
             return _numba_rolling_std(arr.astype(np.float64), window)
         else:
-            logger.warning("Numba nicht verfügbar — Fallback auf Tier 2 (numpy)")
+            logger.warning("Numba not available — falling back to Tier 2 (numpy)")
             return _rolling_std_tier2(arr, window)
 
 
-# Legacy-Namen für Rückwärtskompatibilität
+# Legacy names for backwards compatibility
 compute_rolling_mean_numba = compute_rolling_mean
 compute_rolling_std_numba = compute_rolling_std
 
@@ -1542,21 +1724,21 @@ if __name__ == "__main__":
 # ============================================================================
 # GPU ACCELERATION MODULE (PyTorch-based)
 # ============================================================================
-# GPU-Beschleunigung für Feature Engineering bei grossen Datensätzen.
-# Automatische Aktivierung bei > 50.000 Zeilen auf NVIDIA-GPUs.
+# GPU acceleration for feature engineering on large datasets.
+# Automatically activated for > 50,000 rows on NVIDIA GPUs.
 #
-# Funktionsweise:
-# 1. Daten werden auf GPU kopiert (float32 für Speed)
-# 2. Vektorisierte Operationen via PyTorch Tensors
-# 3. Ergebnisse zurück auf CPU (numpy) für sklearn-Scaler
+# How it works:
+# 1. Data is copied to GPU (float32 for speed)
+# 2. Vectorized operations via PyTorch tensors
+# 3. Results transferred back to CPU (numpy) for sklearn scalers
 #
-# Vorteile:
-# - ~5-15x schneller als pandas bei >100k Zeilen
-# - Bessere Nutzung von GPU-Ressourcen beim Training
+# Advantages:
+# - ~5-15x faster than pandas for >100k rows
+# - Better utilization of GPU resources during training
 #
-# Nachteile:
-# - Kopier-Overhead (CPU→GPU→CPU)
-# - Nur bei >50k Zeilen effektiv sinnvoll
+# Disadvantages:
+# - Copy overhead (CPU→GPU→CPU)
+# - Only effectively worthwhile for >50k rows
 # ============================================================================
 
 import time
@@ -1579,14 +1761,14 @@ class GPUConfig:
 
 
 def is_gpu_available() -> bool:
-    """Prüft ob NVIDIA GPU mit CUDA verfügbar ist."""
+    """Checks whether an NVIDIA GPU with CUDA is available."""
     if not _TORCH_AVAILABLE:
         return False
     return torch.cuda.is_available()
 
 
 def get_gpu_info() -> Optional[Dict]:
-    """Gibt GPU-Informationen zurück."""
+    """Returns GPU information."""
     if not is_gpu_available():
         return None
     return {
@@ -1597,7 +1779,7 @@ def get_gpu_info() -> Optional[Dict]:
 
 
 def _gpu_log_returns(close: np.ndarray) -> np.ndarray:
-    """GPU-beschleunigte Log Returns via PyTorch."""
+    """GPU-accelerated log returns via PyTorch."""
     device = torch.device("cuda:0")
     close_gpu = torch.from_numpy(close.astype(np.float32)).to(device)
     log_ret = torch.log(close_gpu / torch.roll(close_gpu, 1, dims=0))
@@ -1606,43 +1788,43 @@ def _gpu_log_returns(close: np.ndarray) -> np.ndarray:
 
 
 def _gpu_rolling_mean(x: torch.Tensor, window: int) -> torch.Tensor:
-    """Vektorisiertes Rolling Mean via conv1d — kein Python-Loop.
+    """Vectorized rolling mean via conv1d — no Python loop.
 
-    Implementierung: 1D-Faltung mit Box-Kernel (alle Gewichte = 1/window).
-    Padding='same' via F.pad links mit (window-1) Nullen.
-    Erste (window-1) Werte werden durch expanding mean ersetzt (korrekte Warmup).
+    Implementation: 1D convolution with a box kernel (all weights = 1/window).
+    Padding='same' via F.pad on the left with (window-1) zeros.
+    First (window-1) values are replaced by expanding mean (correct warmup).
 
-    Speedup vs Loop: ~200-500x auf T4 bei 50k Zeilen.
+    Speedup vs loop: ~200-500x on T4 with 50k rows.
     """
     import torch.nn.functional as F
 
     n = len(x)
-    # Box-Kernel: [1/w, 1/w, ..., 1/w]
+    # Box kernel: [1/w, 1/w, ..., 1/w]
     kernel = torch.ones(1, 1, window, device=x.device, dtype=torch.float32) / window
-    # Links mit (window-1) Nullen padden -> Ausgabe hat Länge n
+    # Pad left with (window-1) zeros -> output has length n
     padded = F.pad(x.view(1, 1, n), (window - 1, 0), mode="constant", value=0.0)
     result = F.conv1d(padded, kernel).view(n)
-    # Warmup: erste (window-1) Werte durch expanding mean ersetzen
+    # Warmup: replace first (window-1) values with expanding mean
     for i in range(min(window - 1, n)):
         result[i] = x[: i + 1].mean()
     return result
 
 
 def _gpu_rolling_std(x: torch.Tensor, window: int) -> torch.Tensor:
-    """Vektorisiertes Rolling Std via unfold — kein Python-Loop.
+    """Vectorized rolling std via unfold — no Python loop.
 
-    Implementierung: torch.unfold() erzeugt (n, window) Matrix aller Fenster
-    in einem einzigen GPU-Kernel. std(dim=-1) berechnet alle Stds parallel.
+    Implementation: torch.unfold() creates an (n, window) matrix of all windows
+    in a single GPU kernel. std(dim=-1) computes all stds in parallel.
 
-    Speedup vs Loop: ~300-600x auf T4 bei 50k Zeilen.
+    Speedup vs loop: ~300-600x on T4 with 50k rows.
     """
     n = len(x)
-    # Links padden damit Ausgabe Länge n hat
+    # Pad left so output has length n
     padded = torch.nn.functional.pad(x, (window - 1, 0), value=float("nan"))
-    # unfold: (n, window) — jede Zeile ist ein Fenster
+    # unfold: (n, window) — each row is a window
     windows = padded.unfold(0, window, 1)  # shape: (n, window)
     result = windows.std(dim=-1, correction=1)
-    # Warmup: expanding std für erste (window-1) Werte
+    # Warmup: expanding std for first (window-1) values
     for i in range(min(window - 1, n)):
         result[i] = (
             x[: i + 1].std(correction=0)
@@ -1659,24 +1841,29 @@ def _gpu_rolling_std_np(values: np.ndarray, window: int) -> np.ndarray:
     return _gpu_rolling_std(t, window).cpu().numpy()
 
 
-def _gpu_volatility(close: np.ndarray, window: int) -> np.ndarray:
-    """GPU-beschleunigte annualisierte Volatilität (vektorisiert)."""
+def _gpu_volatility(close: np.ndarray, window: int, ann_factor: float = 252 * 24) -> np.ndarray:
+    """GPU-accelerated annualized volatility (vectorized).
+
+    Args:
+        ann_factor: periods-per-year for the data's timeframe.
+            Default 6048 (hourly). Pass (252*1440/tf_minutes) for other timeframes.
+    """
     log_ret = _gpu_log_returns(close)
     device = torch.device("cuda:0")
     t = torch.from_numpy(log_ret.astype(np.float32)).to(device)
     rolling_std = _gpu_rolling_std(t, window).cpu().numpy()
-    return rolling_std * np.sqrt(252 * 24)
+    return rolling_std * np.sqrt(ann_factor)
 
 
 @torch.jit.script
 def _ema_jit_kernel(x: torch.Tensor, alpha: float) -> torch.Tensor:
-    """JIT-kompilierte EMA-Rekurrenz — läuft als fused GPU-Kernel.
+    """JIT-compiled EMA recurrence — runs as a fused GPU kernel.
 
-    torch.jit.script kompiliert diese Funktion zu TorchScript, das auf CUDA
-    als optimierter Kernel ausgeführt wird. Kein Python-Interpreter-Overhead.
-    Korrekte Anfangsbedingung: EMA[0] = x[0] (wie pandas ewm(adjust=False)).
+    torch.jit.script compiles this function to TorchScript, which is executed
+    on CUDA as an optimized kernel. No Python interpreter overhead.
+    Correct initial condition: EMA[0] = x[0] (like pandas ewm(adjust=False)).
 
-    Speedup vs Python-Loop: ~50-150x auf T4.
+    Speedup vs Python loop: ~50-150x on T4.
     """
     n = x.shape[0]
     out = torch.empty_like(x)
@@ -1688,10 +1875,10 @@ def _ema_jit_kernel(x: torch.Tensor, alpha: float) -> torch.Tensor:
 
 
 def _gpu_ema(series: np.ndarray, span: int) -> np.ndarray:
-    """GPU-beschleunigte EMA via torch.jit.script (kein Python-Loop).
+    """GPU-accelerated EMA via torch.jit.script (no Python loop).
 
-    Nutzt _ema_jit_kernel: JIT-kompiliert, läuft direkt als GPU-Kernel.
-    Numerisch identisch mit pandas ewm(span=span, adjust=False).
+    Uses _ema_jit_kernel: JIT-compiled, runs directly as a GPU kernel.
+    Numerically identical to pandas ewm(span=span, adjust=False).
     """
     device = (
         torch.device("cuda:0")
@@ -1706,7 +1893,7 @@ def _gpu_ema(series: np.ndarray, span: int) -> np.ndarray:
 def _gpu_bollinger_bands(
     close: np.ndarray, window: int = 20, num_std: float = 2.0
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """GPU-beschleunigte Bollinger Bands (vollständig vektorisiert)."""
+    """GPU-accelerated Bollinger Bands (fully vectorized)."""
     device = torch.device("cuda:0")
     t = torch.from_numpy(close.astype(np.float32)).to(device)
     rolling_mean = _gpu_rolling_mean(t, window)
@@ -1717,7 +1904,7 @@ def _gpu_bollinger_bands(
 
 
 def _gpu_rsi(close: np.ndarray, window: int = 14) -> np.ndarray:
-    """GPU-beschleunigter RSI via vektorisierter EMA (kein Python-Loop)."""
+    """GPU-accelerated RSI via vectorized EMA (no Python loop)."""
     device = torch.device("cuda:0")
     close_gpu = torch.from_numpy(close.astype(np.float32)).to(device)
     delta = torch.diff(close_gpu, dim=0)
@@ -1726,7 +1913,7 @@ def _gpu_rsi(close: np.ndarray, window: int = 14) -> np.ndarray:
     gain = torch.clamp(delta, min=0.0)
     loss = torch.clamp(-delta, min=0.0)
 
-    # EMA via conv (kein Loop)
+    # EMA via conv (no loop)
     avg_gain = torch.from_numpy(_gpu_ema(gain.cpu().numpy(), window)).to(device)
     avg_loss = torch.from_numpy(_gpu_ema(loss.cpu().numpy(), window)).to(device)
 
@@ -1735,7 +1922,7 @@ def _gpu_rsi(close: np.ndarray, window: int = 14) -> np.ndarray:
     return rsi.cpu().numpy()
 
 
-# Legacy-Aliases (intern genutzt, nicht entfernen)
+# Legacy aliases (used internally, do not remove)
 def _gpu_rolling_mean_numpy(x: torch.Tensor, window: int) -> torch.Tensor:
     return _gpu_rolling_mean(x, window)
 
@@ -1746,18 +1933,18 @@ def _gpu_rolling_std_numpy(x: torch.Tensor, window: int) -> torch.Tensor:
 
 class GPUFeatureEngine:
     """
-    GPU-beschleunigter Feature Engine für grosse Datensätze.
+    GPU-accelerated feature engine for large datasets.
 
-    Nutzt PyTorch für parallele Berechnungen auf NVIDIA GPUs.
-    Automatische Aktivierung bei > 50.000 Zeilen.
+    Uses PyTorch for parallel computations on NVIDIA GPUs.
+    Automatically activated for > 50,000 rows.
 
     Usage:
         engine = GPUFeatureEngine()
         features = engine.compute_all(df)
 
     Attributes:
-        config: GPU-Konfiguration
-        device: PyTorch Device (cuda:0 oder cpu)
+        config: GPU configuration
+        device: PyTorch device (cuda:0 or cpu)
     """
 
     def __init__(self, config: Optional[GPUConfig] = None):
@@ -1768,7 +1955,7 @@ class GPUFeatureEngine:
         self._warmup_done = False
 
     def _warmup(self):
-        """GPU-Warmup (compile-time Optimierungen)."""
+        """GPU warmup (compile-time optimizations)."""
         if not is_gpu_available() or self._warmup_done:
             return
         dummy = torch.randn(1000, device=self.device)
@@ -1779,16 +1966,16 @@ class GPUFeatureEngine:
 
     def compute_all(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Berechnet alle Features vollständig vektorisiert (kein Python-Loop).
+        Computes all features fully vectorized (no Python loop).
 
-        v2.8: Alle Rolling-Berechnungen via conv1d/unfold/jit-script —
-        kein einziger Python-Loop mehr. Speedup auf T4: ~20-50x vs alte Version.
+        v2.8: All rolling computations via conv1d/unfold/jit-script —
+        zero Python loops. Speedup on T4: ~20-50x vs old version.
 
         Args:
             df: OHLCV DataFrame (lowercase columns: open, high, low, close, volume)
 
         Returns:
-            DataFrame mit 14 Feature-Spalten
+            DataFrame with 14 feature columns
         """
         self._warmup()
 
@@ -1798,24 +1985,24 @@ class GPUFeatureEngine:
         low = torch.from_numpy(df["low"].values.astype(np.float32)).to(dev)
         volume = torch.from_numpy(df["volume"].values.astype(np.float32)).to(dev)
 
-        logger.info(f"GPU Compute: {len(df)} Zeilen auf {dev}")
+        logger.info(f"GPU Compute: {len(df)} rows on {dev}")
 
         # ── Log Returns ──────────────────────────────────────────────────────
         log_ret_t = torch.log(close / torch.roll(close, 1))
         log_ret_t[0] = 0.0
 
-        # ── Volatilität (annualisiert) ────────────────────────────────────────
-        vol20 = _gpu_rolling_std(log_ret_t, 20) * (252 * 24) ** 0.5
-        vol50 = _gpu_rolling_std(log_ret_t, 50) * (252 * 24) ** 0.5
+        # ── Volatility (annualized) ──────────────────────────────────────────
+        vol20 = _gpu_rolling_std(log_ret_t, 20) * self._ann_factor ** 0.5
+        vol50 = _gpu_rolling_std(log_ret_t, 50) * self._ann_factor ** 0.5
 
-        # ── Rolling Mean / Std (für OU-Score) ────────────────────────────────
+        # ── Rolling Mean / Std (for OU score) ───────────────────────────────
         rolling_mean = _gpu_rolling_mean(close, 20)
         rolling_std = _gpu_rolling_std(close, 20)
 
         # ── OU-Score ──────────────────────────────────────────────────────────
         ou_score = torch.clamp((close - rolling_mean) / (rolling_std + 1e-8), -5.0, 5.0)
 
-        # ── RSI (14) via vektorisierter EMA ───────────────────────────────────
+        # ── RSI (14) via vectorized EMA ──────────────────────────────────────
         delta = torch.diff(close)
         delta = torch.cat([torch.zeros(1, device=dev), delta])
         gain = torch.clamp(delta, min=0.0)
@@ -1839,7 +2026,7 @@ class GPUFeatureEngine:
         bb_width_t = (bb_upper - bb_lower) / (close + 1e-8)
         bb_position_t = (close - bb_lower) / (bb_upper - bb_lower + 1e-8)
 
-        # ── ATR (14) — vollständig vektorisiert via EWM ───────────────────────
+        # ── ATR (14) — fully vectorized via EWM ──────────────────────────────
         # True Range = max(H-L, |H-prev_C|, |L-prev_C|)
         prev_close = torch.roll(close, 1)
         prev_close[0] = close[0]
@@ -1849,14 +2036,14 @@ class GPUFeatureEngine:
         )
         atr_t = _ema_jit_kernel(tr, 1.0 / 14) / (close + 1e-8)
 
-        # ── VWAP Deviation — vollständig vektorisiert ────────────────────────
+        # ── VWAP Deviation — fully vectorized ───────────────────────────────
         pv = close * volume
         cum_pv = torch.cumsum(pv, dim=0)
         cum_vol = torch.cumsum(volume, dim=0)
         vwap_t = cum_pv / (cum_vol + 1e-8)
         vwap_dev_t = torch.clamp((close - vwap_t) / (close + 1e-8), -0.1, 0.1)
 
-        # ── Zurück nach numpy ─────────────────────────────────────────────────
+        # ── Back to numpy ────────────────────────────────────────────────────
         def _np(t: torch.Tensor) -> np.ndarray:
             return t.cpu().numpy()
 
@@ -1900,7 +2087,7 @@ class GPUFeatureEngine:
             lambda col: col.map(lambda x: x.cpu().numpy() if hasattr(x, "cpu") else x)
         )
 
-        logger.success(f"GPU Compute fertig: {result.shape}")
+        logger.success(f"GPU Compute done: {result.shape}")
         return result
 
 
@@ -1909,11 +2096,11 @@ def benchmark_gpu_cpu(n_rows: int = 100_000, n_runs: int = 3) -> Dict:
     Benchmark: GPU vs CPU Feature Engineering.
 
     Args:
-        n_rows: Anzahl der Datenzeilen
-        n_runs: Anzahl der Wiederholungen für stabilen Mittelwert
+        n_rows: Number of data rows
+        n_runs: Number of repetitions for a stable mean
 
     Returns:
-        Dictionary mit Benchmark-Ergebnissen
+        Dictionary with benchmark results
 
     Usage:
         >>> results = benchmark_gpu_cpu(n_rows=50000)
@@ -1926,7 +2113,7 @@ def benchmark_gpu_cpu(n_rows: int = 100_000, n_runs: int = 3) -> Dict:
     print("=" * 80)
 
     gpu_available = is_gpu_available()
-    print(f"\nGPU verfügbar: {'✓ JA' if gpu_available else '✗ NEIN'}")
+    print(f"\nGPU available: {'✓ YES' if gpu_available else '✗ NO'}")
 
     if gpu_available:
         info = get_gpu_info()
@@ -1949,7 +2136,7 @@ def benchmark_gpu_cpu(n_rows: int = 100_000, n_runs: int = 3) -> Dict:
         index=dates,
     )
 
-    print(f"Datensatz: {n_rows:,} Zeilen")
+    print(f"Dataset: {n_rows:,} rows")
 
     results = {}
 
@@ -1965,9 +2152,7 @@ def benchmark_gpu_cpu(n_rows: int = 100_000, n_runs: int = 3) -> Dict:
 
         results["gpu_time_ms"] = np.mean(gpu_times)
         results["gpu_std_ms"] = np.std(gpu_times)
-        print(
-            f"\nGPU Mittelwert: {results['gpu_time_ms']:.1f}±{results['gpu_std_ms']:.1f}ms"
-        )
+        print(f"\nGPU Mean: {results['gpu_time_ms']:.1f}±{results['gpu_std_ms']:.1f}ms")
 
     cpu_config = FeatureConfig(
         volatility_window=20,
@@ -1992,27 +2177,25 @@ def benchmark_gpu_cpu(n_rows: int = 100_000, n_runs: int = 3) -> Dict:
 
     results["cpu_time_ms"] = np.mean(cpu_times)
     results["cpu_std_ms"] = np.std(cpu_times)
-    print(
-        f"\nCPU Mittelwert: {results['cpu_time_ms']:.1f}±{results['cpu_std_ms']:.1f}ms"
-    )
+    print(f"\nCPU Mean: {results['cpu_time_ms']:.1f}±{results['cpu_std_ms']:.1f}ms")
 
     if gpu_available:
         results["speedup"] = results["cpu_time_ms"] / results["gpu_time_ms"]
         results["gpu_faster"] = results["gpu_time_ms"] < results["cpu_time_ms"]
 
         print("\n" + "-" * 40)
-        print("ERGEBNIS:")
+        print("RESULT:")
         print(f"  Speedup: {results['speedup']:.1f}x")
-        print(f"  GPU ist {'schneller' if results['gpu_faster'] else 'langsamer'}")
+        print(f"  GPU is {'faster' if results['gpu_faster'] else 'slower'}")
 
         if results["speedup"] > 1.0:
             print(
-                f"  Zeitersparnis: {results['cpu_time_ms'] - results['gpu_time_ms']:.0f}ms"
+                f"  Time saved: {results['cpu_time_ms'] - results['gpu_time_ms']:.0f}ms"
             )
     else:
         results["speedup"] = 1.0
         results["gpu_faster"] = False
-        print("\n  GPU nicht verfügbar - nur CPU-Messung")
+        print("\n  GPU not available - CPU measurement only")
 
     print("=" * 80)
 
@@ -2021,22 +2204,22 @@ def benchmark_gpu_cpu(n_rows: int = 100_000, n_runs: int = 3) -> Dict:
 
 def verify_gpu_correctness(n_rows: int = 10000, tolerance: float = 1e-4) -> Dict:
     """
-    Verifiziert dass GPU und CPU identische Ergebnisse liefern.
+    Verifies that GPU and CPU produce identical results.
 
     Args:
-        n_rows: Anzahl der Test-Zeilen
-        tolerance: Zulässige Abweichung für numerische Equivalenz
+        n_rows: Number of test rows
+        tolerance: Allowed deviation for numerical equivalence
 
     Returns:
-        Dictionary mit Verifikationsergebnissen
+        Dictionary with verification results
 
     Usage:
         >>> results = verify_gpu_correctness(n_rows=10000)
-        >>> print(f"Max Abweichung: {results['max_diff']:.2e}")
-        >>> print(f"Test bestanden: {'✓' if results['passed'] else '✗'}")
+        >>> print(f"Max deviation: {results['max_diff']:.2e}")
+        >>> print(f"Test passed: {'✓' if results['passed'] else '✗'}")
     """
     print("\n" + "=" * 80)
-    print("KORREKTHEITSVERIFIKATION - GPU vs CPU")
+    print("CORRECTNESS VERIFICATION - GPU vs CPU")
     print("=" * 80)
 
     np.random.seed(42)
@@ -2055,8 +2238,8 @@ def verify_gpu_correctness(n_rows: int = 10000, tolerance: float = 1e-4) -> Dict
         index=dates,
     )
 
-    print(f"\nTest-Datensatz: {n_rows:,} Zeilen")
-    print(f"Toleranz: {tolerance:.0e}")
+    print(f"\nTest dataset: {n_rows:,} rows")
+    print(f"Tolerance: {tolerance:.0e}")
 
     results = {"passed": True, "max_diff": 0.0, "errors": []}
 
@@ -2104,7 +2287,7 @@ def verify_gpu_correctness(n_rows: int = 10000, tolerance: float = 1e-4) -> Dict
                                 }
                             )
 
-            print("\nSpalten-Vergleich:")
+            print("\nColumn comparison:")
             for col in gpu_features.columns:
                 if col in cpu_features.columns:
                     gpu_vals = gpu_features[col].values
@@ -2116,20 +2299,20 @@ def verify_gpu_correctness(n_rows: int = 10000, tolerance: float = 1e-4) -> Dict
                         print(f"  {status} {col}: max_diff={np.max(diff):.2e}")
 
         else:
-            print("\n✗ GPU nicht verfügbar - Überspringe Verifikation")
+            print("\n✗ GPU not available - skipping verification")
 
     except Exception as e:
         results["passed"] = False
         results["errors"].append(str(e))
-        print(f"\n✗ Fehler: {e}")
+        print(f"\n✗ Error: {e}")
 
     print("\n" + "-" * 40)
-    print("ERGEBNIS:")
+    print("RESULT:")
     if results["passed"]:
-        print(f"  ✓ Alle Tests bestanden!")
-        print(f"  Max Abweichung: {results['max_diff']:.2e}")
+        print(f"  ✓ All tests passed!")
+        print(f"  Max deviation: {results['max_diff']:.2e}")
     else:
-        print(f"  ✗ Tests fehlgeschlagen")
+        print(f"  ✗ Tests failed")
         for err in results["errors"]:
             print(f"    {err}")
 
@@ -2160,7 +2343,7 @@ if __name__ == "__main__":
             print(f"VRAM: {info['memory_total_gb']:.1f} GB")
             print(f"Compute Capability: {info['compute_cap']}")
         else:
-            print("Keine NVIDIA GPU gefunden")
+            print("No NVIDIA GPU found")
 
     if args.benchmark:
         benchmark_gpu_cpu(n_rows=args.rows)
