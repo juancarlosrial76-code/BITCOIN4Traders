@@ -1174,6 +1174,16 @@ class PPOAgent:
             rewards_arr + gamma * values_arr[1:] * (1.0 - dones_arr) - values_arr[:T]
         )  # shape (T,), float32
 
+        # Clip deltas BEFORE lfilter to prevent IIR blow-up on long sequences.
+        # With c = γλ ≈ 0.94 and T = 16384, a single delta of 1e4 accumulates to
+        # ~1e4 / (1 - 0.94) ≈ 1.7e5 — within float32 range.  But delta = 1e6
+        # (from a diverged critic that wasn't fully caught by nan_to_num) would
+        # push the filter output toward float32 overflow (>3.4e38).  Clipping to
+        # ±10 is safe: rewards are normalised/clipped earlier in the pipeline,
+        # and value estimates for a well-behaved critic stay in the same range.
+        _DELTA_CLIP = 10.0
+        deltas = np.clip(deltas, -_DELTA_CLIP, _DELTA_CLIP)
+
         advantages = np.empty(T, dtype=np.float32)
         c = float(gamma * lam)
 
