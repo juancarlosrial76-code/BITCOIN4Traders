@@ -252,7 +252,7 @@ class DQNAgent:
 
     def load(self, path: str):
         """Load model."""
-        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+        checkpoint = torch.load(path, map_location=self.device, weights_only=True)
         self.q_network.load_state_dict(checkpoint["q_network"])
         self.target_network.load_state_dict(checkpoint["target_network"])
         self.optimizer.load_state_dict(checkpoint["optimizer"])
@@ -1018,7 +1018,7 @@ class A2CAgent:
 
     def load(self, path: str):
         """Load model."""
-        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+        checkpoint = torch.load(path, map_location=self.device, weights_only=True)
         self.actor_critic.load_state_dict(checkpoint["model"])
         self.optimizer.load_state_dict(checkpoint["optimizer"])
 
@@ -1312,7 +1312,7 @@ class TD3Agent:
 
     def load(self, path: str):
         """Load model."""
-        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+        checkpoint = torch.load(path, map_location=self.device, weights_only=True)
         self.actor.load_state_dict(checkpoint["actor"])
         self.critic1.load_state_dict(checkpoint["critic1"])
         self.critic2.load_state_dict(checkpoint["critic2"])

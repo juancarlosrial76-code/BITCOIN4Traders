@@ -1156,10 +1156,12 @@ class CryptoFuturesEnv(gym.Env):
             "max_drawdown_pct": max_drawdown * 100,
             "total_trades": self.total_trades,
             "win_rate": self.winning_trades / max(1, self.total_trades),
-            "profit_factor": abs(self.total_realized_pnl)
-            / (abs(self.total_realized_pnl) + 1e-8)
-            if self.total_realized_pnl > 0
-            else 0,
+            "profit_factor": (
+                sum(t["pnl"] for t in self.trade_history if t["pnl"] > 0)
+                / (abs(sum(t["pnl"] for t in self.trade_history if t["pnl"] < 0)) + 1e-8)
+                if self.trade_history
+                else 0.0
+            ),
             "total_fees": self.total_fees,
             "total_funding_paid": self.total_funding_paid,
             "total_funding_received": self.total_funding_received,

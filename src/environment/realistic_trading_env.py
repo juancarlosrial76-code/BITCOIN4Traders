@@ -617,7 +617,7 @@ class RealisticTradingEnv(gym.Env):
 
         # We scale by initial capital to keep returns consistent across the episode
         # rather than old_equity which compounds and changes the scale of rewards
-        pnl_pct = pnl / self.config.initial_capital
+        pnl_pct = pnl / max(current_equity, 1e-8)
 
         # Asymmetric Drawdown Penalty
         # Strongly penalize losing money, gently reward making money.

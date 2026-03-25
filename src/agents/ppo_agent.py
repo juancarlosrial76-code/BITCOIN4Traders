@@ -832,7 +832,7 @@ class PPOAgent:
 
         No-op when the window buffer is disabled (Option A / GRU mode).
         """
-        if self._state_window is not None:
+        if self._use_seq_window:
             self._state_window[:] = 0.0
 
     def reset_buffers(self, capacity: int = 0):
@@ -1153,7 +1153,9 @@ class PPOAgent:
             rewards_arr = self._rewards_np[:T]
             values_arr_partial = self._values_np[:T]
             dones_arr = self._dones_np[:T]
-            values_arr = np.append(values_arr_partial, next_value).astype(np.float32)
+            values_arr = np.empty(T + 1, dtype=np.float32)
+            values_arr[:T] = values_arr_partial
+            values_arr[T] = next_value
         else:
             rewards_arr = np.array(self.rewards, dtype=np.float32)
             dones_arr = np.array(self.dones, dtype=np.float32)

@@ -532,7 +532,8 @@ class FeatureEngine:
                 "ema12": p,
                 "ema26": p,
                 "ema9": p,  # MACD
-                "ema_mean20": p,  # rolling mean approx.
+                "ema_mean20": p,  # rolling mean approx. (span=20)
+                "ema_mean50": p,  # rolling mean approx. (span=50)
                 # Welford variance (rolling 20 / 50 approx. via EWM)
                 "ewvar20": 0.0,
                 "ewvar50": 0.0,
@@ -637,7 +638,8 @@ class FeatureEngine:
         a12 = 2.0 / (12 + 1)
         a26 = 2.0 / (26 + 1)
         a9 = 2.0 / (9 + 1)
-        a_m20 = 2.0 / (20 + 1)  # EMA for rolling mean
+        a_m20 = 2.0 / (20 + 1)  # EMA for rolling mean (span=20)
+        a_m50 = 2.0 / (50 + 1)  # EMA for rolling mean (span=50)
         b20 = 2.0 / (20 + 1)  # EWM variance decay
         b50 = 2.0 / (50 + 1)
 
@@ -646,10 +648,13 @@ class FeatureEngine:
         st["ema26"] = a26 * p + (1 - a26) * st["ema26"]
         st["ema9"] = a9 * (st["ema12"] - st["ema26"]) + (1 - a9) * st["ema9"]
         st["ema_mean20"] = a_m20 * p + (1 - a_m20) * st["ema_mean20"]
+        st["ema_mean50"] = a_m50 * p + (1 - a_m50) * st["ema_mean50"]
 
         # EWM Varianz (Online-Algorithmus: var = (1-b)*var + b*(x-mean)^2)
+        # Fix #27: use per-span EMA mean so variance is computed around the
+        # correct centre, not the 20-period mean for both spans.
         diff20 = p - st["ema_mean20"]
-        diff50 = p - st["ema_mean20"]
+        diff50 = p - st["ema_mean50"]
         st["ewvar20"] = (1 - b20) * st["ewvar20"] + b20 * diff20 * diff20
         st["ewvar50"] = (1 - b50) * st["ewvar50"] + b50 * diff50 * diff50
 
@@ -2042,11 +2047,18 @@ class GPUFeatureEngine:
         )
         atr_t = _ema_jit_kernel(tr, 1.0 / 14) / (close + 1e-8)
 
-        # ── VWAP Deviation — fully vectorized ───────────────────────────────
-        pv = close * volume
-        cum_pv = torch.cumsum(pv, dim=0)
-        cum_vol = torch.cumsum(volume, dim=0)
-        vwap_t = cum_pv / (cum_vol + 1e-8)
+        # ── VWAP Deviation — rolling window (Fix #28: avoid cumsum drift) ──
+        _vwap_window = 20
+        pv = close * volume  # price * volume per bar
+        pv_rolling = pv.unfold(0, _vwap_window, 1).sum(dim=-1)
+        vol_rolling = volume.unfold(0, _vwap_window, 1).sum(dim=-1)
+        vwap_rolling = pv_rolling / (vol_rolling + 1e-10)
+        # Pad the head so vwap_t has the same length as close
+        _pad = torch.full(
+            (_vwap_window - 1,), vwap_rolling[0],
+            device=close.device, dtype=close.dtype,
+        )
+        vwap_t = torch.cat([_pad, vwap_rolling])
         vwap_dev_t = torch.clamp((close - vwap_t) / (close + 1e-8), -0.1, 0.1)
 
         # ── Back to numpy ────────────────────────────────────────────────────

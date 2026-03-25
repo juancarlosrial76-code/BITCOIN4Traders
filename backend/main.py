@@ -287,11 +287,22 @@ async def get_status():
 
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket, token: str = ""):
-    """WebSocket endpoint — requires JWT token as query param: /ws?token=<jwt>"""
-    from fastapi.security import HTTPAuthorizationCredentials
+async def websocket_endpoint(websocket: WebSocket):
+    """WebSocket endpoint — requires JWT token as subprotocol header or query param: /ws?token=<jwt>"""
     from backend.api.login import get_current_user, SECRET_KEY, ALGORITHM
     from jose import JWTError, jwt as jose_jwt
+
+    # Read token from subprotocol header (safer than query param — not logged in URLs)
+    token = None
+    subprotocols = websocket.headers.get("sec-websocket-protocol", "")
+    for part in subprotocols.split(","):
+        part = part.strip()
+        if part.startswith("token."):
+            token = part[len("token."):]
+            break
+    # Fallback to query param for backwards compatibility
+    if not token:
+        token = websocket.query_params.get("token")
 
     # Validate token before accepting connection
     if not token:

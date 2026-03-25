@@ -919,9 +919,9 @@ class ConfigIntegratedTradingEnv(gym.Env):
                     returns = np.diff(self.equity_history[-lookback:]) / np.array(
                         self.equity_history[-lookback:-1]
                     )
-                    # Annualisation for hourly bars: sqrt(365 * 24) = sqrt(8760)
-                    # Crypto trades 365 days/year (not 252 trading days like stocks)
-                    sharpe = np.mean(returns) / (np.std(returns) + 1e-8) * np.sqrt(8760)
+                    # Annualisation factor based on timeframe
+                    _bars_per_year = getattr(self.config, 'bars_per_year', 8760)  # default hourly
+                    sharpe = np.mean(returns) / (np.std(returns) + 1e-8) * np.sqrt(_bars_per_year)
                     components_values["sharpe"] = np.clip(
                         sharpe * comp.weight,
                         -0.5,
