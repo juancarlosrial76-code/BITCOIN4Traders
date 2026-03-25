@@ -76,6 +76,9 @@ Author: BITCOIN4Traders Team
 Version: 1.0.0
 """
 
+import json
+import os
+import sqlite3
 import numpy as np
 from typing import Dict, Tuple, Optional, List
 from dataclasses import dataclass, field
@@ -239,7 +242,7 @@ class RiskManager:
         history before becoming active. Before that, only hard caps apply.
     """
 
-    def __init__(self, config: RiskConfig, initial_capital: float):
+    def __init__(self, config: RiskConfig, initial_capital: float, db_path: Optional[str] = None):
         """
         Initialize the Risk Manager with configuration and starting capital.
 
@@ -278,6 +281,10 @@ class RiskManager:
         self.config = config
         self.initial_capital = initial_capital
 
+        # SQLite persistence — only active when an explicit db_path is provided.
+        # Pass db_path to enable crash-recovery; omit (None) for ephemeral/test use.
+        self._db_path: Optional[str] = db_path
+
         # Initialize Kelly Criterion from Phase 3
         # Used for dynamic position sizing based on historical performance
         self.kelly = KellyCriterion()
@@ -303,6 +310,11 @@ class RiskManager:
 
         # Equity history for VaR and drawdown calculation
         self.equity_history: List[float] = [initial_capital]
+
+        # Load persisted state (restores after crash/restart)
+        if self._db_path is not None:
+            self._init_risk_db()
+            self._load_risk_state()
 
         logger.info("RiskManager initialized")
         logger.info(f"  Max drawdown: {config.max_drawdown_per_session * 100:.1f}%")
@@ -638,6 +650,10 @@ class RiskManager:
             self.state.halt_trading = True
             self.state.halt_reason = reason
 
+        # Persist updated state
+        if self._db_path is not None:
+            self._save_risk_state()
+
     def should_halt_trading(self) -> bool:
         """Check if trading should be halted."""
         return self.state.halt_trading
@@ -664,6 +680,8 @@ class RiskManager:
         self.trade_history = []
         self.equity_history = [self.initial_capital]
 
+        if self._db_path is not None:
+            self._save_risk_state()
         logger.info("RiskManager reset for new episode")
 
     def get_risk_metrics(self) -> Dict:
@@ -717,6 +735,80 @@ class RiskManager:
         # Clamp to zero - can't have negative drawdown (which would mean
         # equity is above peak, which is actually a good thing!)
         return max(0.0, drawdown)
+
+    # -----------------------------------------------------------------------
+    # SQLite Persistence
+    # -----------------------------------------------------------------------
+
+    def _init_risk_db(self) -> None:
+        """Create the risk-state SQLite table if it does not exist."""
+        try:
+            con = sqlite3.connect(self._db_path)
+            con.execute(
+                "CREATE TABLE IF NOT EXISTS risk_state "
+                "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+            )
+            con.commit()
+            con.close()
+        except Exception as exc:
+            logger.warning(f"RiskManager: could not init DB at {self._db_path}: {exc}")
+
+    def _save_risk_state(self) -> None:
+        """Persist the current RiskState + histories to SQLite (upsert)."""
+        _MAX_HISTORY = 10_000  # cap to avoid unbounded DB growth
+        payload = {
+            "current_equity": self.state.current_equity,
+            "initial_equity": self.state.initial_equity,
+            "peak_equity": self.state.peak_equity,
+            "current_drawdown": self.state.current_drawdown,
+            "consecutive_losses": self.state.consecutive_losses,
+            "var_95": self.state.var_95,
+            "halt_trading": self.state.halt_trading,
+            "halt_reason": self.state.halt_reason,
+            "trade_history": self.trade_history[-_MAX_HISTORY:],
+            "equity_history": self.equity_history[-_MAX_HISTORY:],
+        }
+        try:
+            con = sqlite3.connect(self._db_path)
+            for key, value in payload.items():
+                con.execute(
+                    "INSERT OR REPLACE INTO risk_state (key, value) VALUES (?, ?)",
+                    (key, json.dumps(value)),
+                )
+            con.commit()
+            con.close()
+        except Exception as exc:
+            logger.warning(f"RiskManager: could not save state: {exc}")
+
+    def _load_risk_state(self) -> None:
+        """Restore persisted RiskState from SQLite (no-op if DB is empty)."""
+        try:
+            con = sqlite3.connect(self._db_path)
+            rows = con.execute("SELECT key, value FROM risk_state").fetchall()
+            con.close()
+        except Exception as exc:
+            logger.warning(f"RiskManager: could not load state: {exc}")
+            return
+
+        if not rows:
+            return  # Fresh start — nothing to restore
+
+        data = {k: json.loads(v) for k, v in rows}
+        self.state.current_equity = float(data.get("current_equity", self.state.current_equity))
+        self.state.initial_equity = float(data.get("initial_equity", self.state.initial_equity))
+        self.state.peak_equity = float(data.get("peak_equity", self.state.peak_equity))
+        self.state.current_drawdown = float(data.get("current_drawdown", 0.0))
+        self.state.consecutive_losses = int(data.get("consecutive_losses", 0))
+        self.state.var_95 = float(data.get("var_95", 0.0))
+        self.state.halt_trading = bool(data.get("halt_trading", False))
+        self.state.halt_reason = data.get("halt_reason")
+        self.trade_history = list(data.get("trade_history", []))
+        self.equity_history = list(data.get("equity_history", [self.initial_capital]))
+        logger.info(
+            f"RiskManager: restored state from {self._db_path} "
+            f"(equity={self.state.current_equity:.2f} peak={self.state.peak_equity:.2f} "
+            f"consecutive_losses={self.state.consecutive_losses} halt={self.state.halt_trading})"
+        )
 
     # -----------------------------------------------------------------------
     # EVT-Kelly bridge

@@ -55,7 +55,10 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
+import sqlite3
 import time
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -369,12 +372,19 @@ class LiveExecutionEngine:
     """
 
     def __init__(
-        self, config: EngineConfig, agent, feature_engine, paper_trading: bool = False
+        self, config: EngineConfig, agent, feature_engine, paper_trading: bool = False,
+        db_path: Optional[str] = None,
     ):
         self._cfg = config
         self._agent = agent
         self._feat = feature_engine
         self._paper = paper_trading  # Paper mode sends no real orders
+
+        # SQLite persistence for position + cash state.
+        # Only active when an explicit db_path is provided (opt-in).
+        self._db_path: Optional[str] = db_path
+        if self._db_path is not None:
+            self._init_engine_db()
 
         # Build the WebSocket connector with reconnect policy
         self._connector = BinanceWSConnector(
@@ -444,6 +454,10 @@ class LiveExecutionEngine:
                     "activate only after first fill updates cash.",
                     exc,
                 )
+
+        # Restore persisted position + cash state from previous session
+        if self._db_path is not None:
+            self._load_position_state()
 
         # Wire callbacks
         self._oms.on_fill(self._on_fill)
@@ -792,6 +806,10 @@ class LiveExecutionEngine:
                 source, symbol, local.qty, local.avg_cost,
             )
 
+        # Persist after any reconciliation corrections
+        if self._db_path is not None:
+            self._save_position_state()
+
     def _on_fill(self, order: Order, fill: Fill) -> None:
         pos = self._positions.get(order.symbol)
         if pos is None:
@@ -829,6 +847,10 @@ class LiveExecutionEngine:
             float(realized),
             float(self._cash),
         )
+
+        # Persist updated positions after every fill
+        if self._db_path is not None:
+            self._save_position_state()
 
     def _on_status_change(self, order: Order, new_status: OrderStatus) -> None:
         logger.info("Order %s → %s", order.client_order_id, new_status.name)
@@ -877,6 +899,101 @@ class LiveExecutionEngine:
             unrealized += pos.unrealized_pnl(px)
         realized = sum(p.realized_pnl for p in self._positions.values())
         return self._cash + realized + unrealized  # Total equity
+
+    # ── SQLite Persistence ──────────────────
+
+    def _init_engine_db(self) -> None:
+        """Create the engine-state SQLite tables if they do not exist."""
+        try:
+            con = sqlite3.connect(self._db_path)
+            con.executescript(
+                "CREATE TABLE IF NOT EXISTS positions "
+                "(symbol TEXT PRIMARY KEY, qty TEXT, avg_cost TEXT, "
+                "realized_pnl TEXT, entry_price TEXT);"
+                "CREATE TABLE IF NOT EXISTS engine_state "
+                "(key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+            )
+            con.commit()
+            con.close()
+        except Exception as exc:
+            logger.warning("LiveEngine: could not init DB at %s: %s", self._db_path, exc)
+
+    def _save_position_state(self) -> None:
+        """Persist all Position objects + cash balance to SQLite."""
+        try:
+            con = sqlite3.connect(self._db_path)
+            for symbol, pos in self._positions.items():
+                entry = self._entry_prices.get(symbol)
+                con.execute(
+                    "INSERT OR REPLACE INTO positions "
+                    "(symbol, qty, avg_cost, realized_pnl, entry_price) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (
+                        symbol,
+                        str(pos.qty),
+                        str(pos.avg_cost),
+                        str(pos.realized_pnl),
+                        str(entry) if entry is not None else None,
+                    ),
+                )
+            con.execute(
+                "INSERT OR REPLACE INTO engine_state (key, value) VALUES (?, ?)",
+                ("cash", json.dumps(str(self._cash))),
+            )
+            if self._initial_equity is not None:
+                con.execute(
+                    "INSERT OR REPLACE INTO engine_state (key, value) VALUES (?, ?)",
+                    ("initial_equity", json.dumps(str(self._initial_equity))),
+                )
+            con.commit()
+            con.close()
+        except Exception as exc:
+            logger.warning("LiveEngine: could not save position state: %s", exc)
+
+    def _load_position_state(self) -> None:
+        """Restore Position objects + cash balance from SQLite (no-op if empty)."""
+        try:
+            con = sqlite3.connect(self._db_path)
+            pos_rows = con.execute(
+                "SELECT symbol, qty, avg_cost, realized_pnl, entry_price FROM positions"
+            ).fetchall()
+            state_rows = con.execute(
+                "SELECT key, value FROM engine_state"
+            ).fetchall()
+            con.close()
+        except Exception as exc:
+            logger.warning("LiveEngine: could not load position state: %s", exc)
+            return
+
+        if not pos_rows and not state_rows:
+            return  # Fresh start
+
+        state = {k: json.loads(v) for k, v in state_rows}
+
+        # Restore cash (don't overwrite if exchange balance was already fetched)
+        if "cash" in state and self._cash == Decimal(0):
+            self._cash = Decimal(state["cash"])
+
+        if "initial_equity" in state and self._initial_equity is None:
+            self._initial_equity = Decimal(state["initial_equity"])
+
+        # Restore positions
+        for symbol, qty_s, avg_cost_s, realized_pnl_s, entry_price_s in pos_rows:
+            if symbol not in self._positions:
+                self._positions[symbol] = Position(symbol)
+            pos = self._positions[symbol]
+            pos.qty = Decimal(qty_s)
+            pos.avg_cost = Decimal(avg_cost_s)
+            pos.realized_pnl = Decimal(realized_pnl_s)
+            self._entry_prices[symbol] = (
+                Decimal(entry_price_s) if entry_price_s else None
+            )
+
+        open_positions = [s for s, p in self._positions.items() if p.qty != Decimal(0)]
+        logger.info(
+            f"LiveEngine: restored state from {self._db_path} "
+            f"(cash={float(self._cash):.2f} open_positions={open_positions})"
+        )
 
     def _print_session_summary(self) -> None:
         realized = sum(float(p.realized_pnl) for p in self._positions.values())
