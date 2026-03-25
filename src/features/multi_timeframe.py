@@ -679,10 +679,17 @@ def create_multi_timeframe_features(
 
         # Calculate features on resampled data, then forward-fill back to base index.
         # ffill: each base-TF bar carries the most recent completed higher-TF value.
+        # return_ and volatility_ are computed on the resampled (higher-TF) close
+        # series BEFORE reindexing so that pct_change / rolling std operate on
+        # actual higher-TF bars, not on forward-filled duplicates.
         close_tf = resampled["close"].reindex(df.index, method="ffill")
 
-        features[f"return_{tf}"] = close_tf.pct_change()
-        features[f"volatility_{tf}"] = close_tf.rolling(window=20).std()
+        features[f"return_{tf}"] = (
+            resampled["close"].pct_change().reindex(df.index, method="ffill")
+        )
+        features[f"volatility_{tf}"] = (
+            resampled["close"].rolling(window=20).std().reindex(df.index, method="ffill")
+        )
         features[f"trend_{tf}"] = np.where(
             close_tf > close_tf.shift(5),
             1,

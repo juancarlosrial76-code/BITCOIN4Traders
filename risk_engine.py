@@ -37,7 +37,7 @@ Protection Mechanisms:
 
 Usage (Colab):
     from risk_engine import RiskEngine, TradingSession, RiskConfig
-    from darwin_engine import StrategyTournament, LiveTradingGuard, load_live_data
+    from src.math_tools.archive.darwin_legacy import StrategyTournament, LiveTradingGuard, load_live_data
 
     df = load_live_data("BTC/USDT", "1h", limit=2000)
     t  = StrategyTournament(df); t.run()
@@ -83,8 +83,8 @@ except ImportError:
 _PROJECT_ROOT = Path(__file__).parent
 sys.path.insert(0, str(_PROJECT_ROOT))
 
-# Darwin Engine
-from darwin_engine import (
+# Darwin Engine (migrated from darwin_engine.py -> src/math_tools/archive/darwin_legacy.py)
+from src.math_tools.archive.darwin_legacy import (
     DarwinBot,
     StrategyTournament,
     LiveTradingGuard,
@@ -92,8 +92,8 @@ from darwin_engine import (
     ArenaConfig,
     generate_synthetic_btc,
     load_live_data,
-    _kernel_profit_factor,
 )
+from src.math_tools.fast_kernels import _kernel_profit_factor
 
 # Existing project RiskManager (graceful fallback if unavailable)
 try:
@@ -144,6 +144,9 @@ class RiskConfig:
     # --- Circuit-Breaker ---
     max_daily_loss_pct: float = 0.05  # Trading halt at 5% daily loss
     max_consecutive_losses: int = 3  # Trading halt after 3 consecutive losses
+    # Drawdown limit: production circuit breaker — halts all trading when account
+    # drawdown from peak exceeds this threshold. See also risk_manager.py and
+    # realistic_trading_env.py for the other drawdown limits in the system.
     max_drawdown_pct: float = 0.15  # Trading halt at 15% drawdown from peak
     min_capital_pct: float = 0.30  # No trading below 30% of starting capital
 
@@ -318,6 +321,13 @@ class RiskEngine:
             day_start_equity=initial_capital,
         )
         self._initial_capital = initial_capital
+
+        # VPIN market-toxicity detector (Task #18)
+        try:
+            from src.risk.vpin import VPINCalculator
+            self._vpin = VPINCalculator()
+        except Exception:
+            self._vpin = None
 
         # Integrate existing src/risk/RiskManager if available
         if _SRC_RISK_AVAILABLE:
@@ -501,6 +511,18 @@ class RiskEngine:
                 block_reason=f"Circuit-Breaker: {reason}",
                 entry_price=entry_price,
             )
+
+        # --- VPIN market-toxicity check (Task #18) ---
+        if hasattr(self, '_vpin') and self._vpin is not None:
+            if self._vpin.is_market_toxic():
+                logger.warning("VPIN: market toxic — blocking trade")
+                return PositionOrder(
+                    timestamp=timestamp,
+                    signal=signal,
+                    approved=False,
+                    block_reason="VPIN: market toxic",
+                    entry_price=entry_price,
+                )
 
         equity = self.state.equity
 

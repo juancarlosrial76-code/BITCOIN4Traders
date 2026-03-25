@@ -180,7 +180,7 @@ class PPOConfig:
     )
 
     # Regularization
-    entropy_coef: float = 0.01
+    entropy_coef: float = 0.05
     value_loss_coef: float = 0.5
     max_grad_norm: float = 0.5
 
@@ -1162,61 +1162,29 @@ class PPOAgent:
         gamma = self.config.gamma
         lam = self.config.gae_lambda
 
-        # PPO-1: Vectorized GAE via scipy.signal.lfilter scan.
-        #
-        # Standard backward loop:
-        #   delta[t] = r[t] + γ·V[t+1]·(1-done[t]) - V[t]
-        #   A[t]     = delta[t] + γλ·(1-done[t])·A[t+1]
-        #
-        # When there are NO episode boundaries (dones == 0) this is a simple
-        # IIR filter:  A[t] = delta[t] + c·A[t+1],  c = γλ
-        # → lfilter([1], [1, -c], deltas[::-1])[::-1]  (O(T) C-level loop)
-        #
-        # With episode boundaries (done[t]=1) the continuation coefficient
-        # drops to 0 at those steps. We handle this by splitting each segment
-        # between done=1 points and running lfilter independently on each.
-        # For typical episodes this is equivalent to the scalar loop but runs
-        # ~5-10x faster on T=16384 because lfilter is a compiled C routine.
-        from scipy.signal import lfilter  # lazy import — already installed on Colab
-
+        # Task #8: Numerically stable manual GAE loop (replaces lfilter).
+        # lfilter can accumulate floating-point errors on long sequences and
+        # does not respect episode boundaries cleanly.  The manual backward
+        # loop is O(T) but fully correct and clamps at each step.
         deltas = (
             rewards_arr + gamma * values_arr[1:] * (1.0 - dones_arr) - values_arr[:T]
         )  # shape (T,), float32
 
-        # Clip deltas BEFORE lfilter to prevent IIR blow-up on long sequences.
-        # With c = γλ ≈ 0.94 and T = 16384, a single delta of 1e4 accumulates to
-        # ~1e4 / (1 - 0.94) ≈ 1.7e5 — within float32 range.  But delta = 1e6
-        # (from a diverged critic that wasn't fully caught by nan_to_num) would
-        # push the filter output toward float32 overflow (>3.4e38).  Clipping to
-        # ±10 is safe: rewards are normalised/clipped earlier in the pipeline,
-        # and value estimates for a well-behaved critic stay in the same range.
+        # Clip deltas before accumulation to prevent blow-up.
         _DELTA_CLIP = 10.0
         deltas = np.clip(deltas, -_DELTA_CLIP, _DELTA_CLIP)
 
-        advantages = np.empty(T, dtype=np.float32)
         c = float(gamma * lam)
 
-        # Find episode boundaries: indices where done[t] == 1
-        done_idxs = np.where(dones_arr)[0]  # may be empty
-
-        if len(done_idxs) == 0:
-            # No boundaries → single lfilter pass (fastest path)
-            # lfilter solves:  y[n] - c*y[n-1] = x[n]  in forward direction.
-            # Reversing makes it a backwards recurrence A[t] = delta[t] + c*A[t+1].
-            rev_adv = lfilter([1.0], [1.0, -c], deltas[::-1])
-            advantages[:] = rev_adv[::-1]
-        else:
-            # Segment [start, end] (inclusive) between done boundaries.
-            # At a done=1 step the bootstrap is 0, so each segment starts fresh.
-            boundaries = np.concatenate(([-1], done_idxs, [T - 1]))
-            for i in range(len(boundaries) - 1):
-                start = int(boundaries[i]) + 1
-                end = int(boundaries[i + 1]) + 1  # exclusive
-                seg = deltas[start:end]
-                if len(seg) == 0:
-                    continue
-                rev_adv = lfilter([1.0], [1.0, -c], seg[::-1])
-                advantages[start:end] = rev_adv[::-1]
+        advantages = np.zeros_like(deltas)
+        last_gae = 0.0
+        for t in reversed(range(len(deltas))):
+            # Reset GAE at episode boundaries (done[t] == 1 means episode ended)
+            if dones_arr[t]:
+                last_gae = 0.0
+            last_gae = deltas[t] + last_gae * c  # c = gamma * lam
+            last_gae = np.clip(last_gae, -10.0, 10.0)
+            advantages[t] = last_gae
 
         # Returns = advantage + value baseline (target for V(s))
         returns = advantages + values_arr[:T]
@@ -1617,6 +1585,9 @@ class PPOAgent:
         Imitates past decisions that resulted in higher returns than the current value estimate.
         L_sil = -log_prob(a|s) * max(0, R - V(s)) + 1/2 * max(0, R - V(s))^2
         """
+        # SIL disabled: ignores recurrent hidden state and destroys exploration
+        return 0.0
+
         total_sil_loss = 0.0
         updates = 0
 

@@ -486,7 +486,8 @@ class ConfigIntegratedTradingEnv(gym.Env):
             # ENV-3: numpy lookup statt Pandas iloc
             _p0 = self._price_np[_step0, self._close_col_idx]
             self._last_valid_price = float(_p0) if not np.isnan(_p0) else 40000.0
-        except Exception:
+        except Exception as e:
+            logger.error(f"Environment error during reset price lookup (step={_step0}): {e}")
             self._last_valid_price = 40000.0  # konservativer BTC-Fallback
         self.equity_history = [self.config.initial_capital]
         self.trade_history = []

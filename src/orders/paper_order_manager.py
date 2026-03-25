@@ -358,7 +358,7 @@ class PaperOrderManager:
                 t["symbol"],
                 t["side"],
                 t["qty"],
-                t["price"],
+                t["fill_price"],
                 t["notional"],
                 t["cash_after"],
             )

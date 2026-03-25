@@ -355,7 +355,8 @@ class WalkForwardEngine:
             # Calculate window dates
             train_start = current_start
             train_end = train_start + timedelta(days=self.config.train_window_days)
-            test_start = train_end  # test window starts immediately after training ends
+            embargo = getattr(self, 'embargo', timedelta(hours=24))  # default 24-bar gap (1 day for hourly data)
+            test_start = train_end + embargo  # embargo gap prevents leakage between train and test
             test_end = test_start + timedelta(days=self.config.test_window_days)
 
             # Check if we've reached the end
@@ -680,6 +681,16 @@ class WalkForwardEngine:
             # Slice data for this window
             train_data = price_data.loc[train_start:train_end]
             test_data = price_data.loc[test_start:test_end]
+
+            # LeakDetector: check for data leakage before training (Task #22)
+            try:
+                from src.validation.antibias_walkforward import LeakDetector
+                leak_detector = LeakDetector()
+                leaks = leak_detector.detect(train_data, test_data)
+                if leaks:
+                    logger.warning(f"LeakDetector: potential data leakage in fold {i}: {leaks}")
+            except Exception as e:
+                logger.debug(f"LeakDetector skipped: {e}")
 
             # Train
             train_metrics = self.train_on_window(train_data, i)

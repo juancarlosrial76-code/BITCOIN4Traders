@@ -29,41 +29,45 @@ Usage:
     env = RealisticTradingEnv(price_data, features, config)
 """
 
-import gymnasium as gym  # OpenAI Gymnasium for RL environments
-from gymnasium import spaces  # Gymnasium spaces for observation/action definition
-import numpy as np  # Numerical computing for arrays and math
-import pandas as pd  # DataFrame for time series data
-from typing import Dict, Tuple, Optional, List  # Type hints for code clarity
 from dataclasses import dataclass  # Data class for configuration
 from pathlib import Path  # Path handling for file operations
+from typing import Dict, Optional, Tuple  # Type hints for code clarity
+
+import gymnasium as gym  # OpenAI Gymnasium for RL environments
+import numpy as np  # Numerical computing for arrays and math
+import pandas as pd  # DataFrame for time series data
+from gymnasium import spaces  # Gymnasium spaces for observation/action definition
 from loguru import logger  # Structured logging
 
-# Internal imports - Feature engineering and market simulation
-from src.features.feature_engine import FeatureEngine, FeatureConfig
-from src.environment.order_book import OrderBookSimulator, OrderBookConfig
+from src.environment.order_book import OrderBookConfig, OrderBookSimulator
 from src.environment.slippage_model import (
-    SlippageModel,
     SlippageConfig,
-    TransactionCostModel,
+    SlippageModel,
     TransactionCostConfig,
+    TransactionCostModel,
 )
+
+# Internal imports - Feature engineering and market simulation
+from src.features.feature_engine import FeatureConfig
 
 # Anti-Bias Framework integration - Robust backtesting methodology
 # This framework prevents overfitting and data leakage in strategy development
 try:
+    from src.costs.antibias_costs import (
+        CostConfig as AntibiasCostConfig,
+    )
+    from src.costs.antibias_costs import (
+        MarketType,
+        OrderType,
+        Timeframe,
+        TransactionCostEngine,
+    )
     from src.reward.antibias_rewards import (
         BaseReward,
-        SharpeIncrementReward,
         CostAwareReward,
         RegimeAwareReward,
         RegimeState,
-    )
-    from src.costs.antibias_costs import (
-        TransactionCostEngine,
-        CostConfig as AntibiasCostConfig,
-        MarketType,
-        Timeframe,
-        OrderType,
+        SharpeIncrementReward,
     )
 
     ANTIBIAS_AVAILABLE = True  # Flag to check if Anti-Bias module is available
@@ -142,7 +146,12 @@ class TradingEnvConfig:
     lookback_window: int = 50  # Historical bars needed for feature calculation
     max_steps: int = 5000  # Maximum steps before episode auto-terminates
 
-    # Risk Management - Drawdown controls
+    # Drawdown limit: training environment episode termination threshold.
+    # Kept generous at 20% so the RL agent can explore recovery strategies without
+    # episodes terminating too early during training. In production, the tighter
+    # circuit breakers in risk_engine.py (15%) and risk_manager.py (2% per-session)
+    # apply before this limit is ever reached. See also risk_engine.py and
+    # risk_manager.py for the other drawdown limits in the system.
     max_drawdown: float = 0.20  # 20% max drawdown triggers episode termination
 
     # Features (Phase 1 integration) - Technical indicators
@@ -372,7 +381,7 @@ class RealisticTradingEnv(gym.Env):
         self.action_space = spaces.Discrete(3)
 
         logger.info(f"Observation space: {state_dim} features")
-        logger.info(f"Action space: Discrete(3)")
+        logger.info("Action space: Discrete(3)")
 
     def reset(
         self, seed: Optional[int] = None, options: Optional[Dict] = None
@@ -446,6 +455,7 @@ class RealisticTradingEnv(gym.Env):
         if abs(drawdown) > self.config.max_drawdown:
             terminated = True
             reward -= 10.0  # Large penalty for hitting max drawdown
+            reward = float(np.clip(reward, -10.0, 10.0))  # Re-clip after penalty
             logger.warning(f"Max drawdown reached: {drawdown * 100:.2f}%")
 
         # Get new observation
@@ -582,22 +592,17 @@ class RealisticTradingEnv(gym.Env):
 
     def _calculate_reward(self, old_equity: float, trade_cost: float) -> float:
         """
-        Calculate reward signal.
+        Calculate reward signal to minimize Reward Hacking.
 
-        Components:
-        - Portfolio return
-        - Risk adjustment (Sharpe)
-        - Drawdown penalty
-        - Transaction cost penalty
+        Focuses purely on realized/unrealized PnL (the true objective)
+        with minimal shaping to avoid edge-case exploitation.
         """
         current_equity = self._calculate_equity()
 
-        # Use Anti-Bias reward function if available
+        # Use Anti-Bias reward function if available (custom/advanced logic)
         if self.reward_fn is not None:
             pnl = current_equity - old_equity
-            prev_position = self.position  # Position before this step's action
-            # Note: position is already updated in _execute_trade, so we need to track it differently
-            # For simplicity, we'll use the reward function's compute method
+            prev_position = self.position
             reward = self.reward_fn.compute(
                 pnl=pnl,
                 position=self.position,
@@ -607,35 +612,31 @@ class RealisticTradingEnv(gym.Env):
             )
             return float(reward)
 
-        # Legacy reward calculation
-        # Return
+        # Core Objective: Pure PnL percentage
         pnl = current_equity - old_equity
-        pnl_pct = pnl / old_equity if old_equity > 0 else 0.0
 
-        # Sharpe bonus (if enough history)
-        if len(self.equity_history) > 20:
-            returns = np.diff(self.equity_history[-20:]) / np.array(
-                self.equity_history[-20:-1]
-            )
-            sharpe = np.mean(returns) / (np.std(returns) + 1e-8) * np.sqrt(252)
-            sharpe_bonus = np.clip(sharpe * 0.1, -0.5, 0.5)
+        # We scale by initial capital to keep returns consistent across the episode
+        # rather than old_equity which compounds and changes the scale of rewards
+        pnl_pct = pnl / self.config.initial_capital
+
+        # Asymmetric Drawdown Penalty
+        # Strongly penalize losing money, gently reward making money.
+        # This naturally encodes risk aversion without complex shaping.
+        if pnl_pct < 0:
+            reward = pnl_pct * 2.0  # Double penalty for losses
         else:
-            sharpe_bonus = 0.0
+            reward = pnl_pct
 
-        # Drawdown penalty
-        drawdown = self._calculate_drawdown()
-        drawdown_penalty = drawdown * 2.0  # Double weight on drawdown
+        # Apply transaction costs directly to the reward (already in PnL, but we emphasize it)
+        # to discourage high-frequency churn for zero net gain
+        cost_penalty = trade_cost / self.config.initial_capital
+        reward -= cost_penalty * 0.5
 
-        # Transaction cost penalty
-        cost_penalty = trade_cost / old_equity if old_equity > 0 else 0.0
+        # Scale for stable PPO training (usually rewards in [-1, 1] are best)
+        # 1% move = 0.01 * 100 = 1.0 reward
+        reward = np.clip(reward * 100, -10.0, 10.0)
 
-        # Combined reward
-        reward = pnl_pct + sharpe_bonus + drawdown_penalty - cost_penalty
-
-        # Scale for training
-        reward = np.clip(reward * 100, -10, 10)
-
-        return reward
+        return float(reward)
 
     def _get_observation(self) -> np.ndarray:
         """Construct observation vector."""
@@ -811,13 +812,13 @@ if __name__ == "__main__":
 
     env = RealisticTradingEnv(price_data, features, config)
 
-    print(f"✓ Environment created")
+    print("✓ Environment created")
     print(f"  Observation space: {env.observation_space.shape}")
     print(f"  Action space: {env.action_space}")
 
     # Test episode
     obs, info = env.reset()
-    print(f"\n✓ Reset successful")
+    print("\n✓ Reset successful")
     print(f"  Start equity: ${info['equity']:.2f}")
 
     total_reward = 0
@@ -833,7 +834,7 @@ if __name__ == "__main__":
             print(f"\n✓ Episode ended at step {i + 1}")
             break
 
-    print(f"\n✓ Test complete")
+    print("\n✓ Test complete")
     print(f"  Total reward: {total_reward:.2f}")
     print(f"  Final equity: ${info['equity']:.2f}")
     print(f"  Final return: {info['return'] * 100:.2f}%")

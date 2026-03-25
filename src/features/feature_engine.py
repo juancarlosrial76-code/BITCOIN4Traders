@@ -622,7 +622,9 @@ class FeatureEngine:
             feat_scaled = self.scaler.transform(raw.reshape(1, -1))[0].astype(
                 np.float32
             )
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Feature calculation failed at scaler.transform step: {e}")
+            # Return None so caller can skip this tick rather than propagate corrupted features
             return None
 
         if np.any(np.isnan(feat_scaled)):
@@ -708,8 +710,10 @@ class FeatureEngine:
             df["log_ret"] = df["close"].pct_change()  # Simple pct return as alternative
 
         # 2. Volatility (rolling std of returns)
-        # Annualized to allow comparison across different timeframes
-        # For hourly data: 252 trading days * 24 hours = 6048 periods/year
+        # Annualized to allow comparison across different timeframes.
+        # self._ann_factor is computed dynamically in __init__ from
+        # config.timeframe_minutes: (252 * 1440) / timeframe_minutes.
+        # Examples: 1h → 6048, 4h → 1512, 1d → 252.
         df["volatility_20"] = (
             df["log_ret"].rolling(window=self.config.volatility_window).std()
             * np.sqrt(self._ann_factor)
@@ -848,7 +852,8 @@ class FeatureEngine:
                 # DFA gives values roughly in [0, 1] but can slightly exceed
                 # due to finite sample noise — clip to [0.05, 0.95] for robustness
                 hurst_vals[i] = float(np.clip(h, 0.05, 0.95))
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Hurst DFA calculation failed at index {i}: {e}")
                 hurst_vals[i] = 0.5  # fallback: random walk
 
         result = pd.Series(hurst_vals, index=df.index)
@@ -895,7 +900,8 @@ class FeatureEngine:
                     garch_vals[i] = float(np.clip(forecast, 0.0, 0.5))
                 else:
                     garch_vals[i] = float(np.std(window_data))
-            except Exception:
+            except Exception as e:
+                logger.warning(f"GARCH fit failed at index {i}: {e}")
                 garch_vals[i] = float(np.std(window_data))
 
         result_series = pd.Series(garch_vals, index=df.index)

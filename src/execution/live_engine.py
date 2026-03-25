@@ -432,6 +432,9 @@ class LiveExecutionEngine:
             str, asyncio.Task
         ] = {}  # Watchdog tasks keyed by client_order_id
 
+        # Fix #25: Lock to prevent race condition when setting _initial_equity
+        self._equity_lock = asyncio.Lock()
+
     # ── Public API ───────────────────────────
 
     async def start(self) -> None:
@@ -530,12 +533,15 @@ class LiveExecutionEngine:
             await asyncio.sleep(1)  # 1-second heartbeat interval
 
             equity = self._compute_equity()
-            if self._initial_equity is None and equity > 0:
-                # Lock the starting equity for drawdown calculations
-                self._initial_equity = equity
-                self._breaker.update_equity(equity)
-                logger.info("Initial equity locked: $%.2f", float(equity))
-            elif equity > 0:
+            # Fix #25: Use asyncio.Lock to prevent race condition on _initial_equity
+            async with self._equity_lock:
+                if self._initial_equity is None and equity > 0:
+                    # Lock the starting equity for drawdown calculations
+                    self._initial_equity = equity
+                    self._breaker.update_equity(equity)
+                    logger.info("Initial equity locked: $%.2f", float(equity))
+
+            if self._initial_equity is not None and equity > 0:
                 self._breaker.update_equity(equity)
                 if self._breaker.check(equity):
                     # Circuit breaker tripped – halt immediately
@@ -668,6 +674,51 @@ class LiveExecutionEngine:
         pos = self._positions[symbol]
         current_qty = pos.qty
 
+        # Fix #9: signal==0 must close any open position instead of returning early.
+        if signal == 0:
+            if current_qty != 0:
+                # Build a close order: sell to close longs, buy to close shorts
+                close_side = OrderSide.SELL if current_qty > 0 else OrderSide.BUY
+                close_qty = abs(current_qty)
+                mid = (bid + ask) / 2
+                if self._cfg.use_limit_orders:
+                    offset = (
+                        (ask - bid)
+                        * Decimal(self._cfg.limit_order_offset_bps)
+                        / Decimal(10_000)
+                    )
+                    price = (bid + offset) if close_side == OrderSide.BUY else (ask - offset)
+                    close_order = Order(
+                        symbol=symbol,
+                        side=close_side,
+                        type=OrderType.LIMIT,
+                        tif=TimeInForce.GTC,
+                        quantity=close_qty,
+                        limit_price=price,
+                    )
+                else:
+                    close_order = Order(
+                        symbol=symbol,
+                        side=close_side,
+                        type=OrderType.MARKET,
+                        quantity=close_qty,
+                    )
+                submitted = await self._oms.submit_order(close_order)
+                logger.info("Signal 0 → closing position %s qty=%s: %s", symbol, current_qty, submitted)
+                if self._monitor:
+                    self._monitor.on_order_submitted()
+                if close_order.type == OrderType.LIMIT:
+                    task = asyncio.create_task(
+                        self._order_timeout_watchdog(submitted.client_order_id),
+                        name=f"timeout_{submitted.client_order_id}",
+                    )
+                    self._order_timeout_tasks[submitted.client_order_id] = task
+                    # Clean up completed tasks to prevent memory leak
+                    completed = [k for k, t in self._order_timeout_tasks.items() if t.done()]
+                    for k in completed:
+                        del self._order_timeout_tasks[k]
+            return  # Nothing to do if already flat
+
         target_qty = self._signal_to_target_qty(signal, symbol, (bid + ask) / 2)
         delta_qty = target_qty - current_qty  # Size adjustment needed
 
@@ -715,6 +766,10 @@ class LiveExecutionEngine:
                 name=f"timeout_{submitted.client_order_id}",
             )
             self._order_timeout_tasks[submitted.client_order_id] = task
+            # Fix #24: Clean up completed tasks to prevent memory leak
+            completed = [k for k, t in self._order_timeout_tasks.items() if t.done()]
+            for k in completed:
+                del self._order_timeout_tasks[k]
 
     def _signal_to_target_qty(
         self, signal: int, symbol: str, price: Decimal

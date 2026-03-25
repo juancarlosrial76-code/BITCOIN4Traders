@@ -80,6 +80,7 @@ import json
 import os
 import sqlite3
 import numpy as np
+from pathlib import Path
 from typing import Dict, Tuple, Optional, List
 from dataclasses import dataclass, field
 from loguru import logger
@@ -126,8 +127,14 @@ class RiskConfig:
         ... )
     """
 
-    # Circuit Breaker
-    max_drawdown_per_session: float = 0.02  # 2% max drawdown
+    # Drawdown limit: per-session circuit breaker threshold for the RiskManager.
+    # NOTE: This 2% limit is intentionally conservative — it acts as a per-session
+    # stop, not an overall account drawdown limit. The overall account drawdown
+    # circuit breaker (15%) lives in risk_engine.py (RiskConfig.max_drawdown_pct).
+    # The training environment uses 20% to allow the agent to explore freely.
+    # See also risk_engine.py and realistic_trading_env.py for the other drawdown
+    # limits in the system.
+    max_drawdown_per_session: float = 0.02  # 2% per-session max drawdown
     max_consecutive_losses: int = 5
 
     # Position Sizing
@@ -281,6 +288,11 @@ class RiskManager:
         self.config = config
         self.initial_capital = initial_capital
 
+        # JSON-based lightweight persistence path — always active, survives restarts
+        # without requiring an explicit db_path. Stores critical risk state fields
+        # (consecutive_losses, halt status, equity markers) to a small JSON file.
+        self._state_file = Path("data/sqlite/risk_state.json")
+
         # SQLite persistence — only active when an explicit db_path is provided.
         # Pass db_path to enable crash-recovery; omit (None) for ephemeral/test use.
         self._db_path: Optional[str] = db_path
@@ -310,6 +322,9 @@ class RiskManager:
 
         # Equity history for VaR and drawdown calculation
         self.equity_history: List[float] = [initial_capital]
+
+        # Load persisted JSON state first (fast, always-on crash recovery)
+        self._load_state()
 
         # Load persisted state (restores after crash/restart)
         if self._db_path is not None:
@@ -421,6 +436,19 @@ class RiskManager:
                 )
                 proposed_size = proposed_size * evt_scalar
                 logger.info(f"After EVT scaling: {proposed_size:.0f}")
+
+        # Stage 2b: VaR-based position cap (Task #19)
+        # Cap position size so that risk per VaR unit does not exceed 1% of capital
+        var = self.calculate_var(proposed_size)
+        if var is not None and var > 0:
+            var_based_size = (current_capital * 0.01) / var * proposed_size
+            if proposed_size > var_based_size:
+                logger.info(
+                    f"VaR cap applied: VaR={var:.2f}, "
+                    f"var_based_size={var_based_size:.0f} < proposed={proposed_size:.0f}. "
+                    "Capping to VaR-based limit."
+                )
+                proposed_size = var_based_size
 
         # Stage 3: Capital threshold - protective reduction
         # When capital drops below threshold, reduce position sizes
@@ -650,7 +678,8 @@ class RiskManager:
             self.state.halt_trading = True
             self.state.halt_reason = reason
 
-        # Persist updated state
+        # Persist updated state to JSON (always) and SQLite (when db_path provided)
+        self._save_state()
         if self._db_path is not None:
             self._save_risk_state()
 
@@ -735,6 +764,49 @@ class RiskManager:
         # Clamp to zero - can't have negative drawdown (which would mean
         # equity is above peak, which is actually a good thing!)
         return max(0.0, drawdown)
+
+    # -----------------------------------------------------------------------
+    # JSON Persistence (lightweight, always-on crash recovery)
+    # -----------------------------------------------------------------------
+
+    def _load_state(self):
+        """Load risk state from disk to survive restarts."""
+        try:
+            if self._state_file.exists():
+                with open(self._state_file) as f:
+                    state = json.load(f)
+                self.state.consecutive_losses = state.get('consecutive_losses', 0)
+                # daily_loss is a derived property on RiskState (peak_equity vs equity),
+                # so we restore halt status and peak_equity to approximate it.
+                self.state.halt_trading = bool(state.get('halt_trading', False))
+                self.state.halt_reason = state.get('halt_reason', None)
+                self.state.peak_equity = float(state.get('peak_equity', self.initial_capital))
+                self.state.current_equity = float(state.get('current_equity', self.initial_capital))
+                self.state.current_drawdown = float(state.get('current_drawdown', 0.0))
+                logger.info(
+                    f"RiskManager: JSON state loaded from {self._state_file} "
+                    f"(consecutive_losses={self.state.consecutive_losses} "
+                    f"halt={self.state.halt_trading})"
+                )
+        except Exception:
+            pass  # Start fresh if state file is corrupt
+
+    def _save_state(self):
+        """Persist risk state to disk."""
+        try:
+            self._state_file.parent.mkdir(parents=True, exist_ok=True)
+            state = {
+                'consecutive_losses': getattr(self.state, 'consecutive_losses', 0),
+                'halt_trading': getattr(self.state, 'halt_trading', False),
+                'halt_reason': getattr(self.state, 'halt_reason', None),
+                'peak_equity': getattr(self.state, 'peak_equity', self.initial_capital),
+                'current_equity': getattr(self.state, 'current_equity', self.initial_capital),
+                'current_drawdown': getattr(self.state, 'current_drawdown', 0.0),
+            }
+            with open(self._state_file, 'w') as f:
+                json.dump(state, f)
+        except Exception:
+            pass
 
     # -----------------------------------------------------------------------
     # SQLite Persistence

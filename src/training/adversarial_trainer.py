@@ -114,8 +114,9 @@ def _load_mem_cfg() -> dict:
         if cfg_path.exists() and _YAML_OK:
             with open(cfg_path) as f:
                 return yaml.safe_load(f) or {}
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Adversarial training step failed loading memory_management.yaml: {e}")
+        # Continue with empty config — all memory settings will use defaults
     return {}
 
 
@@ -1169,8 +1170,9 @@ class AdversarialTrainer:
                     ip = get_ipython()
                     if ip is not None:
                         ip.run_line_magic("reset_selective", "-f _i")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"IPython output cache clear failed at iteration {iteration}: {e}")
+                    # Non-critical — training continues regardless
 
         logger.success("Training complete!")
         self._save_final_checkpoint()

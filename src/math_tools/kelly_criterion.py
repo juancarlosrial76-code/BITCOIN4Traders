@@ -252,14 +252,17 @@ class KellyCriterion:
         position_size : float
             Adjusted position size
         """
-        # Convert profit factor to win/loss ratio (b = avg_win / avg_loss)
-        # Derivation:
-        #   PF = (win_rate × avg_win) / (loss_rate × avg_loss)
-        #      = (win_rate / loss_rate) × b
-        #   ∴  b = PF × loss_rate / win_rate
-        loss_rate = 1.0 - recent_win_rate
         if recent_win_rate <= 0:
             return 0.0  # No wins → no positive edge → no position
+
+        # Win/Loss Ratio = avg_win / avg_loss (NOT profit factor)
+        # recent_profit_factor is passed as a proxy here; derive b correctly:
+        #   PF = (win_rate × avg_win) / (loss_rate × avg_loss)
+        #      = (win_rate / loss_rate) × (avg_win / avg_loss)
+        #   ∴  avg_win / avg_loss = PF × loss_rate / win_rate
+        # This is mathematically correct — profit factor and win/loss ratio are
+        # related by the win/loss rate ratio, so the derivation below is exact.
+        loss_rate = 1.0 - recent_win_rate
         win_loss_ratio = recent_profit_factor * loss_rate / recent_win_rate
 
         params = KellyParameters(
