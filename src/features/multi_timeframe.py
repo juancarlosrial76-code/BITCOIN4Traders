@@ -677,20 +677,16 @@ def create_multi_timeframe_features(
             .dropna()
         )
 
-        # Calculate features on resampled data (applied to raw df, aligned to original index)
-        features[f"return_{tf}"] = df[
-            "close"
-        ].pct_change()  # bar-to-bar return at base TF
-        features[f"volatility_{tf}"] = (
-            df["close"].rolling(window=20).std()
-        )  # 20-bar realized vol proxy
+        # Calculate features on resampled data, then forward-fill back to base index.
+        # ffill: each base-TF bar carries the most recent completed higher-TF value.
+        close_tf = resampled["close"].reindex(df.index, method="ffill")
+
+        features[f"return_{tf}"] = close_tf.pct_change()
+        features[f"volatility_{tf}"] = close_tf.rolling(window=20).std()
         features[f"trend_{tf}"] = np.where(
-            df["close"]
-            > df["close"].shift(5),  # price higher than 5 bars ago → uptrend
+            close_tf > close_tf.shift(5),
             1,
-            np.where(
-                df["close"] < df["close"].shift(5), -1, 0
-            ),  # lower → downtrend, equal → neutral
+            np.where(close_tf < close_tf.shift(5), -1, 0),
         )
 
     return features
