@@ -408,8 +408,9 @@ class ConfigIntegratedTradingEnv(gym.Env):
         """
         # Calculate state dimension
         n_features = len(self.features.columns)
-        # 9 base portfolio features + 3 HMM regime probabilities (if available)
-        n_hmm = 3 if (self._hmm_detector is not None or _HMM_AVAILABLE) else 0
+        # 9 base portfolio features + 3 HMM regime probabilities
+        # _get_hmm_probs() always returns 3 values (flat fallback when HMM unavailable)
+        n_hmm = 3
         n_additional = 9 + n_hmm
         state_dim = n_features + n_additional
 
@@ -458,13 +459,13 @@ class ConfigIntegratedTradingEnv(gym.Env):
         super().reset(seed=seed)
 
         # Random start – episode ends after max_steps steps
-        # Sicher auch bei kleinen Datensaetzen (Live-Feed mit wenigen Kerzen)
+        # Safe even for small datasets (live feed with few candles)
         n = len(self.price_data)
         lookback = self.config.lookback_window
         max_start = n - self.config.max_steps - lookback
 
         if max_start <= lookback:
-            # Zu wenig Daten fuer sauberen Split → starte so frueh wie moeglich
+            # Too little data for a clean split → start as early as possible
             logger.warning(
                 f"Dataset too small for full episode "
                 f"(n={n}, lookback={lookback}, max_steps={self.config.max_steps}). "
@@ -479,7 +480,7 @@ class ConfigIntegratedTradingEnv(gym.Env):
         self.position = 0.0
         self.cash = self.config.initial_capital
         self.shares = 0.0
-        # Fallback-Preis fuer Datenlücken (letzter gueltiger Close-Preis)
+        # Fallback price for data gaps (last valid close price)
         _step0 = min(self.current_step, len(self._price_np) - 1)
         try:
             # ENV-3: numpy lookup statt Pandas iloc
@@ -569,10 +570,10 @@ class ConfigIntegratedTradingEnv(gym.Env):
 
         # ============================================================
         # CURRICULUM LEARNING: Action-Masking
-        # Wenn set_allowed_actions() gesetzt wurde, wird jede nicht
-        # erlaubte Action auf die naechstgelegene erlaubte Action gemappt.
-        # Ermoeglicht Phasen-Training: Phase 1=Long only, Phase 2=Short only,
-        # Phase 3=alle Actions. Kein Reward-Bias durch Masking noetig.
+        # If set_allowed_actions() has been set, every disallowed action
+        # is mapped to the nearest allowed action.
+        # Enables phase training: Phase 1=Long only, Phase 2=Short only,
+        # Phase 3=all actions. No reward bias from masking required.
         # ============================================================
         action = self._apply_action_mask(action)
 
@@ -612,13 +613,13 @@ class ConfigIntegratedTradingEnv(gym.Env):
             terminated = False
             truncated = False
 
-        # Update equity (post-trade) — einmal berechnen und weitergeben.
-        # _calculate_equity() wird so nur 2x pro step aufgerufen (old + current),
-        # statt 4x (old + in execute_trade + in reward_dynamic + in step).
+        # Update equity (post-trade) — compute once and pass through.
+        # _calculate_equity() is thus called only 2x per step (old + current),
+        # instead of 4x (old + in execute_trade + in reward_dynamic + in step).
         current_equity = self._calculate_equity()
         self.equity_history.append(current_equity)
 
-        # Calculate reward — current_equity übergeben (kein weiterer _calculate_equity-Call)
+        # Calculate reward — pass current_equity (no additional _calculate_equity call)
         reward = self._calculate_reward_dynamic(
             old_equity, trade_info, current_equity=current_equity
         )

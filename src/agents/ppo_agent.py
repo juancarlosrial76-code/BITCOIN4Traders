@@ -73,16 +73,19 @@ Imports:
     typing: Type hints for better code clarity
 """
 
+from dataclasses import dataclass
+from typing import Any, Dict, Optional, Tuple, Union
+
+import numpy as np
 import torch
 import torch.nn as nn
-import torch.optim as optim
 import torch.nn.functional as F
-from torch.distributions import Categorical
-import numpy as np
-from typing import Tuple, List, Dict, Optional, Union, Any
-from dataclasses import dataclass, field
+import torch.optim as optim
 from loguru import logger
+from torch.distributions import Categorical
 from torch.optim.lr_scheduler import ExponentialLR
+
+from src.networks.transformer_net import TransformerBackbone
 
 
 @dataclass
@@ -144,9 +147,18 @@ class PPOConfig:
     # Advanced Architecture
     use_recurrent: bool = True
     rnn_type: str = "GRU"  # "LSTM" or "GRU"
+    use_transformer: bool = False  # If True, overrides RNN with TransformerBackbone
     rnn_layers: int = 1
     dropout: float = 0.1
     use_layer_norm: bool = True
+
+    # Transformer-specific knobs (only used when use_transformer=True)
+    transformer_nhead: int = 4  # attention heads — must divide transformer_d_model
+    transformer_d_model: int = 0  # 0 = use hidden_dim (most common); set >0 to decouple
+    transformer_seq_len: int = 1  # sliding-window depth fed to transformer:
+    #   1  → Option A: each step is seq_len=1 (backbone sees only current features)
+    #   >1 → Option B: the last `transformer_seq_len` states are stacked and fed as a
+    #                  real sequence so the transformer attends across time
 
     # Learning rates & Scheduling
     actor_lr: float = 3e-4
@@ -173,6 +185,13 @@ class PPOConfig:
 
     # Early stopping
     target_kl: float = 0.01
+
+    # Self-Imitation Learning (SIL)
+    use_sil: bool = True
+    sil_update_ratio: int = 4  # Number of SIL updates per PPO update
+    sil_batch_size: int = 512
+    sil_capacity: int = 100000
+    sil_value_weight: float = 0.01
 
     # GPU optimizations (only active on CUDA, ignored on CPU)
     use_amp: bool = True  # Mixed Precision (float16 forward, float32 grads)
@@ -252,9 +271,29 @@ class BaseNetwork(nn.Module):
 
         self.feature_extractor = nn.Sequential(*modules)
 
-        # Recurrent Layer
+        # Recurrent or Transformer Layer
         self.rnn = None
-        if config.use_recurrent:
+        self.transformer = None
+
+        if getattr(config, "use_transformer", False):
+            # Resolve d_model: use explicit transformer_d_model if set, else hidden_dim
+            _d_model = (
+                config.transformer_d_model
+                if getattr(config, "transformer_d_model", 0) > 0
+                else config.hidden_dim
+            )
+            # If d_model != hidden_dim the MLP trunk output needs a projection;
+            # TransformerBackbone handles that via its own input_projection layer.
+            self.transformer = TransformerBackbone(
+                input_dim=config.hidden_dim,
+                d_model=_d_model,
+                nhead=getattr(config, "transformer_nhead", 4),
+                num_layers=config.rnn_layers,
+                dropout=config.dropout,
+            )
+            # Store resolved d_model so forward() can reference it if needed
+            self._transformer_d_model = _d_model
+        elif config.use_recurrent:
             if config.rnn_type == "LSTM":
                 self.rnn = nn.LSTM(
                     config.hidden_dim,
@@ -270,8 +309,11 @@ class BaseNetwork(nn.Module):
                     batch_first=True,
                 )
 
-        # Output Layer
-        self.head = nn.Linear(config.hidden_dim, output_dim)
+        # Output Layer — input dim depends on backbone:
+        #   Transformer with custom d_model → d_model (may differ from hidden_dim)
+        #   GRU / LSTM / Transformer with default d_model → hidden_dim
+        _head_in = getattr(self, "_transformer_d_model", config.hidden_dim)
+        self.head = nn.Linear(_head_in, output_dim)
 
         # Initialize weights
         self.apply(self._init_weights)
@@ -298,6 +340,10 @@ class BaseNetwork(nn.Module):
                     )  # Hidden-hidden weights: orthogonal init
                 elif "bias" in name:
                     nn.init.constant_(param.data, 0)  # Zero-initialize RNN biases
+        elif isinstance(module, nn.TransformerEncoderLayer):
+            for name, param in module.named_parameters():
+                if param.dim() > 1:
+                    nn.init.xavier_uniform_(param)
 
     def forward(
         self, x: torch.Tensor, hidden: Optional[Union[Tuple, torch.Tensor]] = None
@@ -333,13 +379,18 @@ class BaseNetwork(nn.Module):
         features = self.feature_extractor(x)  # Extract features via MLP trunk
 
         next_hidden = None
-        if self.rnn is not None:
+        if self.transformer is not None:
+            # Transformer expects sequence [batch, seq_len, hidden_dim]
+            if features.dim() == 2:
+                features = features.unsqueeze(1)
+            features = self.transformer(features)  # output is [batch, hidden_dim]
+        elif self.rnn is not None:
             features, next_hidden = self.rnn(
                 features, hidden
             )  # Propagate recurrent state
 
         # If we added a sequence dim, remove it for the head if it's 1
-        if x.dim() == 3 and features.size(1) == 1:
+        if x.dim() == 3 and features.dim() == 3 and features.size(1) == 1:
             features = features.squeeze(
                 1
             )  # Remove seq dim so head sees (batch, hidden_dim)
@@ -685,7 +736,7 @@ class PPOAgent:
         # GradScaler scales the loss to avoid numerical underflows in float16.
         # Automatically disabled if not on CUDA or use_amp=False.
         self._amp_enabled = config.use_amp and _on_cuda
-        self._scaler = torch.cuda.amp.GradScaler(enabled=self._amp_enabled)
+        self._scaler = torch.amp.GradScaler("cuda", enabled=self._amp_enabled)
         if self._amp_enabled:
             logger.info("  Mixed Precision (AMP) active — forward pass in float16")
 
@@ -706,6 +757,53 @@ class PPOAgent:
                 self.critic_optimizer, gamma=config.lr_decay_gamma
             )
 
+        # ── Option B: Sliding-window sequence buffer ─────────────────────────
+        # When use_transformer=True and transformer_seq_len > 1, we maintain a
+        # per-episode ring buffer of the last K raw states.  select_action()
+        # stacks them into [1, K, state_dim] and feeds the full window to the
+        # transformer so it attends across real temporal context instead of just
+        # the current step.
+        #
+        # Key design decisions:
+        #  - The ring buffer lives on CPU (numpy). Tensor conversion happens inside
+        #    select_action() so the GPU transfer is one contiguous block.
+        #  - On episode reset the buffer is zero-filled (padding = zero state).
+        #    The causal mask ensures the transformer ignores the padded prefix.
+        #  - When transformer_seq_len == 1 (Option A) this buffer is never created
+        #    and there is zero overhead on the GRU path.
+        self._seq_len = getattr(config, "transformer_seq_len", 1)
+        self._use_seq_window = (
+            getattr(config, "use_transformer", False) and self._seq_len > 1
+        )
+        if self._use_seq_window:
+            # Ring buffer: [seq_len, state_dim]  — oldest at index 0, newest at -1
+            self._state_window: np.ndarray = np.zeros(
+                (self._seq_len, config.state_dim), dtype=np.float32
+            )
+            logger.info(
+                f"  Transformer Option B active — sliding window K={self._seq_len}"
+            )
+        else:
+            # Allocate a dummy 1-row buffer so the type is always ndarray.
+            # _use_seq_window=False means this buffer is never accessed at runtime.
+            self._state_window: np.ndarray = np.zeros(  # type: ignore[no-redef]
+                (1, config.state_dim), dtype=np.float32
+            )
+
+        # Self-Imitation Learning Buffer
+        # Stores past high-reward transitions continuously across epochs
+        self.use_sil = config.use_sil
+        if self.use_sil:
+            self.sil_buffer = {
+                "states": np.zeros(
+                    (config.sil_capacity, config.state_dim), dtype=np.float32
+                ),
+                "actions": np.zeros(config.sil_capacity, dtype=np.int64),
+                "returns": np.zeros(config.sil_capacity, dtype=np.float32),
+                "ptr": 0,
+                "size": 0,
+            }
+
         # Experience buffers
         self.reset_buffers()
 
@@ -715,6 +813,18 @@ class PPOAgent:
         )
         logger.info(f"  LayerNorm: {config.use_layer_norm}, Dropout: {config.dropout}")
         logger.info(f"  LR Schedule: {config.use_lr_decay}")
+
+    def reset_sequence_window(self) -> None:
+        """Reset the sliding-window state buffer to zero-padding.
+
+        Must be called at the start of every episode when transformer_seq_len > 1
+        (Option B).  The causal mask in TransformerBackbone ensures that zero-padded
+        prefix positions do not pollute the final-position output.
+
+        No-op when the window buffer is disabled (Option A / GRU mode).
+        """
+        if self._state_window is not None:
+            self._state_window[:] = 0.0
 
     def reset_buffers(self, capacity: int = 0):
         """Reset experience buffers.
@@ -787,9 +897,21 @@ class PPOAgent:
         state = np.nan_to_num(
             np.asarray(state, dtype=np.float32), nan=0.0, posinf=1.0, neginf=-1.0
         )
-        state_tensor = (
-            torch.FloatTensor(state).unsqueeze(0).to(self.device)
-        )  # (1, state_dim)
+
+        if self._use_seq_window:
+            # Option B: maintain a sliding window of the last K states.
+            # Shift all rows left by 1, write new state at the end.
+            # _state_window is always a valid ndarray when _use_seq_window is True.
+            self._state_window[:-1] = self._state_window[1:]  # type: ignore[index]
+            self._state_window[-1] = state  # type: ignore[index]
+            # Feed [1, K, state_dim] so TransformerBackbone sees real sequences
+            state_tensor = (
+                torch.FloatTensor(self._state_window).unsqueeze(0).to(self.device)
+            )  # (1, K, state_dim)
+        else:
+            state_tensor = (
+                torch.FloatTensor(state).unsqueeze(0).to(self.device)
+            )  # (1, state_dim)
 
         # Switch to eval mode for deterministic inference (disables dropout)
         training_mode = self.actor.training
@@ -799,10 +921,10 @@ class PPOAgent:
 
         with torch.no_grad():
             # AMP: Inference runs in float16 on GPU (~1.7x faster on T4/A100).
-            # torch.cuda.amp.autocast is identical to torch.amp.autocast("cuda")
-            # and works on all PyTorch versions >= 1.9.
-            # On CPU: autocast(enabled=False) -> no overhead.
-            with torch.cuda.amp.autocast(enabled=self._amp_enabled):
+            # torch.amp.autocast replaces the deprecated torch.cuda.amp.autocast.
+            # On CPU: device_type="cpu" with enabled=False → no overhead.
+            _amp_device = "cuda" if self._amp_enabled else "cpu"
+            with torch.amp.autocast(device_type=_amp_device, enabled=self._amp_enabled):
                 # Actor forward pass: delivers action distribution + next hidden state
                 dist, next_hidden_actor = self.actor(state_tensor, hidden)
 
@@ -878,8 +1000,9 @@ class PPOAgent:
             self.critic.eval()
 
         with torch.no_grad():
-            # AMP: float16 auf GPU (~1.7x schneller auf T4/A100), kein Overhead auf CPU
-            with torch.cuda.amp.autocast(enabled=self._amp_enabled):
+            # AMP: float16 on GPU (~1.7x faster on T4/A100), no overhead on CPU
+            _amp_device = "cuda" if self._amp_enabled else "cpu"
+            with torch.amp.autocast(device_type=_amp_device, enabled=self._amp_enabled):
                 dist, next_hidden_actor = self.actor(
                     state_tensor, hidden
                 )  # batch forward
@@ -1130,8 +1253,12 @@ class PPOAgent:
         # Step 2: Normalize advantages
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-        # NaN-Guard auf States: verhindert NaN-Logits wenn Feature-Engineering
-        # bei kleinen Datensaetzen (< lookback-Fenster) NaN produziert.
+        # Store good trajectories in SIL buffer
+        if self.use_sil:
+            self._add_to_sil_buffer(_states_raw, _actions_raw, returns)
+
+        # NaN-Guard on states: prevents NaN logits when feature engineering
+        # produces NaN on small datasets (< lookback window).
         _states_raw = np.nan_to_num(_states_raw, nan=0.0, posinf=1.0, neginf=-1.0)
 
         # Convert to tensors — with Pinned Memory for faster CPU->GPU transfer.
@@ -1227,31 +1354,54 @@ class PPOAgent:
                         batch_hidden = _h_stacked[:, batch_indices, :]
 
                 # ── Mixed Precision forward pass ─────────────────────────────
-                # autocast: Actor/Critic GRU + Linear laufen in float16 → halber
-                # VRAM-Bedarf, ~1.7× schnellere Matmul auf Tensor Cores (T4/A100).
-                # Auf CPU wird autocast automatisch zu float32 (kein Overhead).
-                with torch.cuda.amp.autocast(enabled=self._amp_enabled):
-                    # Actor forward pass mit gespeichertem Hidden State
+                # autocast: Actor/Critic GRU + Linear run in float16 → half
+                # VRAM usage, ~1.7× faster matmul on Tensor Cores (T4/A100).
+                # On CPU, autocast automatically falls back to float32 (no overhead).
+                _amp_device = "cuda" if self._amp_enabled else "cpu"
+                with torch.amp.autocast(
+                    device_type=_amp_device, enabled=self._amp_enabled
+                ):
+                    # Actor forward pass with saved hidden state
                     dist, _ = self.actor(batch_states, batch_hidden)
 
-                    # Fix #4 (Training): Critic bekommt denselben Hidden State wie Actor.
-                    # Kein None mehr — Critic hat jetzt Zugriff auf denselben zeitlichen Kontext.
+                    # Fix #4 (Training): Critic receives the same hidden state as Actor.
+                    # No more None — Critic now has access to the same temporal context.
                     critic_values, _ = self.critic(batch_states, batch_hidden)
                     critic_values = critic_values.squeeze()
 
                     # Compute losses for this mini-batch
                     # --------------------------------------
 
-                    # Log probability of taken actions under current policy
-                    log_probs = dist.log_prob(batch_actions)
+                    # Log probability of taken actions under current policy.
+                    # .float() forces fp32 even under AMP: dist.log_prob() returns
+                    # fp16 on CUDA with autocast, but batch_old_log_probs is fp32.
+                    # Keeping both in fp32 prevents precision loss in the log-ratio
+                    # that would artificially inflate importance-sampling divergence.
+                    log_probs = dist.log_prob(batch_actions).float()
 
                     # Policy entropy - measures stochasticity of the policy
                     # Higher entropy = more exploration
                     entropy = dist.entropy().mean()
 
                     # Importance sampling ratio: π_θ(a|s) / π_θ_old(a|s)
-                    # Measures how much the probability of taking action a changed
-                    ratio = torch.exp(log_probs - batch_old_log_probs)
+                    #
+                    # CRITICAL FIX — clamp log-ratio BEFORE exp() to prevent
+                    # float32 overflow and gradient explosion.
+                    #
+                    # Explosion path (without clamp):
+                    #   old_log_prob = -0.2  (action was likely under old policy)
+                    #   new_log_prob = -8.0  (policy diverged, now action is unlikely)
+                    #   log_ratio = +7.8  →  ratio = exp(7.8) ≈ 2440
+                    #   surr1 = 2440 × (−adv)  →  huge negative value
+                    #   surr2 = clamp(2440, 0.8, 1.2) × (−adv) = 1.2 × (−adv)
+                    #   min(surr1, surr2) = surr1  →  giant loss  →  gradient explosion
+                    #
+                    # With clip_ε=0.2, any |log_ratio| >> ln(1.2)≈0.18 is already
+                    # clipped in surr2. Clamping to [-10, +10] is safe: exp(10)≈22k
+                    # still allows surr2 to dominate for large ratios while preventing
+                    # the pathological surr1 path above.
+                    log_ratio = (log_probs - batch_old_log_probs.float()).clamp(-10.0, 10.0)
+                    ratio = torch.exp(log_ratio)
 
                     # PPO Clipped Surrogate Objective
                     # --------------------------------
@@ -1286,14 +1436,27 @@ class PPOAgent:
                         - self.config.entropy_coef * entropy
                     )
 
-                # ── Backward + Gradient Clipping mit GradScaler ─────────────
-                # GradScaler skaliert den Loss um float16 Underflow zu vermeiden,
-                # unscaled dann automatisch vor dem Grad-Clip und optimizer.step().
+                # ── NaN / Inf guard ──────────────────────────────────────────
+                # Despite the log-ratio clamp above, AMP scaler overflow or
+                # pathological advantage values can still produce non-finite loss.
+                # Propagating NaN through .backward() silently corrupts all weights,
+                # so we skip the update and zero the grads instead.
+                if not torch.isfinite(loss):
+                    logger.warning(
+                        f"Non-finite PPO loss ({loss.item():.4g}) — skipping batch"
+                    )
+                    self.actor_optimizer.zero_grad()
+                    self.critic_optimizer.zero_grad()
+                    continue
+
+                # ── Backward + Gradient Clipping with GradScaler ────────────
+                # GradScaler scales the loss to prevent float16 underflow,
+                # then automatically unscales before grad-clip and optimizer.step().
                 self.actor_optimizer.zero_grad()
                 self.critic_optimizer.zero_grad()
                 self._scaler.scale(loss).backward()
 
-                # Grad-Clip: erst unscalen, dann clippen (Reihenfolge wichtig!)
+                # Grad-Clip: unscale first, then clip (order matters!)
                 self._scaler.unscale_(self.actor_optimizer)
                 self._scaler.unscale_(self.critic_optimizer)
                 nn.utils.clip_grad_norm_(
@@ -1312,11 +1475,17 @@ class PPOAgent:
                 total_entropy += entropy.item()
 
                 with torch.no_grad():
-                    kl = (
-                        batch_old_log_probs - log_probs
-                    ).mean()  # Approx KL: KL(old||new) ≈ mean(log_old - log_new)
-                    kl_divergences.append(kl.item())
-                    epoch_kls.append(kl.item())
+                    # K3 estimator (Schulman 2017 / SpinningUp):
+                    #   KL(old ‖ new) ≈ mean[(ratio − 1) − log_ratio]
+                    # Properties:
+                    #   • Always ≥ 0  (unlike the 1st-order mean(log_old − log_new)
+                    #     which can be negative and mask genuine policy divergence)
+                    #   • O(Δ²) accuracy vs O(Δ) for the linear approximation
+                    #   • Uses log_ratio already clamped above — consistent estimate
+                    # Ref: http://joschu.net/blog/kl-approx.html
+                    approx_kl = ((ratio.detach() - 1) - log_ratio.detach()).mean()
+                    kl_divergences.append(approx_kl.item())
+                    epoch_kls.append(approx_kl.item())
 
             # Early stopping: check KL only for this epoch (not cumulative across epochs)
             if np.mean(epoch_kls) > self.config.target_kl:
@@ -1324,6 +1493,11 @@ class PPOAgent:
                     f"Early stopping at epoch {epoch + 1} (KL={np.mean(epoch_kls):.4f})"
                 )
                 break
+
+        # Self-Imitation Learning Update
+        sil_loss_val = 0.0
+        if self.use_sil and self.sil_buffer["size"] >= self.config.sil_batch_size:
+            sil_loss_val = self._update_sil()
 
         # Step Schedulers
         if self.actor_scheduler:
@@ -1339,8 +1513,118 @@ class PPOAgent:
             "critic_loss": total_critic_loss / max(n_updates, 1),
             "entropy": total_entropy / max(n_updates, 1),
             "mean_kl": np.mean(kl_divergences),
+            "sil_loss": sil_loss_val,
             "n_epochs": epoch + 1,
         }
+
+    def _add_to_sil_buffer(
+        self, states: np.ndarray, actions: np.ndarray, returns: np.ndarray
+    ):
+        """Adds experiences to the SIL replay buffer."""
+        n = len(states)
+        cap = self.config.sil_capacity
+
+        # We only want to store transitions that were genuinely good (R > V)
+        # However, for simplicity and to avoid too much memory copy, we add all
+        # and filter during the SIL update step.
+        ptr = self.sil_buffer["ptr"]
+
+        if ptr + n <= cap:
+            self.sil_buffer["states"][ptr : ptr + n] = states
+            self.sil_buffer["actions"][ptr : ptr + n] = actions
+            self.sil_buffer["returns"][ptr : ptr + n] = returns
+            self.sil_buffer["ptr"] = (ptr + n) % cap
+            self.sil_buffer["size"] = min(self.sil_buffer["size"] + n, cap)
+        else:
+            first_part = cap - ptr
+            self.sil_buffer["states"][ptr:cap] = states[:first_part]
+            self.sil_buffer["actions"][ptr:cap] = actions[:first_part]
+            self.sil_buffer["returns"][ptr:cap] = returns[:first_part]
+
+            second_part = n - first_part
+            self.sil_buffer["states"][0:second_part] = states[first_part:]
+            self.sil_buffer["actions"][0:second_part] = actions[first_part:]
+            self.sil_buffer["returns"][0:second_part] = returns[first_part:]
+
+            self.sil_buffer["ptr"] = second_part
+            self.sil_buffer["size"] = cap
+
+    def _update_sil(self) -> float:
+        """
+        Self-Imitation Learning update step.
+        Imitates past decisions that resulted in higher returns than the current value estimate.
+        L_sil = -log_prob(a|s) * max(0, R - V(s)) + 1/2 * max(0, R - V(s))^2
+        """
+        total_sil_loss = 0.0
+        updates = 0
+
+        # We do multiple SIL updates per PPO update
+        for _ in range(self.config.sil_update_ratio):
+            # Sample random batch
+            idx = np.random.randint(
+                0, self.sil_buffer["size"], size=self.config.sil_batch_size
+            )
+
+            b_states = torch.FloatTensor(self.sil_buffer["states"][idx]).to(
+                self.device, non_blocking=True
+            )
+            b_actions = torch.LongTensor(self.sil_buffer["actions"][idx]).to(
+                self.device, non_blocking=True
+            )
+            b_returns = torch.FloatTensor(self.sil_buffer["returns"][idx]).to(
+                self.device, non_blocking=True
+            )
+
+            _amp_device = "cuda" if self._amp_enabled else "cpu"
+            with torch.amp.autocast(device_type=_amp_device, enabled=self._amp_enabled):
+                dist, _ = self.actor(
+                    b_states, None
+                )  # SIL does not currently support BPTT for RNNs, context is forgotten
+                values, _ = self.critic(b_states, None)
+                values = values.squeeze()
+
+                # Compute advantages: R - V(s)
+                adv = b_returns - values
+
+                # We only imitate if the return was better than the value estimate
+                clipped_adv = torch.clamp(adv, min=0.0)
+
+                # Check if we have any valid transitions to imitate
+                if clipped_adv.max().item() <= 0:
+                    continue
+
+                log_probs = dist.log_prob(b_actions)
+
+                # Actor loss: cross entropy weighted by advantage (only positive adv)
+                actor_loss = -(log_probs * clipped_adv).mean()
+
+                # Critic loss: update value function towards return (only for positive adv)
+                critic_loss = 0.5 * (clipped_adv**2).mean()
+
+                loss = actor_loss + self.config.sil_value_weight * critic_loss
+
+                self.actor_optimizer.zero_grad()
+                self.critic_optimizer.zero_grad()
+
+                self._scaler.scale(loss).backward()
+                self._scaler.unscale_(self.actor_optimizer)
+                self._scaler.unscale_(self.critic_optimizer)
+
+                nn.utils.clip_grad_norm_(
+                    self.actor.parameters(), self.config.max_grad_norm
+                )
+                nn.utils.clip_grad_norm_(
+                    self.critic.parameters(), self.config.max_grad_norm
+                )
+
+                self._scaler.step(self.actor_optimizer)
+                self._scaler.step(self.critic_optimizer)
+                self._scaler.update()
+
+                total_sil_loss += loss.item()
+                updates += 1
+
+        return total_sil_loss / max(updates, 1)
 
     def save(self, path: str):
         torch.save(
@@ -1354,8 +1638,8 @@ class PPOAgent:
         logger.info(f"Agent saved to {path}")
 
     def load(self, path: str):
-        # PyTorch >= 2.6: weights_only=False erforderlich, da PPOConfig
-        # als Dataclass im Checkpoint gespeichert ist (eigene Quelle = sicher).
+        # PyTorch >= 2.6: weights_only=False required because PPOConfig
+        # is stored as a dataclass in the checkpoint (own source = safe).
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
 
         # Adapt weights if dimensions changed (e.g. removed reserved features)

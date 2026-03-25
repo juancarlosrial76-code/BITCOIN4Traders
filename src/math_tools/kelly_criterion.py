@@ -40,9 +40,9 @@ class KellyParameters:
     max_position: float = 0.25  # Max 25% of capital
 
     def __post_init__(self):
-        """Validate and clamp parameters — nie crashen, Annahmen treffen."""
-        # Statt assert: klemmen + warnen (assert wird mit -O deaktiviert,
-        # raise ValueError ist robuster und bleibt immer aktiv)
+        """Validate and clamp parameters — never crash, make assumptions."""
+        # Instead of assert: clamp + warn (assert is disabled with -O,
+        # raise ValueError is more robust and always active)
         if not (0 <= self.win_probability <= 1):
             from loguru import logger as _log
 
@@ -252,10 +252,15 @@ class KellyCriterion:
         position_size : float
             Adjusted position size
         """
-        # Convert profit factor to win/loss ratio
-        # Profit factor = (Win rate * Avg win) / (Loss rate * Avg loss)
-        # Approximate: win_loss_ratio ≈ profit_factor
-        win_loss_ratio = recent_profit_factor
+        # Convert profit factor to win/loss ratio (b = avg_win / avg_loss)
+        # Derivation:
+        #   PF = (win_rate × avg_win) / (loss_rate × avg_loss)
+        #      = (win_rate / loss_rate) × b
+        #   ∴  b = PF × loss_rate / win_rate
+        loss_rate = 1.0 - recent_win_rate
+        if recent_win_rate <= 0:
+            return 0.0  # No wins → no positive edge → no position
+        win_loss_ratio = recent_profit_factor * loss_rate / recent_win_rate
 
         params = KellyParameters(
             win_probability=recent_win_rate,

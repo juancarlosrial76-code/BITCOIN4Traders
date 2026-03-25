@@ -81,6 +81,7 @@ from typing import Dict, Tuple, Optional, List
 from dataclasses import dataclass, field
 from loguru import logger
 from src.math_tools.kelly_criterion import KellyCriterion, KellyParameters
+from src.risk.evt import EVTRiskManager
 
 
 @dataclass
@@ -281,6 +282,11 @@ class RiskManager:
         # Used for dynamic position sizing based on historical performance
         self.kelly = KellyCriterion()
 
+        # Initialize EVT Risk Manager for tail-risk scaling
+        # Feeds daily returns into GPD tail model; its ES_99 signal
+        # dynamically scales down Kelly position sizes.
+        self.evt_manager = EVTRiskManager(history_window=500, threshold_quantile=0.95)
+
         # Risk state - tracks all risk-related metrics
         self.state = RiskState(
             current_equity=initial_capital,
@@ -375,13 +381,15 @@ class RiskManager:
         # Stage 2: Kelly Criterion - dynamic sizing based on edge
         # Only applies if we have recent trading statistics
         if win_probability is not None and win_loss_ratio is not None:
-            kelly_size = self.kelly.dynamic_kelly(
-                capital=current_capital,
-                recent_win_rate=win_probability,
-                recent_profit_factor=win_loss_ratio,
+            # win_loss_ratio is already b = avg_win / avg_loss — use directly,
+            # bypassing dynamic_kelly() which expects a profit_factor, not b.
+            kelly_params = KellyParameters(
+                win_probability=win_probability,
+                win_loss_ratio=win_loss_ratio,
                 kelly_fraction=self.config.kelly_fraction,
                 max_position=self.config.max_position_size,
             )
+            kelly_size = self.kelly.calculate_position_size(current_capital, kelly_params)
 
             # Use Kelly size if more conservative than proposed
             if proposed_size > kelly_size:
@@ -390,6 +398,17 @@ class RiskManager:
                     f"{kelly_size:.0f}. Adjusting to Kelly size."
                 )
                 proposed_size = kelly_size
+
+            # EVT tail-risk scalar: shrink Kelly size when ES_99 is elevated
+            # "Volatility doubles → position is quartered" (see implementation plan)
+            evt_scalar = self.compute_evt_kelly_scalar()
+            if evt_scalar < 1.0:
+                logger.info(
+                    f"EVT scalar {evt_scalar:.2f} applied to position size. "
+                    f"Before: {proposed_size:.0f}"
+                )
+                proposed_size = proposed_size * evt_scalar
+                logger.info(f"After EVT scaling: {proposed_size:.0f}")
 
         # Stage 3: Capital threshold - protective reduction
         # When capital drops below threshold, reduce position sizes
@@ -549,11 +568,11 @@ class RiskManager:
         # This ensures VaR adapts to recent market conditions
         equity_array = np.array(self.equity_history[-self.config.var_lookback :])
 
-        # Calculate period-over-period returns — Division-by-zero sicher
+        # Calculate period-over-period returns — division-by-zero safe
         denom = equity_array[:-1]
         denom = np.where(np.abs(denom) < 1e-8, 1e-8, denom)  # nie durch 0 teilen
         returns = np.diff(equity_array) / denom
-        # Inf/NaN durch Ruin oder Datenfehler abfangen
+        # Catch Inf/NaN from ruin or data errors
         returns = returns[np.isfinite(returns)]
 
         if len(returns) == 0:
@@ -698,6 +717,80 @@ class RiskManager:
         # Clamp to zero - can't have negative drawdown (which would mean
         # equity is above peak, which is actually a good thing!)
         return max(0.0, drawdown)
+
+    # -----------------------------------------------------------------------
+    # EVT-Kelly bridge
+    # -----------------------------------------------------------------------
+
+    def compute_evt_kelly_scalar(self) -> float:
+        """
+        Return a scaling factor in [0.0, 1.0] that shrinks Kelly position
+        sizes based on the EVT tail-risk signal (ES_99).
+
+        Tier logic (matches implementation plan):
+        ==========================================
+        - ES_99 <= 1%  → scale = 1.00  (no reduction)
+        - ES_99 <= 2%  → scale = 0.75  (25% reduction)
+        - ES_99 <= 3%  → scale = 0.50  (half position)
+        - ES_99 <= 5%  → scale = 0.25  ("volatility doubles → quartered")
+        - ES_99 >  5%  → scale = 0.00  (close all positions, is_critical)
+
+        Returns 1.0 (no scaling) when fewer than 100 return observations
+        have been fed in — EVT needs enough history to be reliable.
+        """
+        metrics = self.evt_manager.compute_evt_risk_metrics()
+        es_99: float = float(metrics.get("ES_99", 0.0))
+        is_critical: bool = bool(metrics.get("is_critical", False))
+
+        if is_critical or es_99 > 0.05:
+            logger.warning(
+                f"EVT CRITICAL: ES_99={es_99:.2%} > 5%. Scaling position to 0."
+            )
+            return 0.0
+        elif es_99 > 0.03:
+            logger.info(f"EVT stress (ES_99={es_99:.2%}): scaling position to 25%.")
+            return 0.25
+        elif es_99 > 0.02:
+            logger.info(f"EVT elevated (ES_99={es_99:.2%}): scaling position to 50%.")
+            return 0.50
+        elif es_99 > 0.01:
+            logger.info(f"EVT mild (ES_99={es_99:.2%}): scaling position to 75%.")
+            return 0.75
+        else:
+            # Normal regime — no reduction
+            return 1.0
+
+    def update_evt(self, daily_return: float) -> None:
+        """
+        Feed a new daily return observation into the EVT manager.
+
+        Call this once per bar / step with the period log-return or
+        percentage return (e.g. -0.02 for a 2 % loss day).
+
+        Parameters:
+        -----------
+        daily_return : float
+            Period return as a decimal (e.g. -0.015 = -1.5 %).
+        """
+        self.evt_manager.add_return(daily_return)
+
+    def get_evt_metrics(self) -> Dict:
+        """
+        Return current EVT risk metrics.
+
+        Keys:
+        -----
+        - VaR_99    : Value at Risk at 99 % confidence (decimal)
+        - ES_99     : Expected Shortfall at 99 % confidence (decimal)
+        - is_critical : True when ES_99 > 5 %
+        - evt_kelly_scalar : Current EVT position-size multiplier [0, 1]
+        - shape_param : GPD shape parameter ξ (only present when GPD fit succeeded)
+
+        Returns 0.0 / False defaults when history is too short for EVT.
+        """
+        metrics = self.evt_manager.compute_evt_risk_metrics()
+        metrics["evt_kelly_scalar"] = self.compute_evt_kelly_scalar()
+        return metrics
 
     def get_kelly_parameters(self, lookback: int = 50) -> Optional[KellyParameters]:
         """

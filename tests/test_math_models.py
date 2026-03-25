@@ -42,6 +42,7 @@ from src.math_tools import (
     # HMM
     HMMRegimeDetector,
 )
+from src.math_tools.kelly_criterion import KellyParameters
 
 
 class TestKalmanFilter:
@@ -392,6 +393,92 @@ class TestKellyCriterion:
         assert abs(kelly_frac) < 0.01, (
             f"Kelly should be 0 with no edge, got {kelly_frac}"
         )
+
+    def test_dynamic_kelly_pf_to_b_conversion(self):
+        """
+        dynamic_kelly() must convert profit_factor → win/loss_ratio correctly.
+
+        Setup: win_rate=0.6, avg_win=$100, avg_loss=$100
+          b = avg_win / avg_loss = 1.0
+          PF = (0.6 × 100) / (0.4 × 100) = 1.5
+
+        Kelly formula with b=1.0:
+          f* = (0.6×1.0 − 0.4) / 1.0 = 0.20
+
+        Before the fix, passing PF=1.5 as b gave:
+          f* = (0.6×1.5 − 0.4) / 1.5 = 0.333  ← 67% oversizing
+        """
+        kelly = KellyCriterion()
+        capital = 100_000.0
+        win_rate = 0.6
+        pf = 1.5  # PF = (win_rate/loss_rate) × b = (0.6/0.4) × 1.0 = 1.5
+
+        size = kelly.dynamic_kelly(
+            capital=capital,
+            recent_win_rate=win_rate,
+            recent_profit_factor=pf,
+            kelly_fraction=1.0,   # full Kelly for clarity
+            max_position=1.0,
+        )
+
+        # Expected: b = 1.5 × (1-0.6)/0.6 = 1.0
+        # Full Kelly f* = (0.6×1.0 − 0.4)/1.0 = 0.20 → size = $20,000
+        assert size == pytest.approx(20_000.0, rel=1e-4), (
+            f"Expected $20,000 (20% Kelly), got ${size:,.0f}"
+        )
+
+    def test_dynamic_kelly_at_50pct_winrate_pf_equals_b(self):
+        """At exactly 50% win rate, PF == b, so conversion is a no-op."""
+        kelly = KellyCriterion()
+        # win_rate=0.5: b = PF × (1-0.5)/0.5 = PF × 1.0 = PF
+        # Kelly = (0.5×1.5 − 0.5)/1.5 = (0.75−0.5)/1.5 = 0.1667
+        size = kelly.dynamic_kelly(
+            capital=100_000.0,
+            recent_win_rate=0.5,
+            recent_profit_factor=1.5,
+            kelly_fraction=1.0,
+            max_position=1.0,
+        )
+        expected = (0.5 * 1.5 - 0.5) / 1.5 * 100_000.0
+        assert size == pytest.approx(expected, rel=1e-4)
+
+    def test_dynamic_kelly_zero_win_rate_returns_zero(self):
+        """Win rate of 0 → no edge → position must be 0."""
+        kelly = KellyCriterion()
+        size = kelly.dynamic_kelly(
+            capital=100_000.0,
+            recent_win_rate=0.0,
+            recent_profit_factor=2.0,
+        )
+        assert size == pytest.approx(0.0)
+
+    def test_dynamic_kelly_consistent_with_calculate_position_size(self):
+        """
+        dynamic_kelly(win_rate, PF) must give the same result as
+        calculate_position_size() with the analytically equivalent b.
+        """
+        kelly = KellyCriterion()
+        win_rate = 0.55
+        pf = 2.0
+        b = pf * (1.0 - win_rate) / win_rate   # correct conversion
+
+        direct = kelly.calculate_position_size(
+            100_000.0,
+            KellyParameters(
+                win_probability=win_rate,
+                win_loss_ratio=b,
+                kelly_fraction=0.5,
+                max_position=0.25,
+            ),
+        )
+        via_dynamic = kelly.dynamic_kelly(
+            capital=100_000.0,
+            recent_win_rate=win_rate,
+            recent_profit_factor=pf,
+            kelly_fraction=0.5,
+            max_position=0.25,
+        )
+        assert via_dynamic == pytest.approx(direct, rel=1e-6)
 
 
 class TestHMMRegime:
