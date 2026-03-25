@@ -696,7 +696,9 @@ class LiveExecutionEngine:
 
     def _pre_trade_risk_check(self, symbol: str, signal: int, price: Decimal) -> bool:
         if signal == 0:
-            return False  # No action needed for flat signal
+            # Allow flat signal through only when there is an open position to close.
+            # Blocking it unconditionally prevented the agent from ever closing positions.
+            return self._positions[symbol].qty != Decimal(0)
 
         pos = self._positions[symbol]
         proposed_notional = (
