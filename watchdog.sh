@@ -58,7 +58,7 @@ except Exception as e: print(f'Config patch failed: {e}')
         fi
     fi
 
-    nohup python auto_12h_train.py > "$LOGFILE" 2>&1 &
+    nohup python3 auto_12h_train.py > "$LOGFILE" 2>&1 &
     NEW_PID=$!
     log "Training restarted (PID $NEW_PID) → $LOGFILE"
 else
@@ -81,7 +81,7 @@ if [ -z "$PAPER_PID" ]; then
         fi
     fi
 
-    nohup python run.py --dry_run > "$LOGFILE" 2>&1 &
+    nohup python3 run.py --dry_run > "$LOGFILE" 2>&1 &
     NEW_PID=$!
     log "Paper trading restarted (PID $NEW_PID) → $LOGFILE"
 else
@@ -97,7 +97,7 @@ if [ -f "$LIVE_ENABLED_FILE" ]; then
         LOG_TS=$(date +%Y%m%d_%H%M%S)
         mkdir -p "$WORKDIR/logs/live"
         LOGFILE="$WORKDIR/logs/live/live_${LOG_TS}.log"
-        nohup python run.py --live > "$LOGFILE" 2>&1 &
+        nohup python3 run.py --live > "$LOGFILE" 2>&1 &
         NEW_PID=$!
         log "Live trading restarted (PID $NEW_PID) → $LOGFILE"
     else
