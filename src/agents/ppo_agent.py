@@ -737,6 +737,7 @@ class PPOAgent:
         # GradScaler scales the loss to avoid numerical underflows in float16.
         # Automatically disabled if not on CUDA or use_amp=False.
         self._amp_enabled = config.use_amp and _on_cuda
+        self._amp_device = "cuda" if self._amp_enabled else "cpu"  # computed once, reused
         self._scaler = torch.amp.GradScaler("cuda", enabled=self._amp_enabled)
         if self._amp_enabled:
             logger.info("  Mixed Precision (AMP) active — forward pass in float16")
@@ -932,8 +933,7 @@ class PPOAgent:
             # AMP: Inference runs in float16 on GPU (~1.7x faster on T4/A100).
             # torch.amp.autocast replaces the deprecated torch.cuda.amp.autocast.
             # On CPU: device_type="cpu" with enabled=False → no overhead.
-            _amp_device = "cuda" if self._amp_enabled else "cpu"
-            with torch.amp.autocast(device_type=_amp_device, enabled=self._amp_enabled):
+            with torch.amp.autocast(device_type=self._amp_device, enabled=self._amp_enabled):
                 # Actor forward pass: delivers action distribution + next hidden state
                 dist, next_hidden_actor = self.actor(state_tensor, hidden)
 
@@ -1010,8 +1010,7 @@ class PPOAgent:
 
         with torch.no_grad():
             # AMP: float16 on GPU (~1.7x faster on T4/A100), no overhead on CPU
-            _amp_device = "cuda" if self._amp_enabled else "cpu"
-            with torch.amp.autocast(device_type=_amp_device, enabled=self._amp_enabled):
+            with torch.amp.autocast(device_type=self._amp_device, enabled=self._amp_enabled):
                 dist, next_hidden_actor = self.actor(
                     state_tensor, hidden
                 )  # batch forward
@@ -1376,9 +1375,8 @@ class PPOAgent:
                 # autocast: Actor/Critic GRU + Linear run in float16 → half
                 # VRAM usage, ~1.7× faster matmul on Tensor Cores (T4/A100).
                 # On CPU, autocast automatically falls back to float32 (no overhead).
-                _amp_device = "cuda" if self._amp_enabled else "cpu"
                 with torch.amp.autocast(
-                    device_type=_amp_device, enabled=self._amp_enabled
+                    device_type=self._amp_device, enabled=self._amp_enabled
                 ):
                     # Actor forward pass with saved hidden state
                     dist, _ = self.actor(batch_states, batch_hidden)
@@ -1610,8 +1608,7 @@ class PPOAgent:
                 self.device, non_blocking=True
             )
 
-            _amp_device = "cuda" if self._amp_enabled else "cpu"
-            with torch.amp.autocast(device_type=_amp_device, enabled=self._amp_enabled):
+            with torch.amp.autocast(device_type=self._amp_device, enabled=self._amp_enabled):
                 dist, _ = self.actor(
                     b_states, None
                 )  # SIL does not currently support BPTT for RNNs, context is forgotten
