@@ -1,8 +1,8 @@
 # BITCOIN4Traders - Verbesserungsstatus
 
-> **Aktualisiert:** 2026-03-26 01:35
-> **Status:** Nach VERBESSERUNGSANALYSE_2026.md — alle kritischen Fixes implementiert
-> **Gesamt Fixes:** 30+ (vorherige Session + diese Session)
+> **Aktualisiert:** 2026-03-26 08:25 (Session 2)
+> **Status:** VERBESSERUNGSANALYSE + NICE_TO_HAVE + NACHPRUEFUNGSLISTE implementiert
+> **Gesamt Fixes:** 55+ über beide Sessions
 
 ---
 
@@ -10,8 +10,8 @@
 
 | Status        | Anzahl | Beschreibung                    |
 | ------------- | ------ | ------------------------------- |
-| ✅ GELÖST     | 30     | Implementiert und committed     |
-| 🔵 MEDIUM     | 8      | Phase 5-7 (Performance/Cleanup) |
+| ✅ GELÖST     | 55+    | Implementiert                   |
+| 🔵 MEDIUM     | 3      | Type Hints (Rest), Docstrings, Tests |
 | ❌ OFFEN      | 0      | Keine kritischen Issues offen   |
 
 ---
@@ -68,38 +68,53 @@
 | 39  | auto_12h_train 20→5 iterations    | `auto_12h_train.py`            | ✅     |
 | 40  | aiohttp ClientWSTimeout fix       | `binance_ws_connector.py`      | ✅     |
 
+### Session 2 (NICE_TO_HAVE + NACHPRUEFUNGSLISTE — 08:00-08:25)
+
+| #   | Fix                                    | Datei:Zeile                         | Status |
+| --- | -------------------------------------- | ----------------------------------- | ------ |
+| 41  | Constants Modul erstellt               | `src/config/constants.py` (neu)     | ✅     |
+| 42  | Bare except hurst_exponent.py:442      | `hurst_exponent.py:442`             | ✅     |
+| 43  | Bare except hurst_exponent.py:525      | `hurst_exponent.py:525`             | ✅     |
+| 44  | Bare except spectral_analysis.py:859   | `spectral_analysis.py:859`          | ✅     |
+| 45  | GARCH __init__ p/q >= 1 Validation     | `garch_models.py:221`               | ✅     |
+| 46  | Kalman Q/R > 0 Validation              | `kalman_filter.py:303`              | ✅     |
+| 47  | OU simulate_paths n_steps/n_paths > 0  | `ornstein_uhlenbeck.py:329`         | ✅     |
+| 48  | load_scaler is_fitted=False on error   | `feature_engine.py:1182`            | ✅     |
+| 49  | HMM convergence check                  | `hmm_regime.py:300`                 | ✅     |
+| 50  | Dead code: fibonacci_levels (commented)| `multi_timeframe.py:619`            | ✅     |
+| 51  | HIGH-002: API Token partial print      | `listener.py:318`                   | ✅     |
+| 52  | HIGH-003: API Token partial log        | `control_plane.py:544`              | ✅     |
+| 53  | HIGH-004: JWT URL → subprotocol        | `useWebSocket.ts:99`                | ✅     |
+| 54  | Type hints: ppo_agent (4 Funktionen)   | `ppo_agent.py:839,877,1593,1604`    | ✅     |
+| 55  | Type hints: drl_agents (6 Funktionen)  | `drl_agents.py:186,419,593,768,...` | ✅     |
+
 ---
 
-## 🔵 OFFEN — Phase 5-7 (Medium Priority)
+## 🔵 OFFEN — Niedrige Priorität
 
 | #   | Fix                          | Datei                    | Aufwand |
 | --- | ---------------------------- | ------------------------ | ------- |
-| 1   | Device default zur Laufzeit  | `drl_agents.py:143,553`  | 10min   |
-| 2   | Soft Update Mixin (3x gleich)| `drl_agents.py`          | 20min   |
-| 3   | Rolling Warmup vektorisieren | `feature_engine.py:1396` | 15min   |
-| 4   | _amp_device einmalig in init  | `ppo_agent.py:935`       | 5min    |
-| 5   | PPO SIL Dead Code entfernen  | `ppo_agent.py:1592-1662` | 10min   |
-| 6   | Constants Modul erstellen    | `src/config/constants.py`| 30min   |
-| 7   | Column Validation hinzufügen | Multiple                 | 30min   |
-| 8   | Tests für PPO + Live Engine  | `tests/`                 | 8h      |
+| 1   | Rolling Warmup vektorisieren | `feature_engine.py:1396` | 15min   |
+| 2   | Type Hints Rest (35 Fktionen)| Multiple                 | 1.5h    |
+| 3   | Docstrings (30 Stellen)      | Multiple                 | 2h      |
+| 4   | Tests für PPO + Live Engine  | `tests/`                 | 8h      |
 
 ---
 
-## TRAINING STATUS (01:35)
+## SYSTEM STATUS (08:25)
 
-- **PID:** 1900144 (auto_12h_train.py) + 1900145 (train.py)
-- **Round 1:** gestartet 01:24:37, 5 iterations × ~90s ≈ 7.5 min
-- **Erwartete Fertigstellung Round 1:** ~01:32
-- **Timeout:** 900s (15 min) — sicher
+### Training
+- **PID:** 1937782 (auto_12h_train.py) + 2060079 (train.py)
+- **Round:** 20 laufend | Remaining: ~5.7h
+- **Modell:** `data/models/ppo_best.pt` (wird jede Runde aktualisiert)
 
-## PAPER TRADING STATUS (01:35)
-
+### Paper Trading
 - **PID:** 1890357
-- **Log:** `logs/paper/paper_20260326_012025.log`
-- **Ticks:** 2572 (nach 35s) — ✅ WS funktioniert
-- **Balance:** $10,000 virtual
+- **Ticks:** 3,746,000+ ✅
+- **Balance:** $10,000 virtual | CB Trips: 0 | WS Reconnects: 0
 
 ---
 
-> **Hinweis:** Alle 40 Fixes aus VERBESSERUNGSSTATUS + VERBESSERUNGSANALYSE_2026 implementiert und committed.
-> Noch offen: Phase 5-7 Performance/Cleanup (Medium Priority).
+> **Hinweis:** 55+ Fixes aus allen Analysen implementiert. Keine kritischen Issues offen.
+> NACHPRUEFUNGSLISTE: Security HIGH/MEDIUM alle gefixt. CRITICAL-001 (GitHub Token)
+> muss manuell in GitHub Settings rotiert werden — kann nicht automatisch erfolgen.

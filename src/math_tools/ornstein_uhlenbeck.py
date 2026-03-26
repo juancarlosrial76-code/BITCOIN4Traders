@@ -325,6 +325,10 @@ class OrnsteinUhlenbeckProcess:
         paths : np.ndarray
             Simulated paths (n_paths, n_steps+1)
         """
+        if n_steps <= 0:
+            raise ValueError(f"n_steps must be > 0, got {n_steps}")
+        if n_paths <= 0:
+            raise ValueError(f"n_paths must be > 0, got {n_paths}")
         if seed is not None:
             np.random.seed(seed)
 

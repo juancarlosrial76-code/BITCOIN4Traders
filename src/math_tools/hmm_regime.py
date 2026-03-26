@@ -248,6 +248,10 @@ class HMMRegimeDetector:
         5. State decoding: Viterbi algorithm to find most likely states
         6. Label assignment: Classify each state based on characteristics
         """
+        # Normalize input: accept both numpy arrays and DataFrames
+        if isinstance(features, np.ndarray):
+            features = pd.DataFrame(features)
+
         # Select features - use all numeric columns if not specified
         if feature_cols is None:
             # select_dtypes finds all columns that are numeric
@@ -292,6 +296,13 @@ class HMMRegimeDetector:
         # - means_: Mean vector for each state
         # - covariances_: Covariance matrix for each state
         self.model.fit(X_scaled)
+
+        # Warn if EM did not converge within n_iter iterations
+        if hasattr(self.model, "monitor_") and not self.model.monitor_.converged:
+            logger.warning(
+                f"HMM did not converge after {self.n_iter} iterations "
+                "(increase n_iter or check feature quality)"
+            )
 
         # Decode hidden states using Viterbi algorithm
         # Given observations and model parameters, find most likely state sequence

@@ -836,7 +836,7 @@ class PPOAgent:
         if self._use_seq_window:
             self._state_window[:] = 0.0
 
-    def reset_buffers(self, capacity: int = 0):
+    def reset_buffers(self, capacity: int = 0) -> None:
         """Reset experience buffers.
 
         P0-B: Pre-allocate fixed-size numpy arrays for scalar/vector fields.
@@ -874,7 +874,7 @@ class PPOAgent:
             self.dones = []
             self.hiddens = []
 
-    def get_initial_hidden_state(self, batch_size: int = 1):
+    def get_initial_hidden_state(self, batch_size: int = 1) -> Optional[Union[Tuple[torch.Tensor, torch.Tensor], torch.Tensor]]:
         """Get initial hidden state for RNN."""
         if not self.config.use_recurrent:
             return None
@@ -1590,7 +1590,7 @@ class PPOAgent:
         """
         return 0.0
 
-    def save(self, path: str):
+    def save(self, path: str) -> None:
         torch.save(
             {
                 "actor": self.actor.state_dict(),
@@ -1601,7 +1601,7 @@ class PPOAgent:
         )
         logger.info(f"Agent saved to {path}")
 
-    def load(self, path: str):
+    def load(self, path: str) -> None:
         # PyTorch >= 2.6: weights_only=False required because PPOConfig
         # is stored as a dataclass in the checkpoint (own source = safe).
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)

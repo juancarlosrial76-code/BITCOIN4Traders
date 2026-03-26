@@ -856,7 +856,7 @@ class SeasonalityAnalyzer:
                         post_ret = prices.iloc[loc + 1] / prices.iloc[loc] - 1
                         pre_returns.append(pre_ret)
                         post_returns.append(post_ret)
-                except:
+                except (KeyError, IndexError, ZeroDivisionError):
                     continue
 
             if pre_returns and post_returns:

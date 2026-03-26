@@ -300,6 +300,10 @@ class KalmanFilter1D:
     def __init__(self, config: Optional[KalmanFilterConfig] = None):
         """Initialize Kalman Filter."""
         self.config = config or KalmanFilterConfig()
+        if self.config.Q <= 0:
+            raise ValueError(f"Process noise Q must be > 0, got {self.config.Q}")
+        if self.config.R <= 0:
+            raise ValueError(f"Measurement noise R must be > 0, got {self.config.R}")
 
         # State estimate
         self.x = self.config.x0

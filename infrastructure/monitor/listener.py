@@ -315,7 +315,7 @@ def setup():
     if config["api_token"] == "CHANGE_ME_generate_random_token":
         config["api_token"] = secrets.token_hex(32)
         save_config(config)
-        print(f"API token generated: {config['api_token']}")
+        print(f"API token generated: {config['api_token'][:8]}... (see {CONFIG_FILE} for full token)")
         print(f"-> Enter this token in the Colab notebook as LINUX_API_TOKEN!")
     else:
         print(f"API token already set: {config['api_token'][:8]}...")

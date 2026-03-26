@@ -1179,13 +1179,16 @@ class FeatureEngine:
             else:
                 raise FileNotFoundError(f"Scaler not found: {scaler_file}")
 
-        data = joblib.load(scaler_file)
-
-        self.scaler = data["scaler"]
-        self.train_stats = data["train_stats"]
-        self.is_fitted = True
-
-        logger.info(f"Loaded scaler from {scaler_file}")
+        try:
+            data = joblib.load(scaler_file)
+            self.scaler = data["scaler"]
+            self.train_stats = data["train_stats"]
+            self.is_fitted = True
+            logger.info(f"Loaded scaler from {scaler_file}")
+        except Exception as e:
+            self.is_fitted = False
+            logger.error(f"Failed to load scaler from {scaler_file}: {e}")
+            raise
 
     def get_feature_names(self) -> List[str]:
         """Get list of feature names (base set + prediction-improvement features)."""

@@ -218,6 +218,10 @@ class GARCHModel:
             p: GARCH order (past variances)
             q: ARCH order (past squared returns)
         """
+        if p < 1:
+            raise ValueError(f"GARCH order p must be >= 1, got {p}")
+        if q < 1:
+            raise ValueError(f"ARCH order q must be >= 1, got {q}")
         self.p = p
         self.q = q
 

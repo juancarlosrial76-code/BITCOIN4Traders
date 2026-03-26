@@ -616,37 +616,11 @@ class MarketStructureAnalyzer:
 
         return None
 
-    def calculate_fibonacci_levels(self, df: pd.DataFrame) -> Dict:
-        """
-        Calculate Fibonacci retracement levels from recent swing.
-
-        Professional traders use fib levels for entries and targets.
-        """
-        if len(df) < 20:
-            return {}
-
-        # Find recent swing high and low
-        recent_high = df["high"].iloc[-20:].max()
-        recent_low = df["low"].iloc[-20:].min()
-
-        diff = recent_high - recent_low  # full swing range
-
-        # Fibonacci retracement levels: derived from the Golden Ratio (φ ≈ 1.618)
-        levels = {
-            "high": recent_high,
-            "low": recent_low,
-            "0.0": recent_high,  # 0% retracement = top of swing
-            "0.236": recent_high - 0.236 * diff,  # 23.6% = φ^-3 ≈ shallow pullback
-            "0.382": recent_high - 0.382 * diff,  # 38.2% = 1 - φ^-1 ≈ common entry zone
-            "0.5": recent_high
-            - 0.5 * diff,  # 50% = midpoint (not a true Fib, but widely used)
-            "0.618": recent_high
-            - 0.618 * diff,  # 61.8% = φ^-1 ≈ "golden ratio" — strongest Fib level
-            "0.786": recent_high - 0.786 * diff,  # 78.6% = √0.618 ≈ deep retracement
-            "1.0": recent_low,  # 100% retracement = bottom of swing
-        }
-
-        return levels
+    # Dead code — calculate_fibonacci_levels() was never called from any module.
+    # Kept here (commented out) for reference; delete in a future cleanup pass.
+    # def calculate_fibonacci_levels(self, df: pd.DataFrame) -> Dict:
+    #     """Fibonacci retracement levels from recent swing high/low."""
+    #     ...  # (full body removed — use git history if needed)
 
 
 def create_multi_timeframe_features(

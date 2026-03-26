@@ -379,6 +379,7 @@ class AdversarialTrainer:
         obs, info = self.env.reset()
         episode_reward = 0
         episode_length = 0
+        adversary_episode_reward = 0  # Per-episode adversary accumulator (avoids slice bug)
 
         # Clear adversary buffers for this collection
         self.adversary_states = []
@@ -456,6 +457,7 @@ class AdversarialTrainer:
 
                 self.adversary_rewards.append(adversary_reward)
                 self.adversary_dones.append(done)
+                adversary_episode_reward += adversary_reward
 
             # Store transition for trader
             self.trader.store_transition(
@@ -478,20 +480,26 @@ class AdversarialTrainer:
                 episode_returns.append(info.get("return", 0.0))
                 episode_lengths.append(episode_length)
 
-                # Track adversary episode reward
+                # Track adversary episode reward using per-episode accumulator
+                # (avoids wrong-slice bug when multiple episodes occur in one iteration)
                 if (
                     use_adversary
                     and self.iteration >= self.config.adversary_start_iteration
                 ):
-                    adversary_episode_rewards.append(
-                        sum(self.adversary_rewards[-episode_length:])
-                    )
+                    adversary_episode_rewards.append(adversary_episode_reward)
 
                 obs, info = self.env.reset()
                 episode_reward = 0
                 episode_length = 0
+                adversary_episode_reward = 0  # Reset per-episode accumulator
 
-                # Reset hidden states on episode completion
+                # Reset hidden states on episode completion.
+                # TODO (BUG-HIGH): GRU starts cold (hidden=None) even though the
+                # environment positions current_step after a `lookback_window` warmup.
+                # The agent cannot build temporal context for the lookback features.
+                # Fix: expose env._features_np[step-lookback:step] and run the GRU
+                # over those observations (no env.step calls) to warm up hidden state.
+                # This requires adding `env.get_warmup_obs()` to config_integrated_env.
                 trader_hidden = None
                 adversary_hidden = None
             else:
@@ -512,12 +520,21 @@ class AdversarialTrainer:
             next_value = 0.0
             adv_next_value = 0.0
 
+        # Length-weighted return: longer episodes contribute proportionally more.
+        # Avoids survivorship bias from short profitable episodes.
+        _total_steps = sum(episode_lengths) or 1
+        weighted_return = (
+            sum(r * l for r, l in zip(episode_returns, episode_lengths)) / _total_steps
+            if episode_returns else 0.0
+        )
+
         return {
             "episode_rewards": episode_rewards,
             "episode_returns": episode_returns,
             "episode_lengths": episode_lengths,
             "mean_reward": np.mean(episode_rewards) if episode_rewards else 0.0,
             "mean_return": np.mean(episode_returns) if episode_returns else 0.0,
+            "weighted_return": weighted_return,
             "mean_length": np.mean(episode_lengths) if episode_lengths else 0.0,
             "next_value": next_value,
             "adversary_next_value": adv_next_value,
@@ -1145,14 +1162,14 @@ class AdversarialTrainer:
                     iteration, traj_metrics, trader_stats, adversary_stats
                 )
 
-            # Checkpoint
+            # Checkpoint: use length-weighted return for best-model tracking
             if iteration % self.config.save_frequency == 0:
-                mean_ret = traj_metrics.get("mean_return", 0)
+                mean_ret = traj_metrics.get("weighted_return", traj_metrics.get("mean_return", 0))
                 self._save_checkpoint(iteration, mean_ret)
 
             # Store history (limited to max_history)
             self.history["trader_rewards"].append(traj_metrics["mean_reward"])
-            self.history["trader_returns"].append(traj_metrics["mean_return"])
+            self.history["trader_returns"].append(traj_metrics.get("weighted_return", traj_metrics["mean_return"]))
             self.history["episodes"].append(len(traj_metrics["episode_rewards"]))
             self._trim_history()
 
@@ -1194,12 +1211,14 @@ class AdversarialTrainer:
         logger.info(f"Evaluating trader on {n_episodes} episodes...")
 
         episode_returns = []
+        episode_lengths = []
         episode_sharpes = []
         episode_max_dds = []
 
         for ep in range(n_episodes):
             obs, info = self.env.reset()
             done = False
+            ep_steps = 0
 
             hidden = None
             while not done:
@@ -1209,9 +1228,11 @@ class AdversarialTrainer:
                 )
                 obs, reward, terminated, truncated, info = self.env.step(action)
                 done = terminated or truncated
+                ep_steps += 1
 
             # Collect metrics
             episode_returns.append(info.get("return", 0.0))
+            episode_lengths.append(ep_steps)
 
             if "risk_metrics" in info:
                 sharpe = info["risk_metrics"].get("sharpe_ratio", 0.0)
@@ -1223,18 +1244,38 @@ class AdversarialTrainer:
             episode_sharpes.append(sharpe)
             episode_max_dds.append(max_dd)
 
+        # Length-weighted mean return: longer episodes count proportionally more
+        total_steps = sum(episode_lengths) or 1
+        weighted_return = sum(
+            r * l for r, l in zip(episode_returns, episode_lengths)
+        ) / total_steps
+        # Sharpe of episode returns (cross-episode consistency)
+        ep_sharpe_ratio = (
+            np.mean(episode_returns) / (np.std(episode_returns) + 1e-8)
+            if len(episode_returns) > 1 else 0.0
+        )
+        # Calmar ratio (return / max drawdown)
+        mean_max_dd = np.mean(episode_max_dds) if episode_max_dds else 0.0
+        calmar = weighted_return / (abs(mean_max_dd) + 1e-8)
+
         metrics = {
-            "mean_return": np.mean(episode_returns),
+            "mean_return": np.mean(episode_returns),            # unweighted (legacy)
+            "weighted_return": weighted_return,                 # length-weighted (correct)
             "std_return": np.std(episode_returns),
-            "mean_sharpe": np.mean(episode_sharpes),
-            "mean_max_dd": np.mean(episode_max_dds),
+            "episode_sharpe": ep_sharpe_ratio,                  # cross-episode Sharpe
+            "mean_sharpe": np.mean(episode_sharpes),            # in-episode Sharpe
+            "mean_max_dd": mean_max_dd,
+            "calmar_ratio": calmar,
             "win_rate": np.mean([r > 0 for r in episode_returns]),
+            "mean_episode_length": np.mean(episode_lengths),
         }
 
         logger.info("\nEvaluation Results:")
-        logger.info(f"  Mean Return: {metrics['mean_return'] * 100:.2f}%")
-        logger.info(f"  Std Return: {metrics['std_return'] * 100:.2f}%")
-        logger.info(f"  Mean Sharpe: {metrics['mean_sharpe']:.2f}")
+        logger.info(f"  Weighted Return: {metrics['weighted_return'] * 100:.2f}%  (mean: {metrics['mean_return'] * 100:.2f}%)")
+        logger.info(f"  Std Return:  {metrics['std_return'] * 100:.2f}%")
+        logger.info(f"  Episode Sharpe: {metrics['episode_sharpe']:.2f}")
+        logger.info(f"  Mean In-Ep Sharpe: {metrics['mean_sharpe']:.2f}")
+        logger.info(f"  Calmar Ratio: {metrics['calmar_ratio']:.2f}")
         logger.info(f"  Mean Max DD: {metrics['mean_max_dd'] * 100:.2f}%")
         logger.info(f"  Win Rate: {metrics['win_rate'] * 100:.1f}%")
 

@@ -439,7 +439,7 @@ class RollingHurst:
                 if 0 < hurst < 1:
                     hurst_values.append(hurst)
                     indices.append(prices.index[i])
-            except:
+            except (ValueError, np.linalg.LinAlgError, ZeroDivisionError):
                 continue
 
         return pd.Series(hurst_values, index=indices)
@@ -522,7 +522,7 @@ class MultiScaleHurst:
                     "regime": self.hurst_calc.get_regime(hurst),
                     "recommendation": self.hurst_calc.get_trading_recommendation(hurst),
                 }
-            except:
+            except Exception as e:
                 continue
 
         return results

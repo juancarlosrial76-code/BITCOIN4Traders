@@ -183,7 +183,7 @@ class DQNAgent:
             q_values = self.q_network(state_tensor)
             return q_values.argmax().item()
 
-    def store_transition(self, state, action, reward, next_state, done):
+    def store_transition(self, state: np.ndarray, action: int, reward: float, next_state: np.ndarray, done: bool) -> None:
         """Store transition in replay buffer."""
         self.buffer.push(state, action, reward, next_state, done)
 
@@ -416,7 +416,7 @@ class DDPGAgent(SoftUpdateMixin):
 
         return action
 
-    def store_transition(self, state, action, reward, next_state, done):
+    def store_transition(self, state: np.ndarray, action: np.ndarray, reward: float, next_state: np.ndarray, done: bool) -> None:
         """Store transition."""
         self.buffer.push(state, action, reward, next_state, done)
 
@@ -590,7 +590,7 @@ class SACAgent(SoftUpdateMixin):
                 action, _, _ = self.actor.sample(state_tensor)
             return action.cpu().numpy()[0]
 
-    def store_transition(self, state, action, reward, next_state, done):
+    def store_transition(self, state: np.ndarray, action: np.ndarray, reward: float, next_state: np.ndarray, done: bool) -> None:
         """Store transition."""
         self.buffer.push(state, action, reward, next_state, done)
 
@@ -765,7 +765,7 @@ class ReplayBuffer:
             self.position + 1
         ) % self.capacity  # Circular overwrite when full
 
-    def sample(self, batch_size: int):
+    def sample(self, batch_size: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Sample random batch."""
         batch_size = min(batch_size, len(self.buffer))  # Guard: can't sample more than available
         indices = np.random.choice(len(self.buffer), batch_size, replace=False)
@@ -880,7 +880,7 @@ class A2CAgent:
         )
         self.optimizer = optim.Adam(self.actor_critic.parameters(), lr=learning_rate)
 
-    def select_action(self, state: np.ndarray, deterministic: bool = False):
+    def select_action(self, state: np.ndarray, deterministic: bool = False) -> np.ndarray:
         """Select action from policy."""
         with torch.no_grad():
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
@@ -1192,7 +1192,7 @@ class TD3Agent(SoftUpdateMixin):
 
         return action
 
-    def store_transition(self, state, action, reward, next_state, done):
+    def store_transition(self, state: np.ndarray, action: np.ndarray, reward: float, next_state: np.ndarray, done: bool) -> None:
         """Store transition."""
         self.buffer.push(state, action, reward, next_state, done)
 

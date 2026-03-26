@@ -1,49 +1,49 @@
 """
-Control-Plane — Cloudflare Tunnel + FastAPI Steuerung
-======================================================
-Zwei Teile:
+Control Plane — Cloudflare Tunnel + FastAPI Control
+====================================================
+Two parts:
 
-  ControlServer (lokal):
-    FastAPI-Server der lokal auf Port 8765 lauscht.
-    Cloudflare Tunnel macht ihn unter einer permanenten URL erreichbar.
-    Module A und externe Tools senden Befehle hierher.
+  ControlServer (local):
+    FastAPI server that listens locally on port 8765.
+    Cloudflare Tunnel makes it accessible via a permanent URL.
+    Module A and external tools send commands here.
 
   ControlClient (Colab):
-    Pollt alle N Sekunden den ControlServer nach Befehlen.
-    Führt empfangene Befehle in Module B aus.
-    Sendet Status-Updates zurück.
+    Polls the ControlServer every N seconds for commands.
+    Executes received commands in Module B.
+    Sends status updates back.
 
-Architektur:
+Architecture:
     Colab --[HTTP poll]--> Cloudflare Tunnel ---> localhost:8765 (ControlServer)
-    Dashboard/CLI          Lokal                  Lokal
+    Dashboard/CLI          Local                  Local
 
-Voraussetzungen:
+Prerequisites:
   pip install fastapi uvicorn httpx
 
-Cloudflare Tunnel einrichten (einmalig, kostenlos):
+Set up Cloudflare Tunnel (one-time, free):
     1. curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/keyrings/cloudflare-main.gpg > /dev/null
     2. echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main' | sudo tee /etc/apt/sources.list.d/cloudflared.list
     3. sudo apt-get update && sudo apt-get install cloudflared
-    Oder: wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O cloudflared && chmod +x cloudflared
+    Or: wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O cloudflared && chmod +x cloudflared
 
-    Dann starten (in separatem Terminal):
+    Then start (in separate terminal):
     ./cloudflared tunnel --url http://localhost:8765
 
-    Gibt eine URL aus wie: https://abc-def.trycloudflare.com
-    Diese URL in Colab als CONTROL_SERVER_URL setzen.
+    Outputs a URL like: https://abc-def.trycloudflare.com
+    Set this URL in Colab as CONTROL_SERVER_URL.
 
-Umgebungsvariablen:
-    CONTROL_API_TOKEN=your_secret_token   # Shared secret für Auth
-    CONTROL_SERVER_URL=https://abc-def.trycloudflare.com  # In Colab setzen
+Environment variables:
+    CONTROL_API_TOKEN=your_secret_token   # Shared secret for auth
+    CONTROL_SERVER_URL=https://abc-def.trycloudflare.com  # Set in Colab
 
-Verwendung:
+Usage:
     # Terminal 1: Cloudflare Tunnel
     ./cloudflared tunnel --url http://localhost:8765
 
-    # Terminal 2: Control Server starten
+    # Terminal 2: Start Control Server
     python colab_bridge/control_plane.py server
 
-    # In Colab: Control Client starten (zusammen mit Module B)
+    # In Colab: Start Control Client (together with Module B)
     from colab_bridge.control_plane import ControlClient
     client = ControlClient(server_url=CONTROL_SERVER_URL, module_b=engine)
     asyncio.create_task(client.run())
@@ -63,7 +63,7 @@ from typing import Any, Dict, List, Optional
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
-# ── FastAPI (nur für Control Server) ─────────────────────────────────────────
+# ── FastAPI (for Control Server only) ────────────────────────────────────────
 try:
     from fastapi import FastAPI, HTTPException, Header, Request
     from fastapi.responses import JSONResponse
@@ -73,7 +73,7 @@ try:
 except ImportError:
     _FASTAPI_OK = False
 
-# ── httpx (für Control Client) ───────────────────────────────────────────────
+# ── httpx (for Control Client) ───────────────────────────────────────────────
 try:
     import httpx
 
@@ -89,36 +89,51 @@ except ImportError:
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger("control_plane")
 
-# ── Konfiguration ─────────────────────────────────────────────────────────────
+# ── Configuration ─────────────────────────────────────────────────────────────
 DEFAULT_PORT = 8765
-DEFAULT_TOKEN = os.getenv("CONTROL_API_TOKEN", "bt4t-secret-token")
-CONTROL_POLL_S = 5.0  # Wie oft Colab nach Befehlen fragt
-COMMAND_EXPIRY_S = 60.0  # Befehle älter als N Sekunden → verwerfen
+
+
+# Get token from Secrets Manager (lazy import to avoid circular dependencies)
+def _get_default_token() -> str:
+    try:
+        from src.config import get_control_token
+
+        token = get_control_token()
+        if token:
+            return token
+    except Exception:
+        pass
+    return os.getenv("CONTROL_API_TOKEN", "bt4t-secret-token")
+
+
+DEFAULT_TOKEN = _get_default_token()
+CONTROL_POLL_S = 5.0  # How often Colab requests commands
+COMMAND_EXPIRY_S = 60.0  # Commands older than N seconds → discard
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CONTROL SERVER (lokal)
+# CONTROL SERVER (local)
 # ══════════════════════════════════════════════════════════════════════════════
 
 
 class ControlServer:
     """
-    FastAPI Control Server — läuft lokal, erreichbar via Cloudflare Tunnel.
+    FastAPI Control Server — runs locally, accessible via Cloudflare Tunnel.
 
     Endpoints:
-      GET  /status          → System-Status
-      GET  /positions       → Aktuelles Portfolio
-      GET  /colab/command   → Nächster Befehl für Colab (Colab pollt hier)
-      POST /colab/command   → Befehl an Colab senden
-      POST /colab/status    → Colab reportet Status hierher
-      GET  /health          → Healthcheck
+      GET  /status          → System status
+      GET  /positions       → Current portfolio
+      GET  /colab/command   → Next command for Colab (Colab polls here)
+      POST /colab/command   → Send command to Colab
+      POST /colab/status    → Colab reports status here
+      GET  /health          → Health check
     """
 
     def __init__(
         self,
         port: int = DEFAULT_PORT,
         token: str = DEFAULT_TOKEN,
-        module_a=None,  # Referenz auf ModuleA (optional, für Portfolio-State)
+        module_a=None,  # Reference to ModuleA (optional, for portfolio state)
     ):
         if not _FASTAPI_OK:
             raise ImportError("pip install fastapi uvicorn")
@@ -127,23 +142,23 @@ class ControlServer:
         self.token = token
         self.module_a = module_a
 
-        # Command Queue: Befehle die auf Colab warten
+        # Command queue: commands waiting for Colab
         self._command_queue: List[dict] = []
-        # Letzte Status-Meldung von Colab
+        # Last status report from Colab
         self._colab_status: dict = {}
-        # System-Start Zeit
+        # System start time
         self._start_time = time.time()
 
         self.app = FastAPI(
             title="BITCOIN4Traders Control API",
-            description="Steuerung für lokalen Paper Trader und Colab RL-Engine",
+            description="Control for local paper trader and Colab RL engine",
             version="1.0.0",
         )
         self._register_routes()
-        logger.success(f"ControlServer initialisiert | Port: {port}")
+        logger.success(f"ControlServer initialized | Port: {port}")
 
     def _check_auth(self, authorization: Optional[str]) -> bool:
-        """Prüft Bearer Token."""
+        """Checks Bearer token."""
         if not authorization:
             return False
         parts = authorization.split(" ")
@@ -187,13 +202,13 @@ class ControlServer:
         @app.get("/colab/command")
         async def get_colab_command(authorization: Optional[str] = Header(None)):
             """
-            Colab pollt diesen Endpoint alle N Sekunden.
-            Gibt den nächsten Befehl zurück (oder {"cmd": "NONE"}).
+            Colab polls this endpoint every N seconds.
+            Returns the next command (or {"cmd": "NONE"}).
             """
             if not self._check_auth(authorization):
                 raise HTTPException(status_code=401, detail="Unauthorized")
 
-            # Abgelaufene Befehle entfernen
+            # Remove expired commands
             now = time.time()
             self._command_queue = [
                 c
@@ -204,7 +219,7 @@ class ControlServer:
             if self._command_queue:
                 cmd = self._command_queue.pop(0)
                 cmd.pop("_queued_at", None)
-                logger.info(f"Befehl an Colab ausgeliefert: {cmd.get('cmd')}")
+                logger.info(f"Command delivered to Colab: {cmd.get('cmd')}")
                 return cmd
 
             return {"cmd": "NONE"}
@@ -215,7 +230,7 @@ class ControlServer:
             request: Request, authorization: Optional[str] = Header(None)
         ):
             """
-            Sendet einen Befehl an Colab (wird in Queue gespeichert).
+            Sends a command to Colab (stored in queue).
 
             Body: {"cmd": "PAUSE_INFERENCE|RESUME|RELOAD_MODEL|SHUTDOWN|STATUS",
                    "params": {...}}
@@ -233,7 +248,7 @@ class ControlServer:
                 "STATUS",
             }
             if cmd not in valid_cmds:
-                raise HTTPException(status_code=400, detail=f"Ungültiger Befehl: {cmd}")
+                raise HTTPException(status_code=400, detail=f"Invalid command: {cmd}")
 
             command = {
                 "cmd": cmd,
@@ -243,7 +258,7 @@ class ControlServer:
             }
             self._command_queue.append(command)
             logger.info(
-                f"Befehl in Queue: {cmd} (Queue-Länge: {len(self._command_queue)})"
+                f"Command queued: {cmd} (queue length: {len(self._command_queue)})"
             )
             return {"status": "queued", "cmd": cmd}
 
@@ -252,7 +267,7 @@ class ControlServer:
         async def post_colab_status(
             request: Request, authorization: Optional[str] = Header(None)
         ):
-            """Colab reportet seinen Status hierher."""
+            """Colab reports its status here."""
             if not self._check_auth(authorization):
                 raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -264,7 +279,7 @@ class ControlServer:
         # ── POST /trading/pause ───────────────────────────────────────────────
         @app.post("/trading/pause")
         async def pause_trading(authorization: Optional[str] = Header(None)):
-            """Pausiert lokal + sendet PAUSE_INFERENCE an Colab."""
+            """Pauses locally + sends PAUSE_INFERENCE to Colab."""
             if not self._check_auth(authorization):
                 raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -280,13 +295,13 @@ class ControlServer:
             )
             return {
                 "status": "paused",
-                "msg": "Trading lokal pausiert + Colab PAUSE_INFERENCE in Queue",
+                "msg": "Trading paused locally + Colab PAUSE_INFERENCE queued",
             }
 
         # ── POST /trading/resume ──────────────────────────────────────────────
         @app.post("/trading/resume")
         async def resume_trading(authorization: Optional[str] = Header(None)):
-            """Setzt Trading fort lokal + RESUME an Colab."""
+            """Resumes trading locally + sends RESUME to Colab."""
             if not self._check_auth(authorization):
                 raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -303,7 +318,7 @@ class ControlServer:
             return {"status": "resumed"}
 
     async def start(self):
-        """Startet den FastAPI-Server asynchron."""
+        """Starts the FastAPI server asynchronously."""
         config = uvicorn.Config(
             self.app,
             host="0.0.0.0",
@@ -311,7 +326,7 @@ class ControlServer:
             log_level="warning",
         )
         server = uvicorn.Server(config)
-        logger.success(f"Control Server gestartet auf http://0.0.0.0:{self.port}")
+        logger.success(f"Control Server started on http://0.0.0.0:{self.port}")
         logger.info(
             "Cloudflare Tunnel: ./cloudflared tunnel --url http://localhost:{self.port}"
         )
@@ -325,36 +340,36 @@ class ControlServer:
 
 class ControlClient:
     """
-    Control Client — läuft in Colab neben Module B.
+    Control Client — runs in Colab alongside Module B.
 
-    Pollt alle N Sekunden den ControlServer nach Befehlen.
-    Führt Befehle in Module B aus.
-    Sendet Status-Updates zurück.
+    Polls the ControlServer every N seconds for commands.
+    Executes commands in Module B.
+    Sends status updates back.
     """
 
     def __init__(
         self,
         server_url: str,
-        module_b,  # Referenz auf ModuleB-Instanz
+        module_b,  # Reference to ModuleB instance
         token: str = DEFAULT_TOKEN,
         poll_interval_s: float = CONTROL_POLL_S,
     ):
         if not _HTTPX_OK:
             raise ImportError("pip install httpx")
 
-        # URL bereinigen
+        # Clean up URL
         self.server_url = server_url.rstrip("/")
         self.module_b = module_b
         self.token = token
         self.poll_interval = poll_interval_s
         self._running = False
         self._headers = {"Authorization": f"Bearer {token}"}
-        logger.success(f"ControlClient bereit | Server: {server_url}")
+        logger.success(f"ControlClient ready | Server: {server_url}")
 
     async def run(self):
-        """Startet den Poll-Loop. Als asyncio.Task ausführen."""
+        """Starts the poll loop. Run as asyncio.Task."""
         self._running = True
-        logger.info("ControlClient: Starte Poll-Loop...")
+        logger.info("ControlClient: Starting poll loop...")
 
         async with httpx.AsyncClient(timeout=10.0) as client:
             while self._running:
@@ -362,32 +377,32 @@ class ControlClient:
                     await self._poll_and_execute(client)
                     await self._report_status(client)
                 except Exception as e:
-                    logger.warning(f"ControlClient Poll-Fehler: {e}")
+                    logger.warning(f"ControlClient poll error: {e}")
 
                 await asyncio.sleep(self.poll_interval)
 
     async def _poll_and_execute(self, client: "httpx.AsyncClient"):
-        """Fragt nach nächstem Befehl und führt ihn aus."""
+        """Requests next command and executes it."""
         resp = await client.get(
             f"{self.server_url}/colab/command",
             headers=self._headers,
         )
         if resp.status_code != 200:
-            logger.warning(f"Poll Fehler HTTP {resp.status_code}")
+            logger.warning(f"Poll error HTTP {resp.status_code}")
             return
 
         data = resp.json()
         cmd = data.get("cmd", "NONE")
 
         if cmd == "NONE":
-            return  # Kein Befehl — normal
+            return  # No command — normal
 
-        logger.info(f"Befehl empfangen: {cmd}")
+        logger.info(f"Command received: {cmd}")
         params = data.get("params", {})
         await self.module_b._execute_command(cmd, params)
 
     async def _report_status(self, client: "httpx.AsyncClient"):
-        """Sendet aktuellen Module-B-Status an den ControlServer."""
+        """Sends current Module B status to the ControlServer."""
         try:
             mb = self.module_b
             status = {
@@ -406,7 +421,7 @@ class ControlClient:
                 json=status,
             )
         except Exception:
-            pass  # Status-Report ist nicht kritisch
+            pass  # Status report is not critical
 
     def stop(self):
         self._running = False
@@ -419,18 +434,18 @@ class ControlClient:
 
 async def start_cloudflare_tunnel(port: int = DEFAULT_PORT) -> Optional[str]:
     """
-    Startet cloudflared Tunnel und gibt die öffentliche URL zurück.
+    Starts a cloudflared tunnel and returns the public URL.
 
-    Voraussetzung: cloudflared muss installiert sein.
+    Prerequisite: cloudflared must be installed.
     Download: https://github.com/cloudflare/cloudflared/releases
 
     Returns:
-        str | None: Öffentliche URL (z.B. https://abc.trycloudflare.com) oder None
+        str | None: Public URL (e.g. https://abc.trycloudflare.com) or None
     """
     import subprocess
     import re
 
-    logger.info("Starte Cloudflare Tunnel...")
+    logger.info("Starting Cloudflare Tunnel...")
 
     proc = await asyncio.create_subprocess_exec(
         "cloudflared",
@@ -441,9 +456,9 @@ async def start_cloudflare_tunnel(port: int = DEFAULT_PORT) -> Optional[str]:
         stderr=asyncio.subprocess.PIPE,
     )
 
-    # URL aus stderr lesen (cloudflared gibt sie dort aus)
+    # Read URL from stderr (cloudflared outputs it there)
     url = None
-    for _ in range(60):  # Max 60s warten
+    for _ in range(60):  # Wait max 60s
         line = await asyncio.wait_for(proc.stderr.readline(), timeout=2.0)
         text = line.decode("utf-8", errors="replace")
         match = re.search(r"https://[a-z0-9\-]+\.trycloudflare\.com", text)
@@ -452,16 +467,16 @@ async def start_cloudflare_tunnel(port: int = DEFAULT_PORT) -> Optional[str]:
             break
 
     if url:
-        logger.success(f"Cloudflare Tunnel aktiv: {url}")
-        logger.info(f"In Colab setzen: CONTROL_SERVER_URL = '{url}'")
+        logger.success(f"Cloudflare Tunnel active: {url}")
+        logger.info(f"Set in Colab: CONTROL_SERVER_URL = '{url}'")
     else:
-        logger.warning("Cloudflare Tunnel URL nicht gefunden — Zeitüberschreitung")
+        logger.warning("Cloudflare Tunnel URL not found — timeout")
 
     return url
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# VOLLSTÄNDIGER START-HELPER (lokal)
+# FULL START HELPER (local)
 # ══════════════════════════════════════════════════════════════════════════════
 
 
@@ -476,12 +491,12 @@ async def start_full_local_stack(
     start_tunnel: bool = True,
 ):
     """
-    Startet den vollständigen lokalen Stack:
-      1. Module A (Marktdaten + Paper-Order-Executor)
+    Starts the full local stack:
+      1. Module A (market data + paper order executor)
       2. Control Server (FastAPI)
       3. Cloudflare Tunnel (optional)
 
-    Verwendung:
+    Usage:
         import asyncio
         from colab_bridge.control_plane import start_full_local_stack
 
@@ -492,7 +507,7 @@ async def start_full_local_stack(
     """
     from colab_bridge.module_a_local import ModuleA
 
-    # Module A erstellen
+    # Create Module A
     module_a = ModuleA(
         ably_key=ably_key,
         symbol=symbol,
@@ -502,7 +517,7 @@ async def start_full_local_stack(
         initial_capital=capital,
     )
 
-    # Control Server erstellen
+    # Create Control Server
     server = ControlServer(
         port=DEFAULT_PORT,
         token=api_token,
@@ -510,12 +525,12 @@ async def start_full_local_stack(
     )
 
     logger.success("=" * 65)
-    logger.success("  BITCOIN4Traders — Lokaler Stack")
+    logger.success("  BITCOIN4Traders — Local Stack")
     logger.success(f"  Module A  : {symbol} | {exchange_id} | ${capital:,.0f}")
     logger.success(f"  Control   : http://localhost:{DEFAULT_PORT}")
     logger.success("=" * 65)
 
-    # Tasks parallel starten
+    # Start tasks in parallel
     tasks = [
         asyncio.create_task(module_a.run(), name="module_a"),
         asyncio.create_task(server.start(), name="control_server"),
@@ -524,9 +539,9 @@ async def start_full_local_stack(
     if start_tunnel:
         tunnel_url = await start_cloudflare_tunnel(DEFAULT_PORT)
         if tunnel_url:
-            logger.success(f"\nColab-Konfiguration:")
+            logger.success(f"\nColab configuration:")
             logger.success(f"  CONTROL_SERVER_URL = '{tunnel_url}'")
-            logger.success(f"  CONTROL_API_TOKEN  = '{api_token}'")
+            logger.success(f"  CONTROL_API_TOKEN  = '{api_token[:8]}...' (full token in config file)")
             logger.success(f"  ABLY_API_KEY       = 'your_key'")
 
     try:
@@ -542,7 +557,7 @@ async def start_full_local_stack(
 
 
 async def _cli_server():
-    """Startet nur den Control Server (ohne Module A)."""
+    """Starts only the Control Server (without Module A)."""
     port = int(os.getenv("CONTROL_PORT", DEFAULT_PORT))
     token = os.getenv("CONTROL_API_TOKEN", DEFAULT_TOKEN)
     server = ControlServer(port=port, token=token)
@@ -550,13 +565,13 @@ async def _cli_server():
 
 
 async def _cli_tunnel():
-    """Startet nur den Cloudflare Tunnel."""
+    """Starts only the Cloudflare Tunnel."""
     port = int(os.getenv("CONTROL_PORT", DEFAULT_PORT))
     url = await start_cloudflare_tunnel(port)
     if url:
         print(f"\nCloudflare Tunnel URL: {url}")
-        print(f"In .env setzen: CONTROL_SERVER_URL={url}")
-        # Tunnel läuft im Hintergrund — warte auf Ctrl+C
+        print(f"Set in .env: CONTROL_SERVER_URL={url}")
+        # Tunnel runs in background — wait for Ctrl+C
         try:
             await asyncio.sleep(86400)
         except KeyboardInterrupt:
@@ -569,12 +584,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Control Plane — BITCOIN4Traders")
     sub = parser.add_subparsers(dest="cmd")
 
-    sub.add_parser("server", help="Control Server starten")
-    sub.add_parser("tunnel", help="Cloudflare Tunnel starten")
+    sub.add_parser("server", help="Start Control Server")
+    sub.add_parser("tunnel", help="Start Cloudflare Tunnel")
 
-    full = sub.add_parser(
-        "full", help="Vollständiger lokaler Stack (Module A + Server + Tunnel)"
-    )
+    full = sub.add_parser("full", help="Full local stack (Module A + Server + Tunnel)")
     full.add_argument(
         "--ably-key", default=os.getenv("ABLY_API_KEY", ""), required=False
     )
@@ -592,7 +605,7 @@ if __name__ == "__main__":
         asyncio.run(_cli_tunnel())
     elif args.cmd == "full":
         if not args.ably_key:
-            print("FEHLER: --ably-key oder ABLY_API_KEY setzen")
+            print("ERROR: set --ably-key or ABLY_API_KEY")
             sys.exit(1)
         asyncio.run(
             start_full_local_stack(

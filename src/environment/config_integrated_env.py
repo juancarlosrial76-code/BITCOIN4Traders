@@ -1063,17 +1063,21 @@ class ConfigIntegratedTradingEnv(gym.Env):
         regime_volume_factor = self.current_regime.volume / 500.0
 
         # Additional features (9 base portfolio/risk features)
+        # Normalize all to approximately [-1, 1] or [0, 1] range so they don't
+        # dominate gradient flow relative to the StandardScaler-normalized technical features.
+        # trade_count and consecutive_losses are unbounded integers — cap and scale.
+        _max_trades = max(len(self.price_data) // 10, 1)  # rough upper bound
         additional = np.array(
             [
-                self.position,
-                portfolio_return,
-                cash_ratio,
-                drawdown,
-                len(self.trade_history),
-                self.risk_manager.consecutive_losses,
+                self.position,                                                        # [-1, 1] OK
+                np.clip(portfolio_return, -1.0, 1.0),                                # unbounded → clip
+                cash_ratio,                                                           # [0, 1] OK
+                drawdown,                                                             # [0, -1] OK
+                min(len(self.trade_history), _max_trades) / _max_trades,              # [0, 1]
+                min(self.risk_manager.consecutive_losses, 10) / 10.0,                # [0, 1]
                 regime_vol_factor,
                 regime_volume_factor,
-                float(self.current_step) / len(self.price_data),
+                float(self.current_step) / len(self.price_data),                     # [0, 1] OK
             ]
         )
 
