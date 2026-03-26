@@ -100,7 +100,7 @@ def run_training():
     env = os.environ.copy()
     env["PYTHONPATH"] = str(WORK_DIR / "src")
 
-    cmd = ["python", "train.py", "--device", "cpu", "--iterations", "3"]
+    cmd = ["python", "train.py", "--device", "cpu", "--iterations", "10"]
 
     result = subprocess.run(
         cmd, capture_output=True, text=True, timeout=1200, env=env, cwd=WORK_DIR
