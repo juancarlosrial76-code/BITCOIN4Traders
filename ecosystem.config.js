@@ -19,7 +19,7 @@
 //   pm2 save       # Persist current process list
 // =============================================================================
 
-const REPO = "/home/hp17/Tradingbot/Quantrivo/BITCOIN4Traders";
+const REPO = "/home/hp17/Tradingbot/BITCOIN4Traders";
 
 module.exports = {
   apps: [
@@ -63,6 +63,9 @@ module.exports = {
       error_file: `${REPO}/logs/pm2/signal-check-error.log`,
       log_date_format: "YYYY-MM-DD HH:mm:ss",
       merge_logs: false,
+      // F-007: Log rotation — prevent unbounded log growth
+      max_size: "50M",
+      retain: 7,
     },
 
     // -------------------------------------------------------------------------
@@ -95,8 +98,43 @@ module.exports = {
       out_file: `${REPO}/logs/pm2/evolution.log`,
       error_file: `${REPO}/logs/pm2/evolution-error.log`,
       log_date_format: "YYYY-MM-DD HH:mm:ss",
+      // F-007: Log rotation
+      max_size: "100M",
+      retain: 14,
 
       // No cron_restart - runs to completion then restarts via autorestart
+    },
+
+    // -------------------------------------------------------------------------
+    // Process 4: Paper Trading (dry-run, continuous)
+    // Runs run.py --dry_run continuously, starts as StubAgent until
+    // ppo_best.pt appears, then auto-upgrades to PPO.
+    // F-006: Paper trading now managed by PM2 for crash recovery.
+    // -------------------------------------------------------------------------
+    {
+      name: "btc-paper-trading",
+      script: "run.py",
+      interpreter: "python3",
+      cwd: REPO,
+      args: "--dry_run",
+
+      autorestart: true,
+      restart_delay: 10000,       // 10s pause before restart (give network time)
+      max_restarts: 999,
+      min_uptime: "30s",
+
+      env: {
+        PYTHONPATH: `${REPO}/src`,
+        LOCAL_MASTER: "true",
+        PYTHONUNBUFFERED: "1",
+      },
+
+      out_file: `${REPO}/logs/pm2/paper-trading.log`,
+      error_file: `${REPO}/logs/pm2/paper-trading-error.log`,
+      log_date_format: "YYYY-MM-DD HH:mm:ss",
+      // F-007: Log rotation
+      max_size: "100M",
+      retain: 7,
     },
 
     // -------------------------------------------------------------------------
@@ -123,6 +161,9 @@ module.exports = {
       out_file: `${REPO}/logs/pm2/sync.log`,
       error_file: `${REPO}/logs/pm2/sync-error.log`,
       log_date_format: "YYYY-MM-DD HH:mm:ss",
+      // F-007: Log rotation
+      max_size: "10M",
+      retain: 30,
     },
 
   ],

@@ -2,8 +2,11 @@ import os
 import sys
 import asyncio
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
@@ -98,13 +101,13 @@ async def lifespan(app: FastAPI):
             binance_connector = BinanceConnector(
                 api_key=api_key, api_secret=api_secret, testnet=testnet
             )
-            print(f"Binance connector initialized (testnet={testnet})")
+            logger.info("Binance connector initialized (testnet=%s)", testnet)
         else:
-            print("BINANCE_API_KEY/SECRET not set, using mock price data")
+            logger.warning("BINANCE_API_KEY/SECRET not set, using mock price data")
     except ImportError:
-        print("Binance connector not available, using mock price data")
+        logger.warning("Binance connector not available, using mock price data")
     except Exception as e:
-        print(f"Failed to initialize Binance: {e}")
+        logger.error("Failed to initialize Binance: %s", e)
 
     asyncio.create_task(price_stream())
     asyncio.create_task(manager.heartbeat(interval=20))  # WS-003: keep-alive

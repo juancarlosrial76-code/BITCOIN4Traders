@@ -5,29 +5,14 @@
 
 WORKDIR="/home/hp17/Tradingbot/BITCOIN4Traders"
 WATCHLOG="$WORKDIR/logs/watchdog.log"
-START_TIME_FILE="$WORKDIR/logs/watchdog_start.txt"
-MAX_RUNTIME=25200  # 7 hours in seconds
 
 cd "$WORKDIR" || exit 1
 
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
 log() { echo "[$(ts)] $*" | tee -a "$WATCHLOG"; }
 
-# Record start time on first run
-if [ ! -f "$START_TIME_FILE" ]; then
-    date +%s > "$START_TIME_FILE"
-fi
-START=$(cat "$START_TIME_FILE")
-NOW=$(date +%s)
-ELAPSED=$(( NOW - START ))
-
-log "=== Watchdog check | Elapsed: ${ELAPSED}s / ${MAX_RUNTIME}s ==="
-
-# ── Stop after 7h ──────────────────────────────────────────────────
-if [ "$ELAPSED" -ge "$MAX_RUNTIME" ]; then
-    log "7h elapsed — watchdog duty complete. Stopping cron removal is manual."
-    exit 0
-fi
+log "=== Watchdog check ==="
+# F-001: Removed 7h MAX_RUNTIME hard-cutoff — watchdog runs indefinitely via cron
 
 # ── Helper: get latest log file ────────────────────────────────────
 latest_training_log() {
@@ -101,6 +86,25 @@ if [ -z "$PAPER_PID" ]; then
     log "Paper trading restarted (PID $NEW_PID) → $LOGFILE"
 else
     log "Paper trading OK (PID $PAPER_PID)"
+fi
+
+# ── F-002: Check & restart live trading (if enabled) ──────────────
+LIVE_PID=$(pgrep -f "run.py --live" | grep -v "$$" | head -1)
+LIVE_ENABLED_FILE="$WORKDIR/.live_trading_enabled"
+if [ -f "$LIVE_ENABLED_FILE" ]; then
+    if [ -z "$LIVE_PID" ]; then
+        log "LIVE TRADING DEAD — restarting..."
+        LOG_TS=$(date +%Y%m%d_%H%M%S)
+        mkdir -p "$WORKDIR/logs/live"
+        LOGFILE="$WORKDIR/logs/live/live_${LOG_TS}.log"
+        nohup python run.py --live > "$LOGFILE" 2>&1 &
+        NEW_PID=$!
+        log "Live trading restarted (PID $NEW_PID) → $LOGFILE"
+    else
+        log "Live trading OK (PID $LIVE_PID)"
+    fi
+else
+    log "Live trading disabled (create $LIVE_ENABLED_FILE to enable)"
 fi
 
 # ── Training progress snapshot ────────────────────────────────────
