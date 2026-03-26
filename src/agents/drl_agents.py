@@ -140,7 +140,7 @@ class DQNAgent:
         buffer_size: int = 100000,
         batch_size: int = 64,
         target_update: int = 1000,
-        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        device: Optional[str] = None,
     ):
         self.state_dim = state_dim
         self.n_actions = n_actions
@@ -150,7 +150,7 @@ class DQNAgent:
         self.epsilon_decay = epsilon_decay
         self.batch_size = batch_size
         self.target_update = target_update
-        self.device = device
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
         # Q-Networks
         self.q_network = self._build_network().to(device)
@@ -369,7 +369,7 @@ class DDPGAgent:
         tau: float = 0.005,
         buffer_size: int = 1000000,
         batch_size: int = 64,
-        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        device: Optional[str] = None,
     ):
         self.state_dim = state_dim
         self.action_dim = action_dim
@@ -377,7 +377,7 @@ class DDPGAgent:
         self.gamma = gamma
         self.tau = tau
         self.batch_size = batch_size
-        self.device = device
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
         # Actor
         self.actor = ActorNetwork(state_dim, action_dim, max_action).to(device)
@@ -550,7 +550,7 @@ class SACAgent:
         alpha: float = 0.2,
         buffer_size: int = 1000000,
         batch_size: int = 256,
-        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        device: Optional[str] = None,
     ):
         self.state_dim = state_dim
         self.action_dim = action_dim
@@ -559,7 +559,7 @@ class SACAgent:
         self.tau = tau
         self.alpha = alpha
         self.batch_size = batch_size
-        self.device = device
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
         # Actor (Gaussian policy)
         self.actor = GaussianActor(state_dim, action_dim, max_action).to(device)
@@ -866,7 +866,7 @@ class A2CAgent:
         entropy_coef: float = 0.01,
         value_loss_coef: float = 0.5,
         max_grad_norm: float = 0.5,
-        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        device: Optional[str] = None,
     ):
         self.state_dim = state_dim
         self.action_dim = action_dim
@@ -875,7 +875,7 @@ class A2CAgent:
         self.entropy_coef = entropy_coef
         self.value_loss_coef = value_loss_coef
         self.max_grad_norm = max_grad_norm
-        self.device = device
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
         # Actor-Critic network
         self.actor_critic = ActorCriticNetwork(state_dim, action_dim, discrete).to(
@@ -1151,7 +1151,7 @@ class TD3Agent:
         policy_freq: int = 2,
         buffer_size: int = 1000000,
         batch_size: int = 256,
-        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        device: Optional[str] = None,
     ):
         self.state_dim = state_dim
         self.action_dim = action_dim
@@ -1162,7 +1162,7 @@ class TD3Agent:
         self.noise_clip = noise_clip * max_action  # Clip noise to action range
         self.policy_freq = policy_freq
         self.batch_size = batch_size
-        self.device = device
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
         # Actor
         self.actor = ActorNetwork(state_dim, action_dim, max_action).to(device)
