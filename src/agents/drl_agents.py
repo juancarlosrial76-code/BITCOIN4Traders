@@ -298,7 +298,18 @@ class CriticNetwork(nn.Module):
         )  # Concatenate state+action before Q-value estimation
 
 
-class DDPGAgent:
+class SoftUpdateMixin:
+    """Mixin providing Polyak-averaging soft update for target networks."""
+
+    def _soft_update(self, source, target):
+        """θ_target ← τ·θ_source + (1-τ)·θ_target (Polyak averaging)."""
+        for param, target_param in zip(source.parameters(), target.parameters()):
+            target_param.data.copy_(
+                self.tau * param.data + (1 - self.tau) * target_param.data
+            )
+
+
+class DDPGAgent(SoftUpdateMixin):
     """
     Deep Deterministic Policy Gradient (DDPG) Agent.
 
@@ -458,17 +469,9 @@ class DDPGAgent:
 
         return critic_loss.item(), actor_loss.item()
 
-    def _soft_update(self, source, target):
-        """Soft update target network."""
-        for param, target_param in zip(source.parameters(), target.parameters()):
-            target_param.data.copy_(
-                self.tau * param.data
-                + (1 - self.tau)
-                * target_param.data  # Polyak averaging: θ' ← τθ + (1-τ)θ'
-            )
 
 
-class SACAgent:
+class SACAgent(SoftUpdateMixin):
     """
     Soft Actor-Critic (SAC) Agent.
 
@@ -661,12 +664,6 @@ class SACAgent:
             "actor_loss": actor_loss.item(),
         }
 
-    def _soft_update(self, source, target):
-        """Soft update target network."""
-        for param, target_param in zip(source.parameters(), target.parameters()):
-            target_param.data.copy_(
-                self.tau * param.data + (1 - self.tau) * target_param.data
-            )
 
 
 class GaussianActor(nn.Module):
@@ -1060,7 +1057,7 @@ class ActorCriticNetwork(nn.Module):
             return mean, log_std, value
 
 
-class TD3Agent:
+class TD3Agent(SoftUpdateMixin):
     """
     Twin Delayed Deep Deterministic Policy Gradient (TD3) Agent.
 
@@ -1287,12 +1284,6 @@ class TD3Agent:
             else 0.0,
         }
 
-    def _soft_update(self, source, target):
-        """Soft update target network."""
-        for param, target_param in zip(source.parameters(), target.parameters()):
-            target_param.data.copy_(
-                self.tau * param.data + (1 - self.tau) * target_param.data
-            )
 
     def save(self, path: str):
         """Save model."""
