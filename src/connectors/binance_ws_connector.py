@@ -302,7 +302,7 @@ class BinanceWSConnector:
 
     _BASE_URL = "wss://stream.binance.com:9443/stream"
     _REST_BASE = "https://api.binance.com"
-    _LISTEN_KEY_REFRESH_INTERVAL = 1_800  # 30 min in seconds
+    _LISTEN_KEY_REFRESH_INTERVAL = 1_200  # 20 min — Binance expires key after 60min; refresh at 20min for safety margin
 
     def __init__(
         self,

@@ -131,10 +131,15 @@ async def price_stream():
 
         if binance_connector:
             try:
-                # BUG FIX: correct method name is get_current_price()
-                price = binance_connector.get_current_price("BTCUSDT") or base_price
+                # F-020: wrap blocking call with timeout to prevent event-loop stall
+                price = await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(
+                        None, binance_connector.get_current_price, "BTCUSDT"
+                    ),
+                    timeout=5.0,
+                ) or base_price
                 base_price = price
-            except Exception:
+            except (asyncio.TimeoutError, Exception):
                 base_price += random.uniform(-0.5, 0.5)
                 price = base_price
         else:

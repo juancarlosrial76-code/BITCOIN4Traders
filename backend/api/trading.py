@@ -13,9 +13,12 @@ import json
 import threading
 from pathlib import Path
 from datetime import datetime
+
+from src.config import get_binance_credentials
 from enum import Enum
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from backend.api.login import get_current_user
 from pydantic import BaseModel, Field, validator
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -37,8 +40,7 @@ def get_binance_connector():
         try:
             from src.connectors.binance_connector import BinanceConnector
 
-            api_key = os.getenv("BINANCE_API_KEY")
-            api_secret = os.getenv("BINANCE_API_SECRET")
+            api_key, api_secret = get_binance_credentials()
             testnet = os.getenv("BINANCE_TESTNET", "true").lower() == "true"
             if api_key and api_secret:
                 binance_connector = BinanceConnector(
@@ -56,7 +58,7 @@ def _get_champion():
         return _champion_cache
     if CHAMPION_PKL.exists():
         try:
-            from darwin_engine import ChampionPersistence
+            from src.math_tools.archive.darwin_legacy import ChampionPersistence
 
             _champion_cache = ChampionPersistence.load(
                 str(CHAMPION_PKL),
@@ -82,14 +84,16 @@ def _get_champion_signal() -> dict:
         }
 
     try:
-        from darwin_engine import generate_synthetic_btc
+        from src.math_tools.archive.darwin_legacy import generate_synthetic_btc
 
         try:
-            from darwin_engine import load_live_data
+            from src.math_tools.archive.darwin_legacy import load_live_data
 
             df = load_live_data(symbol="BTC/USDT", timeframe="1h", limit=200)
         except Exception:
-            df = generate_synthetic_btc(n_bars=200, seed=int(datetime.now().timestamp()) % 1000)
+            df = generate_synthetic_btc(
+                n_bars=200, seed=int(datetime.now().timestamp()) % 1000
+            )
 
         signals = champion.compute_signals(df["close"].values)
         last_signal = int(signals[-1])
@@ -98,7 +102,7 @@ def _get_champion_signal() -> dict:
             "signal": last_signal,
             "label": label,
             "champion": champion.name,
-            "reason": "darwin_engine",
+            "reason": "src.math_tools.archive.darwin_legacy",
         }
     except Exception as exc:
         return {
@@ -152,8 +156,8 @@ trading_state = {
 
 
 @router.get("/status")
-async def get_status():
-    """Returns trading status + current Champion signal."""
+async def get_status(_user=Depends(get_current_user)):
+    """Returns trading status + current Champion signal. Requires authentication."""
     connector = get_binance_connector()
     position_value = trading_state["current_position"]
     unrealized = trading_state["unrealized_pnl"]
