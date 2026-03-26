@@ -25,19 +25,19 @@ import pandas as pd
 from loguru import logger
 
 # Phase 1: Data
-from data.ccxt_loader import CCXTDataLoader
-from features.feature_engine import FeatureEngine, FeatureConfig
+from src.data.ccxt_loader import CCXTDataLoader
+from src.features.feature_engine import FeatureEngine, FeatureConfig
 
 # Phase 2: Environment
-from environment.config_integrated_env import ConfigIntegratedTradingEnv
-from environment.config_system import (
+from src.environment.config_integrated_env import ConfigIntegratedTradingEnv
+from src.environment.config_system import (
     EnvironmentConfig,
     load_environment_config_from_yaml,
 )
 
 # Phase 5: Training
-from agents.ppo_agent import PPOConfig
-from training.adversarial_trainer import AdversarialTrainer, AdversarialConfig
+from src.agents.ppo_agent import PPOConfig
+from src.training.adversarial_trainer import AdversarialTrainer, AdversarialConfig
 
 
 def setup_logging():
@@ -65,7 +65,15 @@ def load_data(args):
     processed_dir = Path("data/processed")
 
     if args.use_cached and cache_dir.exists():
-        cached_files = list(cache_dir.glob("*.parquet"))
+        # Prefer the processed price cache (1h, already aligned with features)
+        price_cache = processed_dir / "BTC_USDT_1h_price.parquet"
+        if price_cache.exists():
+            cached_files = [price_cache]
+        else:
+            # Fall back to cache_dir, prefer 1h file if available
+            all_cached = list(cache_dir.glob("*.parquet"))
+            cached_1h = [f for f in all_cached if "1h" in f.name]
+            cached_files = cached_1h if cached_1h else all_cached
         if cached_files:
             logger.info(f"Loading cached data from {cached_files[0]}")
             price_data = pd.read_parquet(cached_files[0])
@@ -220,6 +228,18 @@ def load_data(args):
         f"Val={len(splits['val'][0])}, Test={len(splits['test'][0])} samples"
     )
 
+    # Cache the computed features to skip the slow fit_transform next run
+    try:
+        all_features = pd.concat([train_features, val_features, test_features])
+        cache_path = processed_dir / "BTC_USDT_1h_features.parquet"
+        all_features.to_parquet(cache_path)
+        price_all = pd.concat([price_data.iloc[:train_idx], price_data.iloc[train_idx:val_idx], price_data.iloc[val_idx:]])
+        price_cache_path = processed_dir / "BTC_USDT_1h_price.parquet"
+        price_all.to_parquet(price_cache_path)
+        logger.info(f"Feature cache saved → {cache_path} (next run will skip fit_transform)")
+    except Exception as exc:
+        logger.warning(f"Feature cache save failed (non-fatal): {exc}")
+
     return splits
 
 
@@ -281,10 +301,18 @@ def create_trainer(env, args):
         batch_size=get_cfg("trader", "batch_size", 64),
         use_recurrent=get_cfg("trader", "use_recurrent", True),
         rnn_type=get_cfg("trader", "rnn_type", "GRU"),
+        rnn_layers=get_cfg("trader", "rnn_layers", 1),
+        dropout=get_cfg("trader", "dropout", 0.1),
+        use_layer_norm=get_cfg("trader", "use_layer_norm", True),
         entropy_coef=get_cfg("trader", "entropy_coef", 0.01),
         value_loss_coef=get_cfg("trader", "value_loss_coef", 0.5),
         max_grad_norm=get_cfg("trader", "max_grad_norm", 0.5),
         target_kl=get_cfg("trader", "target_kl", 0.01),
+        # Transformer backbone (Option A + B)
+        use_transformer=get_cfg("trader", "use_transformer", False),
+        transformer_nhead=get_cfg("trader", "transformer_nhead", 4),
+        transformer_d_model=get_cfg("trader", "transformer_d_model", 0),
+        transformer_seq_len=get_cfg("trader", "transformer_seq_len", 1),
     )
 
     adversary_config = PPOConfig(
