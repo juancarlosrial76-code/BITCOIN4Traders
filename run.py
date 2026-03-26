@@ -389,7 +389,8 @@ async def main(config_path: str, dry_run: bool = False) -> None:
     agent, feature_engine = build_agent_and_features(cfg)
 
     # ── Engine ───────────────────────────────────────────────────────
-    engine = LiveExecutionEngine(engine_cfg, agent, feature_engine)
+    engine = LiveExecutionEngine(engine_cfg, agent, feature_engine,
+                                 paper_trading=dry_run, monitor=monitor)
 
     # ── Graceful shutdown on SIGINT/SIGTERM ───────────────────────────
     loop = asyncio.get_running_loop()

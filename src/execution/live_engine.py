@@ -480,11 +480,15 @@ class LiveExecutionEngine:
         # Route execution reports from user stream to OMS
         self._connector.on("executionReport", self._oms.handle_execution_report)
 
-        # Connect
+        # Pre-register streams before connecting so URL includes them from the start
+        streams = [f"{s.lower()}@bookTicker" for s in self._cfg.symbols]
+        for stream in streams:
+            self._connector._subscriptions.add(stream)
+
+        # Connect (subscriptions now baked into WebSocket URL)
         await self._connector.connect()
 
-        # Subscribe market data streams for all configured symbols
-        streams = [f"{s.lower()}@bookTicker" for s in self._cfg.symbols]
+        # Re-confirm subscription via SUBSCRIBE message (belt-and-suspenders)
         await self._connector.subscribe(streams)
 
         self._running = True

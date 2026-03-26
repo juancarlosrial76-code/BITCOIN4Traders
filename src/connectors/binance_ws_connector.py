@@ -445,7 +445,7 @@ class BinanceWSConnector:
             self._ws = await self._session.ws_connect(
                 url,
                 heartbeat=20,  # aiohttp sends WebSocket ping frame every 20 s to keep connection alive
-                receive_timeout=30,  # Raise error if no message received for 30 s
+                timeout=aiohttp.ClientWSTimeout(ws_receive=30),  # aiohttp 3.9+ API (receive_timeout deprecated)
             )
             self._state = ConnState.CONNECTED
             self._reconnect_attempts = 0  # Reset counter on successful connection
@@ -682,6 +682,19 @@ class BinanceWSConnector:
         await self._ws.send_str(
             json.dumps(payload)
         )  # Send JSON-encoded subscription/unsubscription request
+
+    def get_account_balance(self) -> dict:
+        """Return mock balance for paper/dry-run mode (REST not available via WS connector)."""
+        if self._paper:
+            Balance = type("Balance", (), {"free": 10_000.0, "locked": 0.0, "total": 10_000.0})
+            return {"USDT": Balance()}
+        raise NotImplementedError("Live balance requires REST client — use OrderManager.get_balance()")
+
+    def get_position(self, symbol: str):
+        """Return None for paper/dry-run mode (no exchange position to reconcile)."""
+        if self._paper:
+            return None
+        raise NotImplementedError("Live position requires REST client — use OrderManager.get_position()")
 
     async def _cancel_background_tasks(self) -> None:
         for task in (self._recv_task, self._hb_task, self._lk_task):
