@@ -1581,82 +1581,14 @@ class PPOAgent:
 
     def _update_sil(self) -> float:
         """
-        Self-Imitation Learning update step.
-        Imitates past decisions that resulted in higher returns than the current value estimate.
-        L_sil = -log_prob(a|s) * max(0, R - V(s)) + 1/2 * max(0, R - V(s))^2
+        Self-Imitation Learning (SIL) — disabled.
+
+        SIL imitates past high-return transitions: L = -log π(a|s) * max(0, R-V(s)).
+        Disabled because: (1) ignores recurrent hidden state (BPTT not supported),
+        (2) high-return buffer rapidly dominates training and destroys exploration.
+        Kept as stub to avoid breaking callers. Re-enable when BPTT support is added.
         """
-        # SIL disabled: ignores recurrent hidden state and destroys exploration
         return 0.0
-
-        total_sil_loss = 0.0
-        updates = 0
-
-        # We do multiple SIL updates per PPO update
-        for _ in range(self.config.sil_update_ratio):
-            # Sample random batch
-            idx = np.random.randint(
-                0, self.sil_buffer["size"], size=self.config.sil_batch_size
-            )
-
-            b_states = torch.FloatTensor(self.sil_buffer["states"][idx]).to(
-                self.device, non_blocking=True
-            )
-            b_actions = torch.LongTensor(self.sil_buffer["actions"][idx]).to(
-                self.device, non_blocking=True
-            )
-            b_returns = torch.FloatTensor(self.sil_buffer["returns"][idx]).to(
-                self.device, non_blocking=True
-            )
-
-            with torch.amp.autocast(device_type=self._amp_device, enabled=self._amp_enabled):
-                dist, _ = self.actor(
-                    b_states, None
-                )  # SIL does not currently support BPTT for RNNs, context is forgotten
-                values, _ = self.critic(b_states, None)
-                values = values.squeeze()
-
-                # Compute advantages: R - V(s)
-                adv = b_returns - values
-
-                # We only imitate if the return was better than the value estimate
-                clipped_adv = torch.clamp(adv, min=0.0)
-
-                # Check if we have any valid transitions to imitate
-                if clipped_adv.max().item() <= 0:
-                    continue
-
-                log_probs = dist.log_prob(b_actions)
-
-                # Actor loss: cross entropy weighted by advantage (only positive adv)
-                actor_loss = -(log_probs * clipped_adv).mean()
-
-                # Critic loss: update value function towards return (only for positive adv)
-                critic_loss = 0.5 * (clipped_adv**2).mean()
-
-                loss = actor_loss + self.config.sil_value_weight * critic_loss
-
-                self.actor_optimizer.zero_grad()
-                self.critic_optimizer.zero_grad()
-
-                self._scaler.scale(loss).backward()
-                self._scaler.unscale_(self.actor_optimizer)
-                self._scaler.unscale_(self.critic_optimizer)
-
-                nn.utils.clip_grad_norm_(
-                    self.actor.parameters(), self.config.max_grad_norm
-                )
-                nn.utils.clip_grad_norm_(
-                    self.critic.parameters(), self.config.max_grad_norm
-                )
-
-                self._scaler.step(self.actor_optimizer)
-                self._scaler.step(self.critic_optimizer)
-                self._scaler.update()
-
-                total_sil_loss += loss.item()
-                updates += 1
-
-        return total_sil_loss / max(updates, 1)
 
     def save(self, path: str):
         torch.save(
