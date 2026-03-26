@@ -1,0 +1,112 @@
+{
+  "steps": {
+    "basicInfo": "Personal Details",
+    "questionnaire": "Risk Assessment",
+    "result": "Risk Profile",
+    "success": "Complete"
+  },
+  "stepIndicator": {
+    "step": "Step {{current}} of {{total}}"
+  },
+  "basicInfo": {
+    "title": "Create Account",
+    "subtitle": "Please enter your personal information",
+    "username": "Username",
+    "usernamePlaceholder": "e.g. john_doe",
+    "usernameError": "Username must be at least 3 characters",
+    "email": "Email Address",
+    "emailPlaceholder": "your@email.com",
+    "emailError": "Please enter a valid email address",
+    "password": "Password",
+    "passwordPlaceholder": "At least 8 characters",
+    "passwordError": "Password must be at least 8 characters",
+    "passwordStrength": "Password strength",
+    "passwordWeak": "Weak",
+    "passwordFair": "Fair",
+    "passwordGood": "Good",
+    "passwordStrong": "Strong",
+    "language": "Language",
+    "languageDe": "German",
+    "languageEn": "English",
+    "submitButton": "Continue to Risk Assessment",
+    "alreadyHaveAccount": "Already have an account?",
+    "loginLink": "Sign in now"
+  },
+  "questionnaire": {
+    "title": "Risk Profile Assessment",
+    "subtitle": "Please answer all 25 questions honestly",
+    "questionOf": "Question {{current}} of {{total}}",
+    "dimensions": {
+      "tolerance": "Risk Tolerance",
+      "capacity": "Risk Capacity",
+      "knowledge": "Financial Knowledge",
+      "horizon": "Investment Horizon",
+      "bias": "Behavioral Tendencies"
+    },
+    "optionLabels": ["a", "b", "c", "d"],
+    "previousButton": "Previous",
+    "nextButton": "Next",
+    "submitButton": "Start Evaluation",
+    "loadingQuestions": "Loading questions...",
+    "errorLoadingQuestions": "Error loading questions. Please try again.",
+    "retryButton": "Try Again"
+  },
+  "result": {
+    "title": "Your Risk Profile",
+    "subtitle": "The following profile was determined based on your answers",
+    "categories": {
+      "KONSERVATIV": "Conservative",
+      "AUSGEWOGEN": "Balanced",
+      "WACHSTUM": "Growth",
+      "SPEKULATIV": "Speculative"
+    },
+    "categoryDescriptions": {
+      "KONSERVATIV": "You prefer capital preservation with minimal risk",
+      "AUSGEWOGEN": "You seek a balance between growth and security",
+      "WACHSTUM": "You accept higher risk for above-average returns",
+      "SPEKULATIV": "You are willing to take substantial risks for maximum gains"
+    },
+    "continuumScore": "Overall Score",
+    "tScore": "T-Score",
+    "dimensions": {
+      "tolerance": "Risk Tolerance",
+      "capacity": "Risk Capacity",
+      "knowledge": "Financial Knowledge",
+      "horizon": "Investment Horizon",
+      "bias": "Behavioral Tendencies"
+    },
+    "riskParams": {
+      "title": "Risk Parameters",
+      "maxPositionSize": "Max. Position Size",
+      "kellyFraction": "Kelly Fraction",
+      "maxDrawdownPerSession": "Max. Drawdown/Session",
+      "maxConsecutiveLosses": "Max. Consecutive Losses",
+      "volatilityTarget": "Volatility Target"
+    },
+    "summaryTitle": "Summary",
+    "maxLossTitle": "Loss Example",
+    "speedingWarning": "Warning: The assessment was completed very quickly. For an accurate profile, we recommend redoing the assessment.",
+    "riskWarning": "RISK WARNING: Trading with the BITCOIN4Traders Bot involves substantial risks. You may lose all of your invested capital. Past performance is not indicative of future results. This does not constitute financial advice. All trading decisions are your personal responsibility.",
+    "consent1Label": "I understand that my risk profile {{category}} means that I accept trading risks and that these correspond to my financial situation.",
+    "consent2Label": "I have read the risk warning and agree that all trading decisions are my personal responsibility.",
+    "consentRequired": "Please confirm both consents to proceed.",
+    "confirmButton": "Complete Registration",
+    "confirmLoading": "Saving...",
+    "assessedAt": "Assessed on"
+  },
+  "success": {
+    "title": "Registration Successful!",
+    "subtitle": "Your account has been successfully created and your risk profile has been saved.",
+    "profileSaved": "Risk profile saved",
+    "redirecting": "You will be redirected in {{seconds}} seconds...",
+    "goToLoginButton": "Sign In Now",
+    "goToDashboardButton": "Go to Dashboard"
+  },
+  "errors": {
+    "submissionFailed": "Submission failed. Please try again.",
+    "networkError": "Network error. Please check your connection.",
+    "serverError": "Server error. Please try again later.",
+    "usernameExists": "This username is already taken.",
+    "emailExists": "This email address is already registered."
+  }
+}

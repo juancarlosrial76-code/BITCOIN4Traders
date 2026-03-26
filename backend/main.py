@@ -19,6 +19,11 @@ import random
 
 from backend.api import trading, config, analytics, models, system, login
 from backend.api.login import get_current_user
+try:
+    from backend.api import user_profiling as user_profiling_router
+    _user_profiling_available = True
+except ImportError:
+    _user_profiling_available = False
 from src.config import get_binance_credentials
 
 
@@ -275,6 +280,20 @@ app.include_router(
     tags=["system"],
     dependencies=[Depends(get_current_user)],
 )
+
+
+# User Risk Profiling module — questionnaire is public, submit/profile require auth
+if _user_profiling_available:
+    app.include_router(
+        user_profiling_router.router,
+        prefix="/api/v1/user-profiling",
+        tags=["user-profiling"],
+    )
+    app.include_router(
+        user_profiling_router.router,
+        prefix="/api/user-profiling",
+        tags=["user-profiling"],
+    )
 
 
 @app.get("/", tags=["root"])

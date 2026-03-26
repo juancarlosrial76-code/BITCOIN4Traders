@@ -1,0 +1,112 @@
+{
+  "steps": {
+    "basicInfo": "Persönliche Daten",
+    "questionnaire": "Risikobefragung",
+    "result": "Risikoprofil",
+    "success": "Abschluss"
+  },
+  "stepIndicator": {
+    "step": "Schritt {{current}} von {{total}}"
+  },
+  "basicInfo": {
+    "title": "Konto erstellen",
+    "subtitle": "Bitte geben Sie Ihre persönlichen Daten ein",
+    "username": "Benutzername",
+    "usernamePlaceholder": "z.B. max_mustermann",
+    "usernameError": "Benutzername muss mindestens 3 Zeichen haben",
+    "email": "E-Mail-Adresse",
+    "emailPlaceholder": "ihre@email.de",
+    "emailError": "Bitte eine gültige E-Mail-Adresse eingeben",
+    "password": "Passwort",
+    "passwordPlaceholder": "Mindestens 8 Zeichen",
+    "passwordError": "Passwort muss mindestens 8 Zeichen haben",
+    "passwordStrength": "Passwortstärke",
+    "passwordWeak": "Schwach",
+    "passwordFair": "Mittel",
+    "passwordGood": "Gut",
+    "passwordStrong": "Stark",
+    "language": "Sprache",
+    "languageDe": "Deutsch",
+    "languageEn": "Englisch",
+    "submitButton": "Weiter zur Risikobefragung",
+    "alreadyHaveAccount": "Bereits ein Konto?",
+    "loginLink": "Jetzt anmelden"
+  },
+  "questionnaire": {
+    "title": "Risikoprofil-Befragung",
+    "subtitle": "Bitte beantworten Sie alle 25 Fragen ehrlich",
+    "questionOf": "Frage {{current}} von {{total}}",
+    "dimensions": {
+      "tolerance": "Risikotoleranz",
+      "capacity": "Risikokapazität",
+      "knowledge": "Finanzwissen",
+      "horizon": "Anlagehorizont",
+      "bias": "Verhaltenstendenzen"
+    },
+    "optionLabels": ["a", "b", "c", "d"],
+    "previousButton": "Zurück",
+    "nextButton": "Weiter",
+    "submitButton": "Auswertung starten",
+    "loadingQuestions": "Fragen werden geladen...",
+    "errorLoadingQuestions": "Fehler beim Laden der Fragen. Bitte versuchen Sie es erneut.",
+    "retryButton": "Erneut versuchen"
+  },
+  "result": {
+    "title": "Ihr Risikoprofil",
+    "subtitle": "Basierend auf Ihren Antworten wurde folgendes Profil ermittelt",
+    "categories": {
+      "KONSERVATIV": "Konservativ",
+      "AUSGEWOGEN": "Ausgewogen",
+      "WACHSTUM": "Wachstum",
+      "SPEKULATIV": "Spekulativ"
+    },
+    "categoryDescriptions": {
+      "KONSERVATIV": "Sie bevorzugen Kapitalerhalt mit minimalem Risiko",
+      "AUSGEWOGEN": "Sie suchen eine Balance zwischen Wachstum und Sicherheit",
+      "WACHSTUM": "Sie akzeptieren höheres Risiko für überdurchschnittliche Renditen",
+      "SPEKULATIV": "Sie sind bereit, erhebliche Risiken für maximale Gewinne einzugehen"
+    },
+    "continuumScore": "Gesamt-Score",
+    "tScore": "T-Score",
+    "dimensions": {
+      "tolerance": "Risikotoleranz",
+      "capacity": "Risikokapazität",
+      "knowledge": "Finanzwissen",
+      "horizon": "Anlagehorizont",
+      "bias": "Verhaltenstendenzen"
+    },
+    "riskParams": {
+      "title": "Risikoparameter",
+      "maxPositionSize": "Max. Positionsgröße",
+      "kellyFraction": "Kelly-Fraction",
+      "maxDrawdownPerSession": "Max. Drawdown/Session",
+      "maxConsecutiveLosses": "Max. Verluste in Folge",
+      "volatilityTarget": "Volatilitätsziel"
+    },
+    "summaryTitle": "Zusammenfassung",
+    "maxLossTitle": "Verlustbeispiel",
+    "speedingWarning": "Achtung: Die Befragung wurde sehr schnell ausgefüllt. Für ein genaues Profil empfehlen wir eine erneute Durchführung.",
+    "riskWarning": "RISIKOHINWEIS: Trading mit dem BITCOIN4Traders Bot beinhaltet erhebliche Risiken. Sie können Ihr gesamtes eingesetztes Kapital verlieren. Vergangene Performance ist kein Indikator für zukünftige Ergebnisse. Dies stellt keine Finanzberatung im Sinne des WpHG dar. Alle Handelsentscheidungen liegen in Ihrer persönlichen Verantwortung.",
+    "consent1Label": "Ich verstehe, dass mein Risikoprofil {{category}} bedeutet, dass ich Trading-Risiken akzeptiere und diese meiner finanziellen Situation entsprechen.",
+    "consent2Label": "Ich habe die Risikowarnung gelesen und stimme zu, dass alle Handelsentscheidungen in meiner persönlichen Verantwortung liegen.",
+    "consentRequired": "Bitte bestätigen Sie beide Zustimmungen, um fortzufahren.",
+    "confirmButton": "Registrierung abschließen",
+    "confirmLoading": "Wird gespeichert...",
+    "assessedAt": "Bewertet am"
+  },
+  "success": {
+    "title": "Registrierung erfolgreich!",
+    "subtitle": "Ihr Konto wurde erfolgreich erstellt und Ihr Risikoprofil wurde gespeichert.",
+    "profileSaved": "Risikoprofil gespeichert",
+    "redirecting": "Sie werden in {{seconds}} Sekunden weitergeleitet...",
+    "goToLoginButton": "Jetzt anmelden",
+    "goToDashboardButton": "Zum Dashboard"
+  },
+  "errors": {
+    "submissionFailed": "Übermittlung fehlgeschlagen. Bitte versuchen Sie es erneut.",
+    "networkError": "Netzwerkfehler. Bitte überprüfen Sie Ihre Verbindung.",
+    "serverError": "Serverfehler. Bitte versuchen Sie es später erneut.",
+    "usernameExists": "Dieser Benutzername ist bereits vergeben.",
+    "emailExists": "Diese E-Mail-Adresse ist bereits registriert."
+  }
+}
