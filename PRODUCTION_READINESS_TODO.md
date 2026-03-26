@@ -22,10 +22,10 @@
 
 ## PHASE 2 — DIESE WOCHE
 
-- [ ] F-010: binance_ws_connector.py ListenKey Refresh 1800→1200s
-- [ ] F-031: requirements.txt torch Upper Bound `<3.0.0`
-- [ ] F-019: /api/trading/status Endpoint Auth hinzufügen
-- [ ] F-020: price_stream() asyncio.wait_for Timeout
+- [x] F-010: binance_ws_connector.py ListenKey Refresh 1800→1200s ✅
+- [x] F-031: requirements.txt torch Upper Bound `<3.0.0` ✅
+- [x] F-019: /api/trading/status Endpoint Auth hinzufügen ✅
+- [x] F-020: price_stream() asyncio.wait_for Timeout ✅
 - [ ] F-015: binance_ws_connector.py Reconnect Backoff
 
 ## PHASE 3 — NÄCHSTE WOCHE
@@ -55,6 +55,6 @@
 | Phase | Items | Erledigt |
 |-------|-------|---------|
 | Phase 1 (Sofort) | 11 | 11 ✅ |
-| Phase 2 (Diese Woche) | 5 | 0 |
+| Phase 2 (Diese Woche) | 5 | 4 ✅ |
 | Phase 3 (Nächste Woche) | 7 | 0 |
 | Phase 4 (Niedrig) | 7 | 0 |
