@@ -245,7 +245,10 @@ class CointegrationTest:
         k = X.shape[1]  # Number of parameters (2: intercept + slope)
 
         # Mean squared error: MSE = Σε²/(n-k)
-        mse = np.sum(residuals**2) / (n - k)
+        df = n - k
+        if df <= 0:
+            return np.nan, np.nan, False
+        mse = np.sum(residuals**2) / df
 
         # Variance-covariance matrix: Var(β) = MSE * (X'X)^{-1}
         # Use pseudoinverse for numerical stability with ill-conditioned matrices
@@ -253,7 +256,10 @@ class CointegrationTest:
 
         # ADF t-statistic: t_β = β[1] / SE(β[1])
         # More negative = more evidence against unit root
-        adf_stat = beta[1] / np.sqrt(var_beta[1, 1])
+        var_denom = var_beta[1, 1]
+        if var_denom <= 0:
+            return np.nan, np.nan, False
+        adf_stat = beta[1] / np.sqrt(var_denom)
 
         # Approximate p-value based on critical values
         # In practice, use statsmodels for exact p-values from Dickey-Fuller distribution

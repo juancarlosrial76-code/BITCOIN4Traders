@@ -433,10 +433,11 @@ class KalmanFilter1D:
         # Pull the state estimate toward the observation
         self.x = self.x + K * innovation
 
-        # Update covariance: P = (1 - K*H)*P
-        # Uncertainty decreases after incorporating observation
-        # Using Joseph form: (I-KH)P(I-KH)' + KRK' for numerical stability
-        self.P = (1 - K * self.config.H) * self.P
+        # Update covariance using Joseph form: P = (I-KH)P(I-KH)' + KRK'
+        # More numerically stable than P = (1-KH)P — prevents negative covariance from rounding
+        I_KH = 1 - K * self.config.H
+        self.P = I_KH * self.P * I_KH + K * self.config.R * K
+        self.P = max(self.P, 0.0)  # Guarantee non-negative variance
 
         # Store history for analysis
         self.state_history.append(self.x)
@@ -970,7 +971,10 @@ def detect_price_jumps(prices: np.ndarray, threshold: float = 3.0) -> np.ndarray
         residuals.append(residual)
 
     residuals = np.array(residuals)
-    z_scores = np.abs((residuals - np.mean(residuals)) / np.std(residuals))
+    residual_std = np.std(residuals)
+    if residual_std < 1e-10:
+        return np.zeros(len(residuals), dtype=bool)  # Constant residuals — no outliers
+    z_scores = np.abs((residuals - np.mean(residuals)) / residual_std)
 
     return z_scores > threshold
 

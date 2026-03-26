@@ -284,18 +284,14 @@ class MultiTimeframeAnalyzer:
             df["close"].ewm(span=26).mean().iloc[-1]
         )  # span=26 → α = 2/(26+1) ≈ 0.074
 
-        # Calculate RSI (Wilder's method, 14-period)
-        delta = df["close"].diff()  # bar-to-bar price changes
-        gain = (
-            (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        )  # average gain over 14 bars
-        loss = (
-            (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        )  # average loss (positive value)
-        rs = gain / loss  # relative strength: ratio of avg gain to avg loss
-        rsi = (100 - (100 / (1 + rs))).iloc[
-            -1
-        ]  # RSI = 100 - 100/(1+RS); oscillates 0–100
+        # Calculate RSI using Wilder's EWM smoothing (consistent with feature_engine.py)
+        delta = df["close"].diff()
+        gain = delta.where(delta > 0, 0.0)
+        loss = -delta.where(delta < 0, 0.0)
+        alpha = 1.0 / 14
+        avg_gain = gain.ewm(alpha=alpha, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=alpha, adjust=False).mean()
+        rsi = (100 - (100 / (1 + avg_gain / (avg_loss + 1e-8)))).iloc[-1]
 
         # MACD: momentum indicator using difference between fast and slow EMA
         ema_12 = df["close"].ewm(span=12).mean()
@@ -523,13 +519,14 @@ class MarketStructureAnalyzer:
         swing_highs = []
         swing_lows = []
 
+        _tol = 1e-8  # Float tolerance — avoid false negatives from rounding
         for i in range(5, len(highs) - 5):
             # Swing high
-            if highs[i] == max(highs[i - 5 : i + 6]):
+            if abs(highs[i] - max(highs[i - 5 : i + 6])) < _tol:
                 swing_highs.append((i, highs[i]))
 
             # Swing low
-            if lows[i] == min(lows[i - 5 : i + 6]):
+            if abs(lows[i] - min(lows[i - 5 : i + 6])) < _tol:
                 swing_lows.append((i, lows[i]))
 
         # Analyze structure

@@ -699,15 +699,12 @@ class GaussianActor(nn.Module):
             torch.tanh(x_t) * self.max_action
         )  # Squash to [-max_action, max_action]
 
-        # Compute log probability with tanh correction (change of variables)
+        # Compute log probability with tanh Jacobian correction
+        # Standard form: log π(a|s) = log π(u|s) - Σ log(1 - tanh²(u))
+        # Applying correction before summing across action dimensions
         log_prob = normal.log_prob(x_t)
-        log_prob -= torch.log(
-            self.max_action * (1 - action.pow(2) / self.max_action**2)
-            + 1e-6  # Jacobian correction for tanh squashing
-        )
-        log_prob = log_prob.sum(
-            1, keepdim=True
-        )  # Sum log-probs across action dimensions
+        log_prob -= torch.log(1 - torch.tanh(x_t).pow(2) + 1e-6)
+        log_prob = log_prob.sum(1, keepdim=True)
 
         return action, log_prob, mean
 
@@ -773,6 +770,7 @@ class ReplayBuffer:
 
     def sample(self, batch_size: int):
         """Sample random batch."""
+        batch_size = min(batch_size, len(self.buffer))  # Guard: can't sample more than available
         indices = np.random.choice(len(self.buffer), batch_size, replace=False)
         states, actions, rewards, next_states, dones = zip(
             *[self.buffer[i] for i in indices]

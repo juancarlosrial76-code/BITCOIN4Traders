@@ -396,7 +396,11 @@ class GARCHModel:
             raise ValueError("No variance history available")
 
         # Long-run (unconditional) variance: ω / (1 - α - β)
-        long_run_var = self.omega / (1 - self.alpha - self.beta)
+        persistence = self.alpha + self.beta
+        if persistence >= 1.0 - 1e-10:
+            long_run_var = self.omega / 1e-10  # Integrated GARCH — no finite long-run variance
+        else:
+            long_run_var = self.omega / (1 - persistence)
 
         # Most recent conditional variance (starting point for forecast)
         current_var = self.sigma_history[-1]

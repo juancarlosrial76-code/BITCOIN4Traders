@@ -209,6 +209,8 @@ class OrnsteinUhlenbeckProcess:
         a, b = beta  # a = intercept, b = slope
 
         # Extract OU parameters from OLS coefficients
+        if dt <= 0:
+            raise ValueError(f"dt must be positive, got {dt}")
         theta = -b / dt  # Mean-reversion speed: θ = -b/dt
         mu = (
             a / (theta * dt) if theta > 0 else np.mean(x)

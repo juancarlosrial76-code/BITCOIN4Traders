@@ -208,14 +208,19 @@ class HurstExponent:
         Returns:
             Hurst exponent
         """
-        lags = range(2, min(self.max_lag, len(ts) // 4))
+        if len(ts) < 8:
+            return 0.5  # Neutral fallback — too short for reliable estimate
+        lags = list(range(2, min(self.max_lag, len(ts) // 4)))
+        if len(lags) < 2:
+            return 0.5
         # τ(lag) = std of lagged differences; for fractional Brownian motion: τ ~ lag^H
         # FIXED: removed erroneous np.sqrt() wrapper — std() is already the correct τ
         tau = [np.std(np.subtract(ts[lag:], ts[:-lag]), ddof=1) for lag in lags]
 
         # Fit log(tau) = H * log(lag) + const on log-log plot
         # slope directly equals H (no factor-of-2 correction needed)
-        poly = np.polyfit(np.log(lags), np.log(tau), 1)
+        tau_safe = np.maximum(tau, 1e-12)  # Guard against log(0) when series is flat
+        poly = np.polyfit(np.log(lags), np.log(tau_safe), 1)
 
         return poly[0]  # Hurst exponent = slope of log-log regression
 

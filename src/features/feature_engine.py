@@ -310,9 +310,9 @@ class FeatureEngine:
         self.is_fitted = False
 
         # Annualization factor: number of periods per year for this timeframe.
-        # Formula: 252 trading days × (1440 min/day) / timeframe_minutes
+        # Crypto trades 24/7/365 — use 365 days, not 252 (stock market trading days)
         tf_min = getattr(config, "timeframe_minutes", 60)
-        self._ann_factor: float = (252 * 1440) / tf_min
+        self._ann_factor: float = (365 * 1440) / tf_min
 
         # Initialize scaler
         self.scaler = self._init_scaler()
@@ -523,6 +523,9 @@ class FeatureEngine:
             self._live_state: Dict[str, Dict] = {}
 
         p = float(price)
+        if not np.isfinite(p):
+            logger.warning("transform_single: non-finite price %s for %s, skipping", price, symbol)
+            return None
 
         if symbol not in self._live_state:
             self._live_state[symbol] = {
@@ -568,7 +571,7 @@ class FeatureEngine:
 
         # Log Return
         prev = st["prices"][-2] if len(st["prices"]) >= 2 else p
-        log_ret = float(np.log(p / prev + 1e-10))
+        log_ret = float(np.log(p / (prev + 1e-10)))  # epsilon guards against prev=0, not the ratio
 
         # Volatility (EWM variance approximates rolling std)
         vol20 = float(np.sqrt(max(st["ewvar20"], 0.0)) * np.sqrt(self._ann_factor))
@@ -1011,13 +1014,10 @@ class FeatureEngine:
         """
         df = df.copy()
 
-        # Use training statistics if available (for transform)
-        if self.is_fitted and "ou_mean" in self.train_stats:
-            ou_mean = self.train_stats["ou_mean"]
-            ou_std = self.train_stats["ou_std"]
-        else:
-            ou_mean = df["rolling_mean"]
-            ou_std = df["rolling_std"]
+        # Always use rolling columns — consistent between fit and transform.
+        # Using frozen train_stats caused train/live divergence when distribution shifted.
+        ou_mean = df["rolling_mean"]
+        ou_std = df["rolling_std"]
 
         # OU score: z-score of price vs mean (positive=above mean → sell signal, negative=below → buy)
         df["ou_score"] = (df["close"] - ou_mean) / (
@@ -1082,7 +1082,7 @@ class FeatureEngine:
             df = df.iloc[max_window:]
 
         elif self.config.dropna_strategy == "forward_fill":
-            df = df.ffill()  # Fix #9: fillna(method='ffill') deprecated in Pandas 2.x
+            df = df.ffill().bfill()  # bfill fills leading NaNs that ffill misses (first row)
 
         elif self.config.dropna_strategy == "drop_all":
             df = df.dropna()
