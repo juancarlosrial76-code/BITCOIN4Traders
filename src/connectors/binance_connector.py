@@ -58,6 +58,8 @@ from decimal import Decimal
 import logging
 from loguru import logger
 
+from src.config import get_binance_credentials
+
 # Try to import Binance libraries
 try:
     from binance.client import Client
@@ -292,14 +294,16 @@ class BinanceConnector:
                 futures=True
             )
         """
-        # Get credentials from environment if not provided
-        self.api_key = api_key or os.getenv("BINANCE_API_KEY")
-        self.api_secret = api_secret or os.getenv("BINANCE_API_SECRET")
+        # Get credentials from Secrets Manager (Vault → AWS → Environment)
+        env_api_key, env_api_secret = get_binance_credentials()
+        self.api_key = api_key or env_api_key
+        self.api_secret = api_secret or env_api_secret
 
         if not self.api_key or not self.api_secret:
             raise ValueError(
                 "API key and secret required. "
-                "Set BINANCE_API_KEY and BINANCE_API_SECRET environment variables."
+                "Set BINANCE_API_KEY and BINANCE_API_SECRET environment variables "
+                "or use HashiCorp Vault / AWS Secrets Manager."
             )
 
         self.testnet = testnet

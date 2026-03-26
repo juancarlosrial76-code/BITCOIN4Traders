@@ -18,7 +18,7 @@ Principle: No crash = Pass. Additionally, values are checked for plausibility.
 import sys
 import os
 
-# Projekt-Root im Pfad
+# Project root in path
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, _ROOT)
 sys.path.insert(0, os.path.join(_ROOT, "src"))
@@ -92,7 +92,7 @@ class TestHurstFeature:
     """Tests for the Hurst Exponent as feature in the FeatureEngine."""
 
     def test_hurst_module_direct(self):
-        """HurstExponent Modul direkt testen."""
+        """Test HurstExponent module directly."""
         from src.math_tools.hurst_exponent import HurstExponent
 
         calc = HurstExponent(max_lag=50)
@@ -127,7 +127,7 @@ class TestHurstFeature:
         assert -0.5 < h_rw < 2.0, f"Random walk Hurst unreasonable: {h_rw}"
 
     def test_feature_engine_hurst_column(self):
-        """FeatureEngine sollte hurst_100 Spalte produzieren."""
+        """FeatureEngine should produce a hurst_100 column."""
         from src.features.feature_engine import FeatureEngine, FeatureConfig
         from pathlib import Path
 
@@ -146,20 +146,20 @@ class TestHurstFeature:
         engine = FeatureEngine(config)
         features = engine.fit_transform(df)
 
-        assert "hurst_100" in features.columns, (
-            f"hurst_100 not in features: {list(features.columns)}"
-        )
+        assert (
+            "hurst_100" in features.columns
+        ), f"hurst_100 not in features: {list(features.columns)}"
         hurst_vals = features["hurst_100"].dropna()
         assert len(hurst_vals) > 0, "hurst_100 is all NaN"
-        assert hurst_vals.between(0.0, 1.0).all(), (
-            f"Hurst values out of [0,1]: min={hurst_vals.min():.3f}, max={hurst_vals.max():.3f}"
-        )
+        assert hurst_vals.between(
+            0.0, 1.0
+        ).all(), f"Hurst values out of [0,1]: min={hurst_vals.min():.3f}, max={hurst_vals.max():.3f}"
         print(f"  hurst_100 in features: OK")
         print(f"  Hurst range: [{hurst_vals.min():.3f}, {hurst_vals.max():.3f}]")
         print(f"  Hurst mean:  {hurst_vals.mean():.3f}")
 
     def test_hurst_in_feature_names(self):
-        """get_feature_names() sollte hurst_100 enthalten."""
+        """get_feature_names() should contain hurst_100."""
         from src.features.feature_engine import FeatureEngine, FeatureConfig
         from pathlib import Path
 
@@ -180,7 +180,7 @@ class TestHurstFeature:
         print(f"  Feature names: {names}")
 
     def test_hurst_no_nan_after_fillna(self):
-        """Nach fit_transform() sollten keine NaN in hurst_100 sein."""
+        """After fit_transform() there should be no NaN in hurst_100."""
         from src.features.feature_engine import FeatureEngine, FeatureConfig
         from pathlib import Path
 
@@ -200,7 +200,9 @@ class TestHurstFeature:
         features = engine.fit_transform(df)
 
         nan_count = features["hurst_100"].isna().sum()
-        assert nan_count == 0, f"hurst_100 has {nan_count} NaN values after fit_transform"
+        assert (
+            nan_count == 0
+        ), f"hurst_100 has {nan_count} NaN values after fit_transform"
         print(f"  NaN count in hurst_100: {nan_count} ✓")
 
 
@@ -213,7 +215,7 @@ class TestHMMRegimeProbabilities:
     """Tests for HMM Regime Probabilities as observation features."""
 
     def test_hmm_detector_fit_predict(self):
-        """HMMRegimeDetector: fit + predict_proba ohne Crash."""
+        """HMMRegimeDetector: fit + predict_proba without crash."""
         from src.math_tools.hmm_regime import HMMRegimeDetector, prepare_hmm_features
 
         df = _make_price_df(n=500)
@@ -284,14 +286,14 @@ class TestHMMRegimeProbabilities:
         print(f"  Actual obs dim: {actual_dim}")
         print(f"  Observation space shape: {env.observation_space.shape}")
 
-        assert actual_dim == env.observation_space.shape[0], (
-            f"obs dim {actual_dim} != observation_space {env.observation_space.shape[0]}"
-        )
+        assert (
+            actual_dim == env.observation_space.shape[0]
+        ), f"obs dim {actual_dim} != observation_space {env.observation_space.shape[0]}"
         # HMM probs at the end should sum roughly to 1
         hmm_probs = obs[-3:]
-        assert abs(float(hmm_probs.sum()) - 1.0) < 0.1, (
-            f"HMM probs don't sum to ~1: {hmm_probs} (sum={hmm_probs.sum():.3f})"
-        )
+        assert (
+            abs(float(hmm_probs.sum()) - 1.0) < 0.1
+        ), f"HMM probs don't sum to ~1: {hmm_probs} (sum={hmm_probs.sum():.3f})"
         print(f"  HMM probs in obs[-3:]: {hmm_probs.round(3)} ✓")
 
     def test_hmm_fallback_flat_priors(self):
@@ -336,24 +338,24 @@ class TestHMMRegimeProbabilities:
 
 
 class TestAsymmetricDrawdownReward:
-    """Tests für den asymmetrischen quadratischen Drawdown-Penalty."""
+    """Tests for the asymmetric quadratic drawdown penalty."""
 
     def test_quadratic_penalty_stronger_at_large_drawdowns(self):
         """
-        Quadratischer Penalty (lambda=5 * dd^2) soll bei SEHR großem Drawdown
-        stärker skalieren als bei kleinem Drawdown (konvex = beschleunigend).
+        Quadratic penalty (lambda=5 * dd^2) should scale more steeply at VERY large
+        drawdowns than at small drawdowns (convex = accelerating).
 
-        Mathematisch: d/d(dd) [5 * dd^2] = 10*dd  → wächst linear mit DD
-        vs. altem    d/d(dd) [3 * dd^1.5] = 4.5*sqrt(dd) → wächst nur mit sqrt
+        Mathematically: d/d(dd) [5 * dd^2] = 10*dd  → grows linearly with DD
+        vs. old         d/d(dd) [3 * dd^1.5] = 4.5*sqrt(dd) → grows only with sqrt
 
-        Bei dd=0.40 (40%): 5*0.16=0.80 vs 3*0.253=0.759 → quad größer
+        At dd=0.40 (40%): 5*0.16=0.80 vs 3*0.253=0.759 → quad larger
         """
-        # Berechne Crossover-Punkt: 5*dd^2 = 3*dd^1.5  → 5*dd^0.5 = 3 → dd = (3/5)^2 = 0.36
-        # Oberhalb 36% Drawdown ist quad(lambda=5) größer als old(lambda=3)
+        # Compute crossover point: 5*dd^2 = 3*dd^1.5  → 5*dd^0.5 = 3 → dd = (3/5)^2 = 0.36
+        # Above 36% drawdown quad(lambda=5) is larger than old(lambda=3)
         dd_crossover = (3.0 / 5.0) ** 2  # ≈ 0.36
 
-        dd_small = 0.05  # 5% — quad soll hier KLEINER sein (toleranter)
-        dd_large = 0.45  # 45% — quad soll hier GRÖSSER sein (härter)
+        dd_small = 0.05  # 5% — quad should be SMALLER here (more tolerant)
+        dd_large = 0.45  # 45% — quad should be LARGER here (harsher)
 
         penalty_quad_small = 5.0 * (dd_small**2.0)
         penalty_old_small = 3.0 * (dd_small**1.5)
@@ -381,20 +383,20 @@ class TestAsymmetricDrawdownReward:
         )
         print(f"  Asymmetric penalty: tolerant at small DD, harsh at large DD ✓")
 
-        # Simuliere einen tiefen Drawdown: equity fällt von 10000 auf 7000 (30% DD)
+        # Simulate a deep drawdown: equity drops from 10000 to 7000 (30% DD)
         from src.reward.antibias_rewards import RegimeAwareReward
 
         reward_fn = RegimeAwareReward(window=20, lambda_draw=5.0)
         reward_fn.reset()
         reward_fn._peak = 10000.0
 
-        # Kleiner Drawdown: 2%
+        # Small drawdown: 2%
         equity_small_dd = 10000.0 * 0.98
         dd_small = 0.02
         penalty_quad_small = 5.0 * (dd_small**2.0)
         penalty_old_small = 3.0 * (dd_small**1.5)
         print(f"  DD=2%:  quad={penalty_quad_small:.5f}  old={penalty_old_small:.5f}")
-        # Quadratisch sollte bei kleinem DD kleiner sein
+        # Quadratic should be smaller at small DD
         assert penalty_quad_small < penalty_old_small, (
             f"Quad penalty should be smaller at small DD: "
             f"quad={penalty_quad_small:.5f}, old={penalty_old_small:.5f}"
@@ -407,14 +409,14 @@ class TestAsymmetricDrawdownReward:
         penalty_quad_large = 5.0 * (dd_large**2.0)
         penalty_old_large = 3.0 * (dd_large**1.5)
         print(f"  DD=45%: quad={penalty_quad_large:.5f}  old={penalty_old_large:.5f}")
-        # Quadratisch sollte bei DD > 36% (Crossover) größer sein
+        # Quadratic should be larger at DD > 36% (crossover)
         assert penalty_quad_large > penalty_old_large, (
             f"Quad penalty should be larger at large DD=45%: "
             f"quad={penalty_quad_large:.5f}, old={penalty_old_large:.5f}"
         )
 
     def test_reward_fn_no_nan_no_crash(self):
-        """RegimeAwareReward.compute() sollte keine NaN oder Crash produzieren."""
+        """RegimeAwareReward.compute() should not produce NaN or crash."""
         from src.reward.antibias_rewards import RegimeAwareReward
 
         reward_fn = RegimeAwareReward(window=20, lambda_draw=5.0)
@@ -440,7 +442,7 @@ class TestAsymmetricDrawdownReward:
         print(f"  200 steps: no crash, all rewards in [-5, 5] ✓")
 
     def test_reward_penalises_deep_drawdown_more(self):
-        """Tieferer Drawdown sollte zu niedrigerem Reward führen."""
+        """Deeper drawdown should lead to a lower reward."""
         from src.reward.antibias_rewards import RegimeAwareReward
 
         def get_reward_at_equity(equity_val, peak=10000.0):
@@ -478,9 +480,9 @@ class TestAsymmetricDrawdownReward:
         print(f"  Reward at 2%  DD: {r_small_dd:.4f}")
         print(f"  Reward at 25% DD: {r_large_dd:.4f}")
 
-        assert r_large_dd < r_small_dd, (
-            f"Large DD should give lower reward: large={r_large_dd:.4f}, small={r_small_dd:.4f}"
-        )
+        assert (
+            r_large_dd < r_small_dd
+        ), f"Large DD should give lower reward: large={r_large_dd:.4f}, small={r_small_dd:.4f}"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -492,7 +494,7 @@ class TestGARCHFeature:
     """Tests for the GARCH Volatility Forecast as feature."""
 
     def test_garch_model_fits_and_forecasts(self):
-        """GARCHModel.fit() + forecast() ohne Crash."""
+        """GARCHModel.fit() + forecast() without crash."""
         from src.math_tools.garch_models import GARCHModel
 
         np.random.seed(42)
@@ -541,17 +543,17 @@ class TestGARCHFeature:
             fc_crash = model_crash.forecast(1)[0]
             print(f"  Vol forecast normal: {fc_normal:.6f}")
             print(f"  Vol forecast after crash: {fc_crash:.6f}")
-            assert fc_crash > fc_normal, (
-                f"GARCH should forecast higher vol after crash: {fc_crash:.6f} vs {fc_normal:.6f}"
-            )
+            assert (
+                fc_crash > fc_normal
+            ), f"GARCH should forecast higher vol after crash: {fc_crash:.6f} vs {fc_normal:.6f}"
 
     def test_garch_feature_in_engine_when_enabled(self):
-        """FeatureEngine mit use_garch_feature=True soll garch_vol_forecast produzieren."""
+        """FeatureEngine with use_garch_feature=True should produce garch_vol_forecast."""
         from src.features.feature_engine import FeatureEngine, FeatureConfig
         from pathlib import Path
 
         df = _make_price_df(n=300)
-        # Erstelle FeatureConfig mit use_garch_feature=True
+        # Create FeatureConfig with use_garch_feature=True
         config = FeatureConfig(
             volatility_window=20,
             ou_window=20,
@@ -563,7 +565,7 @@ class TestGARCHFeature:
             dropna_strategy="rolling",
             min_valid_rows=50,
         )
-        # Setze use_garch_feature nachträglich (da FeatureConfig kein Feld dafür hat)
+        # Set use_garch_feature after construction (FeatureConfig has no field for it)
         config.use_garch_feature = True
 
         engine = FeatureEngine(config)
@@ -575,13 +577,13 @@ class TestGARCHFeature:
         )
         vals = features["garch_vol_forecast"].dropna()
         assert len(vals) > 0
-        assert vals.between(0.0, 5.0).all(), (
-            f"GARCH forecast out of [0,5] range: min={vals.min():.3f}, max={vals.max():.3f}"
-        )
+        assert vals.between(
+            0.0, 5.0
+        ).all(), f"GARCH forecast out of [0,5] range: min={vals.min():.3f}, max={vals.max():.3f}"
         print(f"  garch_vol_forecast: OK, range=[{vals.min():.3f}, {vals.max():.3f}]")
 
     def test_garch_feature_absent_when_disabled(self):
-        """FeatureEngine mit use_garch_feature=False (default) hat KEIN garch_vol_forecast."""
+        """FeatureEngine with use_garch_feature=False (default) should have NO garch_vol_forecast."""
         from src.features.feature_engine import FeatureEngine, FeatureConfig
         from pathlib import Path
 
@@ -597,14 +599,14 @@ class TestGARCHFeature:
             dropna_strategy="rolling",
             min_valid_rows=50,
         )
-        # use_garch_feature ist default False
+        # use_garch_feature is False by default
 
         engine = FeatureEngine(config)
         features = engine.fit_transform(df)
 
-        assert "garch_vol_forecast" not in features.columns, (
-            "garch_vol_forecast should NOT be in features when disabled"
-        )
+        assert (
+            "garch_vol_forecast" not in features.columns
+        ), "garch_vol_forecast should NOT be in features when disabled"
         print(f"  garch_vol_forecast absent (disabled): OK ✓")
 
 
@@ -614,10 +616,10 @@ class TestGARCHFeature:
 
 
 class TestDualHeadActor:
-    """Tests für den Dual-Head Actor (Direction × Sizing)."""
+    """Tests for the Dual-Head Actor (Direction × Sizing)."""
 
     def test_dual_head_actor_forward_shape(self):
-        """DualHeadActorNetwork forward pass: output hat richtige Form."""
+        """DualHeadActorNetwork forward pass: output has the correct shape."""
         from src.agents.ppo_agent import DualHeadActorNetwork, PPOConfig
 
         config = PPOConfig(
@@ -634,17 +636,20 @@ class TestDualHeadActor:
         state = torch.randn(4, 24)  # batch of 4
         dist, hidden = actor(state)
 
-        assert dist.probs.shape == (4, 7), f"Expected probs shape (4, 7), got {dist.probs.shape}"
+        assert dist.probs.shape == (
+            4,
+            7,
+        ), f"Expected probs shape (4, 7), got {dist.probs.shape}"
         # Each row should sum to 1
         row_sums = dist.probs.sum(dim=-1)
-        assert torch.allclose(row_sums, torch.ones(4), atol=1e-5), (
-            f"Probs don't sum to 1: {row_sums}"
-        )
+        assert torch.allclose(
+            row_sums, torch.ones(4), atol=1e-5
+        ), f"Probs don't sum to 1: {row_sums}"
         print(f"  DualHead probs shape: {dist.probs.shape} ✓")
         print(f"  Sample action probs: {dist.probs[0].detach().numpy().round(3)}")
 
     def test_dual_head_produces_all_7_actions(self):
-        """DualHead kann alle 7 Actions produzieren (keine Action hat Prob=0 immer)."""
+        """DualHead can produce all 7 actions (no action always has Prob=0)."""
         from src.agents.ppo_agent import DualHeadActorNetwork, PPOConfig
 
         config = PPOConfig(
@@ -672,16 +677,18 @@ class TestDualHeadActor:
         # — its mapping is empty by design (falls through to action 4 catch-all).
         # So we allow up to 2 actions to have near-zero prob at init.
         n_zero_actions = (mean_probs < 1e-4).sum().item()
-        assert n_zero_actions <= 2, (
-            f"Too many near-zero probability actions ({n_zero_actions}): {mean_probs}"
-        )
+        assert (
+            n_zero_actions <= 2
+        ), f"Too many near-zero probability actions ({n_zero_actions}): {mean_probs}"
         # At least 5 actions should have meaningful probability
         n_active = (mean_probs > 1e-3).sum().item()
-        assert n_active >= 5, f"Only {n_active} actions have meaningful probability: {mean_probs}"
+        assert (
+            n_active >= 5
+        ), f"Only {n_active} actions have meaningful probability: {mean_probs}"
         print(f"  {n_active}/7 actions with mean prob > 0.001 ✓")
 
     def test_dual_head_samples_valid_actions(self):
-        """DualHead.sample() sollte valide Actions (0-6) zurückgeben."""
+        """DualHead.sample() should return valid actions (0-6)."""
         from src.agents.ppo_agent import DualHeadActorNetwork, PPOConfig
 
         config = PPOConfig(
@@ -706,7 +713,7 @@ class TestDualHeadActor:
         assert len(unique_actions) >= 3, f"Too few unique actions: {unique_actions}"
 
     def test_ppo_agent_uses_dual_head_when_configured(self):
-        """PPOAgent soll DualHeadActorNetwork nehmen wenn use_dual_head=True."""
+        """PPOAgent should use DualHeadActorNetwork when use_dual_head=True."""
         from src.agents.ppo_agent import PPOAgent, PPOConfig, DualHeadActorNetwork
 
         config = PPOConfig(
@@ -720,13 +727,13 @@ class TestDualHeadActor:
         )
         agent = PPOAgent(config, device="cpu")
 
-        assert isinstance(agent.actor, DualHeadActorNetwork), (
-            f"Expected DualHeadActorNetwork, got {type(agent.actor)}"
-        )
+        assert isinstance(
+            agent.actor, DualHeadActorNetwork
+        ), f"Expected DualHeadActorNetwork, got {type(agent.actor)}"
         print(f"  PPOAgent.actor type: {type(agent.actor).__name__} ✓")
 
     def test_ppo_agent_single_head_when_not_configured(self):
-        """PPOAgent soll StandardActorNetwork nehmen wenn use_dual_head=False."""
+        """PPOAgent should use StandardActorNetwork when use_dual_head=False."""
         from src.agents.ppo_agent import PPOAgent, PPOConfig, ActorNetwork
 
         config = PPOConfig(
@@ -740,13 +747,13 @@ class TestDualHeadActor:
         )
         agent = PPOAgent(config, device="cpu")
 
-        assert isinstance(agent.actor, ActorNetwork), (
-            f"Expected ActorNetwork, got {type(agent.actor)}"
-        )
+        assert isinstance(
+            agent.actor, ActorNetwork
+        ), f"Expected ActorNetwork, got {type(agent.actor)}"
         print(f"  PPOAgent.actor type: {type(agent.actor).__name__} ✓")
 
     def test_dual_head_gradient_flows(self):
-        """Beide Heads sollten Gradienten erhalten (keine dead heads)."""
+        """Both heads should receive gradients (no dead heads)."""
         from src.agents.ppo_agent import DualHeadActorNetwork, PPOConfig
 
         config = PPOConfig(
@@ -786,12 +793,12 @@ class TestDualHeadActor:
 
 
 class TestIntegration:
-    """Integration-Tests: Alle Features zusammen im echten Trainings-Flow."""
+    """Integration tests: all features together in a real training flow."""
 
     def test_full_pipeline_with_all_features(self):
         """
-        Vollständiger Pipeline-Test: FeatureEngine → Env → PPOAgent (DualHead)
-        Prüft ob alle Features nahtlos zusammenarbeiten.
+        Full pipeline test: FeatureEngine → Env → PPOAgent (DualHead)
+        Checks whether all features work together seamlessly.
         """
         from src.features.feature_engine import FeatureEngine, FeatureConfig
         from src.environment.config_integrated_env import ConfigIntegratedTradingEnv
@@ -799,7 +806,7 @@ class TestIntegration:
         from src.agents.ppo_agent import PPOAgent, PPOConfig
         from pathlib import Path
 
-        # 1. Feature Engineering mit Hurst
+        # 1. Feature engineering with Hurst
         price_df = _make_price_df(n=300)
         feat_config = FeatureConfig(
             volatility_window=20,
@@ -821,7 +828,7 @@ class TestIntegration:
         assert "hurst_100" in features.columns
         print(f"  Features: {list(features.columns)}")
 
-        # 2. Environment mit HMM
+        # 2. Environment with HMM
         env_config = EnvironmentConfig()
         env = ConfigIntegratedTradingEnv(price_df, features, env_config)
         obs, info = env.reset()
@@ -829,7 +836,7 @@ class TestIntegration:
         state_dim = len(obs)
         print(f"  State dim: {state_dim} (features={len(features.columns)}, +9, +3HMM)")
 
-        # 3. PPOAgent mit DualHead
+        # 3. PPOAgent with DualHead
         ppo_config = PPOConfig(
             state_dim=state_dim,
             hidden_dim=64,
@@ -841,7 +848,7 @@ class TestIntegration:
         )
         agent = PPOAgent(ppo_config, device="cpu")
 
-        # 4. Kurze Rollout-Schleife (10 Steps)
+        # 4. Short rollout loop (10 steps)
         hidden = agent.get_initial_hidden_state()
         for step in range(10):
             action, log_prob, value, hidden = agent.select_action(obs, hidden)
@@ -857,9 +864,9 @@ class TestIntegration:
 
     def test_state_dim_consistency(self):
         """
-        State-Dim muss konsistent sein zwischen:
+        State dim must be consistent between:
         - env.observation_space.shape[0]
-        - len(obs) nach reset()
+        - len(obs) after reset()
         - PPOConfig.state_dim
         """
         from src.features.feature_engine import FeatureEngine, FeatureConfig
@@ -893,14 +900,16 @@ class TestIntegration:
         space_dim = env.observation_space.shape[0]
         obs_dim = len(obs)
 
-        assert space_dim == obs_dim, f"observation_space ({space_dim}) != obs ({obs_dim})"
+        assert (
+            space_dim == obs_dim
+        ), f"observation_space ({space_dim}) != obs ({obs_dim})"
         print(f"  observation_space.shape[0] = {space_dim}")
         print(f"  len(obs) = {obs_dim}")
         print(f"  CONSISTENT ✓")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Main runner (ohne pytest)
+# Main runner (without pytest)
 # ──────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":

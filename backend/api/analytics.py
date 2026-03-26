@@ -48,7 +48,7 @@ def _load_champion_stats() -> dict[str, Any]:
     if not CHAMPION_PKL.exists():
         return {}
     try:
-        from darwin_engine import (
+        from src.math_tools.archive.darwin_legacy import (
             ChampionPersistence,
             generate_synthetic_btc,
             FitnessEvaluator,
@@ -63,7 +63,7 @@ def _load_champion_stats() -> dict[str, Any]:
             return {}
 
         try:
-            from darwin_engine import load_live_data
+            from src.math_tools.archive.darwin_legacy import load_live_data
 
             df = load_live_data(symbol="BTC/USDT", timeframe="1h", limit=500)
         except Exception:
@@ -155,7 +155,7 @@ async def get_metrics():
             "avgHoldingPeriod": wfv.get("avg_holding_period", 0),
             "wfv_oos_return": wfv.get("avg_oos_return", None),
             "wfv_degradation": wfv.get("degradation", None),
-            "data_source": "darwin_engine_champion",
+            "data_source": "src.math_tools.archive.darwin_legacy_champion",
         }
 
     if meta:

@@ -1,25 +1,25 @@
 """
-Module A — Lokale Ausführungs-Engine mit Ably-Bridge
-=====================================================
-Läuft auf dem lokalen Rechner (24/7).
+Module A — Local Execution Engine with Ably Bridge
+===================================================
+Runs on the local machine (24/7).
 
-Aufgaben:
-  1. Marktdaten von Exchange holen (CCXT, public endpoint)
-  2. Features berechnen
-  3. Marktdaten → Ably → Colab publishen (bt4t/market/BTCUSDT)
-  4. Signale von Colab abonnieren (bt4t/signals)
-  5. Signale validieren (Staleness, Confidence)
-  6. Paper-Order ausführen
-  7. Portfolio-State → Ably publishen (bt4t/portfolio/state)
-  8. Heartbeat von Colab überwachen → bei Timeout pausieren
+Tasks:
+  1. Fetch market data from exchange (CCXT, public endpoint)
+  2. Compute features
+  3. Publish market data → Ably → Colab (bt4t/market/BTCUSDT)
+  4. Subscribe to signals from Colab (bt4t/signals)
+  5. Validate signals (staleness, confidence)
+  6. Execute paper order
+  7. Publish portfolio state → Ably (bt4t/portfolio/state)
+  8. Monitor heartbeat from Colab → pause on timeout
 
-Voraussetzungen:
+Prerequisites:
   pip install ably ccxt loguru
 
-Umgebungsvariablen (.env):
+Environment variables (.env):
   ABLY_API_KEY=your_ably_root_key   # https://ably.com → free tier
 
-Verwendung:
+Usage:
   python colab_bridge/module_a_local.py
   python colab_bridge/module_a_local.py --symbol ETHUSDT --interval 15
 """
@@ -39,7 +39,7 @@ from typing import Optional
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
-# ── Abhängigkeiten ────────────────────────────────────────────────────────────
+# ── Dependencies ──────────────────────────────────────────────────────────────
 try:
     from ably import AblyRealtime
 
@@ -72,29 +72,29 @@ logger.add(
     LOG_DIR / "module_a.log", rotation="20 MB", retention="7 days", level="DEBUG"
 )
 
-# ── Kanal-Namen (müssen mit Module B übereinstimmen) ─────────────────────────
-CH_MARKET = "bt4t:market:{symbol}"  # Lokal → Colab
-CH_SIGNALS = "bt4t:signals"  # Colab → Lokal
-CH_PORTFOLIO = "bt4t:portfolio:state"  # Lokal → Colab
-CH_HEALTH = "bt4t:health"  # Colab → Lokal (Heartbeat)
-CH_CONTROL = "bt4t:control:cmd"  # Lokal → Colab (Befehle)
-CH_ACK = "bt4t:control:ack"  # Colab → Lokal (Bestätigung)
+# ── Channel names (must match Module B) ──────────────────────────────────────
+CH_MARKET = "bt4t:market:{symbol}"  # Local → Colab
+CH_SIGNALS = "bt4t:signals"  # Colab → Local
+CH_PORTFOLIO = "bt4t:portfolio:state"  # Local → Colab
+CH_HEALTH = "bt4t:health"  # Colab → Local (heartbeat)
+CH_CONTROL = "bt4t:control:cmd"  # Local → Colab (commands)
+CH_ACK = "bt4t:control:ack"  # Colab → Local (acknowledgement)
 
-# ── Signal-Validierung ────────────────────────────────────────────────────────
-MAX_SIGNAL_AGE_S = 10.0  # Signal älter als 10s → verwerfen
-MIN_CONFIDENCE = 0.55  # Mindest-Konfidenz für Ausführung
-HEARTBEAT_TIMEOUT_S = 90.0  # Kein Heartbeat > 90s → Trading pausieren
+# ── Signal validation ─────────────────────────────────────────────────────────
+MAX_SIGNAL_AGE_S = 10.0  # Signal older than 10s → discard
+MIN_CONFIDENCE = 0.55  # Minimum confidence for execution
+HEARTBEAT_TIMEOUT_S = 90.0  # No heartbeat > 90s → pause trading
 
-# ── Paper-Portfolio (in-memory) ───────────────────────────────────────────────
+# ── Paper portfolio (in-memory) ───────────────────────────────────────────────
 
 
 class LocalPaperPortfolio:
-    """Einfaches in-memory Paper-Portfolio für Module A."""
+    """Simple in-memory paper portfolio for Module A."""
 
     def __init__(self, initial_capital: float = 10_000.0, fee_rate: float = 0.001):
         self.cash = initial_capital
         self.initial_cap = initial_capital
-        self.position = 0.0  # BTC-Menge
+        self.position = 0.0  # BTC quantity
         self.entry_price = 0.0
         self.fee_rate = fee_rate
         self.trades = []
@@ -107,24 +107,24 @@ class LocalPaperPortfolio:
 
     def pause(self):
         self._paused = True
-        logger.warning("Portfolio: Trading PAUSIERT (kein Colab-Heartbeat)")
+        logger.warning("Portfolio: Trading PAUSED (no Colab heartbeat)")
 
     def resume(self):
         self._paused = False
-        logger.success("Portfolio: Trading FORTGESETZT")
+        logger.success("Portfolio: Trading RESUMED")
 
     def execute(
         self, side: str, price: float, confidence: float = 1.0
     ) -> Optional[dict]:
-        """Simuliert einen Market-Order. Gibt Trade-Dict zurück oder None."""
+        """Simulates a market order. Returns trade dict or None."""
         if self._paused:
-            logger.debug("Trade übersprungen — Portfolio pausiert")
+            logger.debug("Trade skipped — portfolio paused")
             return None
 
-        slip = 0.0003  # 0.03% Slippage
+        slip = 0.0003  # 0.03% slippage
         fee_rate = self.fee_rate
         fill = price * (1 + slip) if side == "buy" else price * (1 - slip)
-        risk_pct = 0.01 * confidence  # Skaliert Risiko mit Konfidenz
+        risk_pct = 0.01 * confidence  # Scales risk with confidence
 
         pnl = 0.0
 
@@ -140,7 +140,7 @@ class LocalPaperPortfolio:
                 self.entry_price = 0.0
                 action = "COVER"
             else:
-                # Long eröffnen
+                # Open long
                 spend = self.cash * risk_pct
                 if spend < 5:
                     return None
@@ -155,7 +155,7 @@ class LocalPaperPortfolio:
 
         elif side == "sell" and self.position >= 0:
             if self.position > 0:
-                # Long schließen
+                # Close long
                 qty = self.position
                 proceeds = qty * fill
                 fee = proceeds * fee_rate
@@ -165,7 +165,7 @@ class LocalPaperPortfolio:
                 self.entry_price = 0.0
                 action = "SELL"
             else:
-                # Short eröffnen
+                # Open short
                 margin = self.cash * risk_pct
                 if margin < 5:
                     return None
@@ -215,13 +215,13 @@ class LocalPaperPortfolio:
         }
 
 
-# ── Feature-Berechnung ────────────────────────────────────────────────────────
+# ── Feature computation ───────────────────────────────────────────────────────
 
 
 def compute_features(df: pd.DataFrame) -> dict:
     """
-    Berechnet Standard-Features aus OHLCV.
-    Gibt dict zurück das als Ably-Message publisht wird.
+    Computes standard features from OHLCV.
+    Returns dict that is published as Ably message.
     """
     close = df["close"].values.astype(float)
     volume = df["volume"].values.astype(float)
@@ -259,15 +259,15 @@ def compute_features(df: pd.DataFrame) -> dict:
     else:
         macd = 0.0
 
-    # Volume-Ratio (aktuell vs. 20er Durchschnitt)
+    # Volume ratio (current vs. 20-bar average)
     vol_ratio = volume[-1] / (volume[-20:].mean() + 1e-10) if n >= 20 else 1.0
 
-    # Returns (normalisiert)
+    # Returns (normalized)
     returns_1h = (close[-1] / close[-2] - 1) if n >= 2 else 0.0
     returns_4h = (close[-1] / close[-5] - 1) if n >= 5 else 0.0
     returns_24h = (close[-1] / close[-25] - 1) if n >= 25 else 0.0
 
-    # Raw OHLCV (letzter Bar)
+    # Raw OHLCV (last bar)
     last = df.iloc[-1]
 
     return {
@@ -290,20 +290,20 @@ def compute_features(df: pd.DataFrame) -> dict:
         "return_4h": float(returns_4h),
         "return_24h": float(returns_24h),
         "sma20": float(sma20),
-        # Close-Array (letzte 60 Bars für RL-Observation)
+        # Close array (last 60 bars for RL observation)
         "close_60": close[-60:].tolist() if n >= 60 else close.tolist(),
     }
 
 
-# ── Haupt-Engine ──────────────────────────────────────────────────────────────
+# ── Main engine ───────────────────────────────────────────────────────────────
 
 
 class ModuleA:
     """
-    Lokale Ausführungs-Engine.
+    Local execution engine.
 
-    Verbindet Exchange (CCXT) mit Colab (Ably).
-    Führt Paper-Orders aus basierend auf Colab-Signalen.
+    Connects exchange (CCXT) with Colab (Ably).
+    Executes paper orders based on Colab signals.
     """
 
     def __init__(
@@ -322,16 +322,16 @@ class ModuleA:
 
         self.ably_key = ably_key
         self.symbol = symbol
-        self.symbol_ccxt = symbol  # z.B. 'BTC/USDT'
+        self.symbol_ccxt = symbol  # e.g. 'BTC/USDT'
         self.symbol_clean = symbol.replace("/", "")  # 'BTCUSDT'
         self.timeframe = timeframe
         self.exchange_id = exchange_id
         self.poll_interval = poll_interval_s
 
-        # Exchange-Connector
+        # Exchange connector
         ex_cls = getattr(ccxt, exchange_id)
         self.exchange = ex_cls({"enableRateLimit": True})
-        logger.info(f"Exchange: {exchange_id} verbunden (Public-only)")
+        logger.info(f"Exchange: {exchange_id} connected (public only)")
 
         # Portfolio
         self.portfolio = LocalPaperPortfolio(initial_capital=initial_capital)
@@ -344,35 +344,35 @@ class ModuleA:
         self._last_signal: Optional[dict] = None
 
         logger.success(
-            f"Module A bereit | {symbol} | {exchange_id} | ${initial_capital:,.0f}"
+            f"Module A ready | {symbol} | {exchange_id} | ${initial_capital:,.0f}"
         )
 
-    # ── Ably-Verbindung ───────────────────────────────────────────────────────
+    # ── Ably connection ───────────────────────────────────────────────────────
 
     async def _connect_ably(self):
-        """Stellt Ably-Verbindung her und abonniert Kanäle."""
+        """Establishes Ably connection and subscribes to channels."""
         self._ably = AblyRealtime(self.ably_key)
         await self._ably.connection.once_async("connected")
-        logger.success("Ably verbunden")
+        logger.success("Ably connected")
 
-        # Signale von Colab abonnieren
+        # Subscribe to signals from Colab
         ch_signals = self._ably.channels.get(CH_SIGNALS)
         await ch_signals.subscribe(self._on_signal)
 
-        # Heartbeat von Colab abonnieren
+        # Subscribe to heartbeat from Colab
         ch_health = self._ably.channels.get(CH_HEALTH)
         await ch_health.subscribe(self._on_heartbeat)
 
-        # Control-Acks von Colab abonnieren
+        # Subscribe to control acks from Colab
         ch_ack = self._ably.channels.get(CH_ACK)
         await ch_ack.subscribe(self._on_ack)
 
-        logger.info(f"Abonniert: {CH_SIGNALS}, {CH_HEALTH}, {CH_ACK}")
+        logger.info(f"Subscribed: {CH_SIGNALS}, {CH_HEALTH}, {CH_ACK}")
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
     def _on_signal(self, message):
-        """Empfängt Handelssignal von Colab und führt Paper-Order aus."""
+        """Receives trade signal from Colab and executes paper order."""
         try:
             data = (
                 json.loads(message.data)
@@ -380,20 +380,20 @@ class ModuleA:
                 else message.data
             )
 
-            # ── Staleness-Check ───────────────────────────────────────────────
+            # ── Staleness check ───────────────────────────────────────────────
             sig_time_str = data.get("timestamp_utc", "")
             if sig_time_str:
                 sig_time = datetime.fromisoformat(sig_time_str.replace("Z", "+00:00"))
                 age_s = (datetime.now(timezone.utc) - sig_time).total_seconds()
                 if age_s > MAX_SIGNAL_AGE_S:
-                    logger.warning(f"Signal zu alt ({age_s:.1f}s) — verworfen")
+                    logger.warning(f"Signal too old ({age_s:.1f}s) — discarded")
                     return
 
-            # ── Konfidenz-Check ───────────────────────────────────────────────
+            # ── Confidence check ──────────────────────────────────────────────
             confidence = float(data.get("confidence", 0.0))
             if confidence < MIN_CONFIDENCE:
                 logger.debug(
-                    f"Confidence {confidence:.2f} < {MIN_CONFIDENCE} — verworfen"
+                    f"Confidence {confidence:.2f} < {MIN_CONFIDENCE} — discarded"
                 )
                 return
 
@@ -401,15 +401,15 @@ class ModuleA:
             model_version = data.get("model_version", "?")
 
             logger.info(
-                f"Signal empfangen: {action} | confidence={confidence:.2f} | model={model_version}"
+                f"Signal received: {action} | confidence={confidence:.2f} | model={model_version}"
             )
             self._last_signal = data
 
             if self._last_price <= 0:
-                logger.warning("Kein aktueller Preis — Signal übersprungen")
+                logger.warning("No current price — signal skipped")
                 return
 
-            # ── Order ausführen ───────────────────────────────────────────────
+            # ── Execute order ─────────────────────────────────────────────────
             side = None
             if action == "BUY":
                 side = "buy"
@@ -427,16 +427,16 @@ class ModuleA:
                     )
 
         except Exception as e:
-            logger.error(f"Signal-Verarbeitung Fehler: {e}", exc_info=True)
+            logger.error(f"Signal processing error: {e}", exc_info=True)
 
     def _on_heartbeat(self, message):
-        """Aktualisiert Heartbeat-Timestamp und setzt Portfolio fort."""
+        """Updates heartbeat timestamp and resumes portfolio."""
         self._last_heartbeat = time.time()
         if self.portfolio.paused:
             self.portfolio.resume()
 
     def _on_ack(self, message):
-        """Bestätigung von Colab für gesendete Befehle."""
+        """Acknowledgement from Colab for sent commands."""
         try:
             data = (
                 json.loads(message.data)
@@ -444,41 +444,41 @@ class ModuleA:
                 else message.data
             )
             logger.info(
-                f"Colab-ACK: {data.get('cmd', '?')} → {data.get('status', '?')}"
+                f"Colab ACK: {data.get('cmd', '?')} → {data.get('status', '?')}"
             )
         except Exception:
             pass
 
-    # ── Marktdaten publishen ──────────────────────────────────────────────────
+    # ── Publish market data ───────────────────────────────────────────────────
 
     async def _publish_market_data(self, features: dict):
-        """Publisht Feature-Dict auf Ably-Kanal → Colab."""
+        """Publishes feature dict to Ably channel → Colab."""
         ch_name = CH_MARKET.format(symbol=self.symbol_clean)
         channel = self._ably.channels.get(ch_name)
         await channel.publish("market_update", json.dumps(features))
 
     async def _publish_portfolio_state(self):
-        """Publisht aktuellen Portfolio-State auf Ably → Colab."""
+        """Publishes current portfolio state to Ably → Colab."""
         if self._last_price <= 0:
             return
         state = self.portfolio.state_dict(self._last_price)
         channel = self._ably.channels.get(CH_PORTFOLIO)
         await channel.publish("portfolio_update", json.dumps(state))
 
-    # ── Heartbeat-Überwachung ─────────────────────────────────────────────────
+    # ── Heartbeat monitoring ──────────────────────────────────────────────────
 
     def _check_heartbeat(self):
-        """Pausiert Trading wenn Colab zu lange kein Heartbeat sendet."""
+        """Pauses trading if Colab hasn't sent a heartbeat for too long."""
         age = time.time() - self._last_heartbeat
         if age > HEARTBEAT_TIMEOUT_S and not self.portfolio.paused:
-            logger.warning(f"Kein Colab-Heartbeat seit {age:.0f}s — pausiere Trading")
+            logger.warning(f"No Colab heartbeat for {age:.0f}s — pausing trading")
             self.portfolio.pause()
 
-    # ── Befehle an Colab senden ───────────────────────────────────────────────
+    # ── Send commands to Colab ────────────────────────────────────────────────
 
     async def send_command(self, cmd: str, params: dict = None):
         """
-        Sendet Steuerbefehl an Colab.
+        Sends control command to Colab.
 
         Commands: PAUSE_INFERENCE, RESUME, RELOAD_MODEL, SHUTDOWN
         """
@@ -489,12 +489,12 @@ class ModuleA:
         }
         channel = self._ably.channels.get(CH_CONTROL)
         await channel.publish("command", json.dumps(payload))
-        logger.info(f"Befehl an Colab: {cmd}")
+        logger.info(f"Command sent to Colab: {cmd}")
 
-    # ── Status-Anzeige ────────────────────────────────────────────────────────
+    # ── Status display ────────────────────────────────────────────────────────
 
     def _print_status(self):
-        """Gibt Kurzstatus in der Konsole aus."""
+        """Prints brief status to console."""
         if self._last_price <= 0:
             return
         state = self.portfolio.state_dict(self._last_price)
@@ -505,7 +505,7 @@ class ModuleA:
             sig_info = f"{self._last_signal.get('action', '?')} conf={self._last_signal.get('confidence', 0):.2f}"
 
         logger.info(
-            f"STATUS | Preis=${self._last_price:,.2f} | "
+            f"STATUS | Price=${self._last_price:,.2f} | "
             f"Equity=${state['equity']:,.2f} | "
             f"Return={state['return_pct']:+.2f}% | "
             f"Trades={state['n_trades']} | "
@@ -513,25 +513,25 @@ class ModuleA:
             f"Signal={sig_info}"
         )
 
-    # ── Haupt-Loop ────────────────────────────────────────────────────────────
+    # ── Main loop ─────────────────────────────────────────────────────────────
 
     async def run(self):
-        """Startet den Haupt-Polling-Loop."""
+        """Starts the main polling loop."""
         await self._connect_ably()
         self._running = True
         tick = 0
 
         logger.success("=" * 60)
-        logger.success("  Module A gestartet — lokale Ausführungs-Engine")
-        logger.success(f"  Publisht auf : {CH_MARKET.format(symbol=self.symbol_clean)}")
-        logger.success(f"  Abonniert    : {CH_SIGNALS}, {CH_HEALTH}")
-        logger.success("  Warte auf Colab-Signale...")
+        logger.success("  Module A started — local execution engine")
+        logger.success(f"  Publishing to: {CH_MARKET.format(symbol=self.symbol_clean)}")
+        logger.success(f"  Subscribed to: {CH_SIGNALS}, {CH_HEALTH}")
+        logger.success("  Waiting for Colab signals...")
         logger.success("=" * 60)
 
         try:
             while self._running:
                 try:
-                    # 1. OHLCV holen
+                    # 1. Fetch OHLCV
                     raw = self.exchange.fetch_ohlcv(
                         self.symbol_ccxt, self.timeframe, limit=200
                     )
@@ -554,27 +554,27 @@ class ModuleA:
 
                         self._last_price = float(df["close"].iloc[-1])
 
-                        # 2. Features berechnen
+                        # 2. Compute features
                         features = compute_features(df)
 
-                        # 3. Marktdaten → Ably → Colab
+                        # 3. Market data → Ably → Colab
                         await self._publish_market_data(features)
 
-                        # 4. Portfolio-State → Ably
-                        if tick % 5 == 0:  # alle 5 Ticks
+                        # 4. Portfolio state → Ably
+                        if tick % 5 == 0:  # every 5 ticks
                             await self._publish_portfolio_state()
 
-                    # 5. Heartbeat-Check
+                    # 5. Heartbeat check
                     self._check_heartbeat()
 
-                    # 6. Status-Log alle 10 Ticks
+                    # 6. Status log every 10 ticks
                     if tick % 10 == 0:
                         self._print_status()
 
                     tick += 1
 
                 except Exception as e:
-                    logger.warning(f"Tick-Fehler: {e}")
+                    logger.warning(f"Tick error: {e}")
 
                 await asyncio.sleep(self.poll_interval)
 
@@ -584,25 +584,25 @@ class ModuleA:
             await self._shutdown()
 
     async def _shutdown(self):
-        """Sauberes Beenden."""
+        """Clean shutdown."""
         self._running = False
-        logger.info("Module A: Beende...")
+        logger.info("Module A: Shutting down...")
         if self._ably:
             await self._ably.close()
         self.portfolio._print_summary()
-        logger.success("Module A: Beendet")
+        logger.success("Module A: Shutdown complete")
 
     def _print_summary(self):
         if self._last_price <= 0:
             return
         state = self.portfolio.state_dict(self._last_price)
         print("\n" + "=" * 55)
-        print("  MODULE A — ABSCHLUSS-ZUSAMMENFASSUNG")
+        print("  MODULE A — FINAL SUMMARY")
         print("=" * 55)
         print(f"  Equity:     ${state['equity']:>10,.2f}")
         print(f"  Return:     {state['return_pct']:>+8.2f}%")
         print(f"  Trades:     {state['n_trades']}")
-        print(f"  Win-Rate:   {state['win_rate'] * 100:>5.1f}%")
+        print(f"  Win Rate:   {state['win_rate'] * 100:>5.1f}%")
         print(f"  Total P&L: ${state['total_pnl']:>+9.2f}")
         print("=" * 55)
 
@@ -611,15 +611,15 @@ class ModuleA:
 
 
 async def main():
-    parser = argparse.ArgumentParser(description="Module A — Lokale Ausführungs-Engine")
-    parser.add_argument("--symbol", default="BTC/USDT", help="Handelspaar")
-    parser.add_argument("--timeframe", default="1h", help="OHLCV-Timeframe")
-    parser.add_argument("--exchange", default="binance", help="Exchange-ID (ccxt)")
+    parser = argparse.ArgumentParser(description="Module A — Local Execution Engine")
+    parser.add_argument("--symbol", default="BTC/USDT", help="Trading pair")
+    parser.add_argument("--timeframe", default="1h", help="OHLCV timeframe")
+    parser.add_argument("--exchange", default="binance", help="Exchange ID (ccxt)")
     parser.add_argument(
-        "--interval", type=float, default=30.0, help="Poll-Intervall in Sekunden"
+        "--interval", type=float, default=30.0, help="Poll interval in seconds"
     )
     parser.add_argument(
-        "--capital", type=float, default=10_000.0, help="Startkapital USDT"
+        "--capital", type=float, default=10_000.0, help="Starting capital USDT"
     )
     parser.add_argument(
         "--ably-key", default=os.getenv("ABLY_API_KEY", ""), help="Ably API Key"
@@ -628,9 +628,9 @@ async def main():
 
     if not args.ably_key:
         logger.error(
-            "Kein Ably API Key! "
-            "Setze ABLY_API_KEY in .env oder --ably-key <key>\n"
-            "Kostenloser Key: https://ably.com → Sign up → Create App → API Keys"
+            "No Ably API Key! "
+            "Set ABLY_API_KEY in .env or --ably-key <key>\n"
+            "Free key: https://ably.com → Sign up → Create App → API Keys"
         )
         sys.exit(1)
 
@@ -646,7 +646,7 @@ async def main():
     try:
         await engine.run()
     except KeyboardInterrupt:
-        logger.info("Strg+C — beende Module A")
+        logger.info("Ctrl+C — shutting down Module A")
 
 
 if __name__ == "__main__":

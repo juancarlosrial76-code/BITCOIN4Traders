@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: bitcoin4traders
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install backend deps
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install -r backend/requirements.txt
+          pip install -r backend/requirements-dev.txt || true
+      - name: Lint backend
+        run: |
+          source .venv/bin/activate
+          pip install flake8
+          flake8 backend
+      - name: Test backend
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bitcoin4traders
+        run: |
+          source .venv/bin/activate
+          pip install pytest
+          pytest backend/tests -v
+      - name: Set up Node
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+      - name: Install frontend deps
+        run: |
+          cd frontend
+          npm ci
+      - name: Lint frontend
+        run: |
+          cd frontend
+          npm run lint || true
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm run build

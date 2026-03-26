@@ -1,5 +1,22 @@
 """Mathematical Tools Module."""
 
+from src.math_tools.fast_kernels import (
+    _kernel_simulate,
+    _kernel_profit_factor,
+    _kernel_market_regime,
+    _kernel_rsi_wilder,
+    _kernel_ema,
+    _kernel_rolling_mean_std,
+    _kernel_signals_rsi,
+    _kernel_signals_macd,
+    _kernel_signals_bollinger,
+    _kernel_signals_ema_cross,
+    _kernel_gru_step,
+    _kernel_rnn_forward,
+    _kernel_signals_rnn,
+    _kernel_build_features,
+)
+
 from src.math_tools.ornstein_uhlenbeck import (
     OrnsteinUhlenbeckProcess,
     calculate_ou_score_vectorized as calculate_ou_score,
@@ -63,6 +80,21 @@ from src.math_tools.spectral_analysis import (
 )
 
 __all__ = [
+    # Fast Numba Kernels
+    "_kernel_simulate",
+    "_kernel_profit_factor",
+    "_kernel_market_regime",
+    "_kernel_rsi_wilder",
+    "_kernel_ema",
+    "_kernel_rolling_mean_std",
+    "_kernel_signals_rsi",
+    "_kernel_signals_macd",
+    "_kernel_signals_bollinger",
+    "_kernel_signals_ema_cross",
+    "_kernel_gru_step",
+    "_kernel_rnn_forward",
+    "_kernel_signals_rnn",
+    "_kernel_build_features",
     # Ornstein-Uhlenbeck
     "OrnsteinUhlenbeckProcess",
     "calculate_ou_score",

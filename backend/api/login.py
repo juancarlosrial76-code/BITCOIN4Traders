@@ -9,10 +9,14 @@ from pydantic import BaseModel
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 
+# Import Secrets Manager
+from src.config import get_secret_key, get_admin_credentials
+
 router = APIRouter()
 security = HTTPBearer()
 
-_secret_key = os.getenv("SECRET_KEY", "")
+# Get SECRET_KEY from Secrets Manager (with fallback)
+_secret_key = get_secret_key()
 if not _secret_key:
     import secrets as _secrets
 
@@ -21,7 +25,7 @@ if not _secret_key:
 
     _logging.getLogger(__name__).warning(
         "SECRET_KEY not set in environment — using ephemeral random key. "
-        "Set SECRET_KEY env var for persistent sessions."
+        "Set SECRET_KEY env var or configure in Vault for persistent sessions."
     )
 SECRET_KEY = _secret_key
 ALGORITHM = "HS256"
@@ -35,23 +39,32 @@ pwd_context = CryptContext(
 
 
 def _build_users_db() -> dict:
-    """Build user database from environment variables.
+    """Build user database from Secrets Manager (with fallback to environment).
 
-    Env vars:
-        ADMIN_USERNAME  (default: admin)
-        ADMIN_PASSWORD  (required — no default for security)
+    Priority:
+    1. Secrets Manager (Vault/AWS/Env)
+    2. Environment variables (fallback)
+    3. Random password (last resort)
     """
     import logging as _log
 
-    username = os.getenv("ADMIN_USERNAME", "admin")
-    password = os.getenv("ADMIN_PASSWORD", "")
+    # Get credentials from Secrets Manager
+    username, password = get_admin_credentials()
+
+    # Fallback to environment if not from secrets manager
+    if not username:
+        username = os.getenv("ADMIN_USERNAME", "admin")
+    if not password:
+        password = os.getenv("ADMIN_PASSWORD", "")
+
+    # Generate random if still not set
     if not password:
         import secrets as _sec
 
         password = _sec.token_urlsafe(16)
         _log.getLogger(__name__).warning(
             "ADMIN_PASSWORD not set — using random password '%s'. "
-            "Set ADMIN_PASSWORD env var to use a fixed password.",
+            "Set ADMIN_PASSWORD env var or configure in Vault for persistent password.",
             password,
         )
     return {

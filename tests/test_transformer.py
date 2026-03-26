@@ -246,11 +246,17 @@ class TestEdgeCases:
 
     def test_gradients_flow(self, config, sample_input):
         """Test that gradients flow properly."""
+        import torch.nn.functional as F
+
         model = TradingTransformer(config)
         model.train()
 
         output = model(sample_input)
-        loss = output["trend_probs"].mean()
+        # Use cross-entropy (not mean of probs) so the loss has non-zero gradient.
+        # mean(softmax) == 1/n_classes is a constant → its gradient is always zero.
+        batch_size = sample_input.size(0)
+        labels = torch.zeros(batch_size, dtype=torch.long)
+        loss = F.nll_loss(output["trend_probs"].log(), labels)
         loss.backward()  # Backpropagate through entire model
 
         # Check that gradients exist (at least one parameter has non-zero grad)

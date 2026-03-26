@@ -1,5 +1,5 @@
 """
-models.py — Real RL model management from darwin_engine.
+models.py — Real RL model management from src.math_tools.archive.darwin_legacy.
 
 Reads Champion .pkl/.json from data/cache/ and PPO models from data/models/.
 Training is started as background task.
@@ -53,7 +53,7 @@ def _load_champion_entry() -> Optional[dict]:
                 "size": _file_size_mb(CHAMPION_PKL),
                 "status": "active",
                 "sharpe": round(meta.get("sharpe", 0), 2),
-                "source": "darwin_engine",
+                "source": "src/math_tools/archive/darwin_legacy",
             }
         except Exception:
             pass
@@ -90,7 +90,7 @@ def _run_training_background():
     _training_status["log"] = ["Training started..."]
 
     try:
-        from darwin_engine import (
+        from src.math_tools.archive.darwin_legacy import (
             run_multiverse,
             generate_synthetic_btc,
             TelegramNotifier,
@@ -101,7 +101,7 @@ def _run_training_background():
 
         _training_status["log"].append("Loading data...")
         try:
-            from darwin_engine import load_live_data
+            from src.math_tools.archive.darwin_legacy import load_live_data
 
             df = load_live_data(symbol="BTC/USDT", timeframe="1h", limit=1000)
             _training_status["log"].append(f"Real Binance data: {len(df)} bars")

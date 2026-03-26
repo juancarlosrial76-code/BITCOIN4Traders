@@ -1,17 +1,17 @@
 """
-transport_base.py — Gemeinsames Transport-Interface
-====================================================
-Alle 4 Kommunikations-Optionen implementieren dieses Interface.
-Dadurch kann Module A und Module B den Transport jederzeit wechseln
-ohne den Handelslogik-Code zu ändern.
+transport_base.py — Shared transport interface
+===============================================
+All 4 communication options implement this interface.
+This allows Module A and Module B to switch the transport at any time
+without changing the trading logic code.
 
-Kanal-Konventionen (identisch für alle Transporte):
-  bt4t:market:BTCUSDT   — Marktdaten Lokal → Colab
-  bt4t:signals          — Handelssignale Colab → Lokal
-  bt4t:portfolio:state  — Portfolio-State Lokal → Colab
-  bt4t:health           — Heartbeat Colab → Lokal
-  bt4t:control:cmd      — Steuerbefehle Lokal → Colab
-  bt4t:control:ack      — Bestätigung Colab → Lokal
+Channel conventions (identical for all transports):
+  bt4t:market:BTCUSDT   — Market data Local → Colab
+  bt4t:signals          — Trade signals Colab → Local
+  bt4t:portfolio:state  — Portfolio state Local → Colab
+  bt4t:health           — Heartbeat Colab → Local
+  bt4t:control:cmd      — Control commands Local → Colab
+  bt4t:control:ack      — Acknowledgement Colab → Local
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ import json
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, Optional
 
-# ── Kanal-Konstanten ──────────────────────────────────────────────────────────
+# ── Channel constants ─────────────────────────────────────────────────────────
 CH_MARKET = "bt4t:market:{symbol}"
 CH_SIGNALS = "bt4t:signals"
 CH_PORTFOLIO = "bt4t:portfolio:state"
@@ -31,64 +31,64 @@ CH_ACK = "bt4t:control:ack"
 
 class TransportBase(ABC):
     """
-    Abstrakte Basisklasse für alle Kommunikations-Transporte.
+    Abstract base class for all communication transports.
 
-    Jeder Transport implementiert:
-      connect()     — Verbindung aufbauen
-      disconnect()  — Verbindung sauber trennen
-      publish()     — Nachricht auf Kanal senden
-      subscribe()   — Callback für eingehende Nachrichten registrieren
+    Each transport implements:
+      connect()     — Establish connection
+      disconnect()  — Cleanly disconnect
+      publish()     — Send message on channel
+      subscribe()   — Register callback for incoming messages
     """
 
     @abstractmethod
     async def connect(self) -> None:
-        """Verbindung aufbauen. Wirft Exception bei Fehler."""
+        """Establish connection. Raises exception on error."""
         ...
 
     @abstractmethod
     async def disconnect(self) -> None:
-        """Verbindung sauber trennen."""
+        """Cleanly disconnect."""
         ...
 
     @abstractmethod
     async def publish(self, channel: str, payload: dict) -> None:
         """
-        Nachricht auf Kanal publishen.
+        Publish message on channel.
 
         Parameters
         ----------
-        channel : str   Kanalname, z.B. 'bt4t:signals'
-        payload : dict  JSON-serialisierbares Dict
+        channel : str   Channel name, e.g. 'bt4t:signals'
+        payload : dict  JSON-serializable dict
         """
         ...
 
     @abstractmethod
     async def subscribe(self, channel: str, callback: Callable[[dict], None]) -> None:
         """
-        Callback für eingehende Nachrichten auf Kanal registrieren.
+        Register callback for incoming messages on channel.
 
-        Der Callback wird mit dem deserialisierten payload-Dict aufgerufen.
+        The callback is called with the deserialized payload dict.
 
         Parameters
         ----------
-        channel  : str      Kanalname
-        callback : callable Funktion(payload: dict) -> None
+        channel  : str      Channel name
+        callback : callable Function(payload: dict) -> None
         """
         ...
 
     @property
     @abstractmethod
     def name(self) -> str:
-        """Name des Transports für Logging."""
+        """Name of the transport for logging."""
         ...
 
     @property
     @abstractmethod
     def latency_class(self) -> str:
-        """Erwartete Latenzklasse: 'ms', 'sub-second', 'seconds', 'minutes'"""
+        """Expected latency class: 'ms', 'sub-second', 'seconds', 'minutes'"""
         ...
 
-    # ── Hilfsmethoden ─────────────────────────────────────────────────────────
+    # ── Helper methods ────────────────────────────────────────────────────────
 
     @staticmethod
     def encode(payload: dict) -> str:

@@ -74,6 +74,9 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
+# Import Secrets Manager
+from src.config import get_secrets
+
 # ── ccxt (graceful import) ────────────────────────────────────────────────────
 try:
     import ccxt
@@ -146,7 +149,9 @@ class PaperTraderConfig:
     data_dir: str = "data/paper_trades"
     risk_per_trade: float = 0.01  # 1%-Regel
     max_drawdown: float = 0.20  # 20%
-    fee_config: Dict[str, ExchangeFeeConfig] = field(default_factory=lambda: dict(_DEFAULT_FEES))
+    fee_config: Dict[str, ExchangeFeeConfig] = field(
+        default_factory=lambda: dict(_DEFAULT_FEES)
+    )
     log_ohlcv: bool = True  # OHLCV + Signale als Trainingsdaten loggen
 
 
@@ -167,7 +172,7 @@ class PaperTrade:
     price: float
     fee: float
     slippage: float
-    pnl: float  # realisierter P&L (nach Fee + Slippage)
+    pnl: float  # realized P&L (after fee + slippage)
 
 
 class PaperPortfolio:
@@ -250,7 +255,7 @@ class PaperPortfolio:
         fee_rate = fee_cfg.taker_fee
         slip = fee_cfg.slippage
 
-        # Slippage-angepasster Ausführungspreis
+        # Slippage-adjusted execution price
         fill_price = price * (1 + slip) if side == "buy" else price * (1 - slip)
 
         pnl = 0.0
@@ -261,9 +266,9 @@ class PaperPortfolio:
             cost = qty * fill_price
             fee = cost * fee_rate
             total_cost = cost + fee
-            # P&L für Short: (entry - exit) * qty – fees
+            # P&L for short: (entry - exit) * qty – fees
             pnl = (self.entry_price - fill_price) * qty - fee
-            self.cash -= total_cost  # kaufe zurück
+            self.cash -= total_cost  # buy back
             self.position = 0.0
             self.entry_price = 0.0
 
@@ -390,13 +395,31 @@ class CCXTConnector:
         if cls is None:
             raise ValueError(f"Unknown exchange: {exchange_id}")
 
-        # Credentials from environment variables (optional)
+        # Credentials from Secrets Manager (with fallback to environment)
         prefix = exchange_id.upper()
         kwargs: Dict[str, Any] = {"enableRateLimit": True}
 
-        api_key = os.getenv(f"{prefix}_API_KEY")
-        api_secret = os.getenv(f"{prefix}_API_SECRET")
-        passphrase = os.getenv(f"{prefix}_PASSPHRASE")  # KuCoin
+        # Get secrets from Secrets Manager
+        secrets = get_secrets()
+
+        # Map exchange to secrets
+        if prefix == "BINANCE":
+            api_key = secrets.binance_api_key
+            api_secret = secrets.binance_api_secret
+            passphrase = None
+        elif prefix == "KUCOIN":
+            api_key = secrets.kucoin_api_key
+            api_secret = secrets.kucoin_api_secret
+            passphrase = secrets.kucoin_passphrase
+        elif prefix == "BYBIT":
+            api_key = secrets.bybit_api_key
+            api_secret = secrets.bybit_api_secret
+            passphrase = None
+        else:
+            # Fallback to environment variables for other exchanges
+            api_key = os.getenv(f"{prefix}_API_KEY")
+            api_secret = os.getenv(f"{prefix}_API_SECRET")
+            passphrase = os.getenv(f"{prefix}_PASSPHRASE")
 
         if api_key:
             kwargs["apiKey"] = api_key
@@ -418,13 +441,17 @@ class CCXTConnector:
             logger.warning(f"[{self.exchange_id}] fetch_ticker failed: {e}")
             return None
 
-    def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> Optional[pd.DataFrame]:
+    def fetch_ohlcv(
+        self, symbol: str, timeframe: str, limit: int = 200
+    ) -> Optional[pd.DataFrame]:
         """OHLCV data as DataFrame."""
         try:
             raw = self._ex.fetch_ohlcv(symbol, timeframe, limit=limit)
             if not raw:
                 return None
-            df = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume"])
+            df = pd.DataFrame(
+                raw, columns=["timestamp", "open", "high", "low", "close", "volume"]
+            )
             df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
             df.set_index("timestamp", inplace=True)
             return df
@@ -537,7 +564,9 @@ class MultiExchangePaperTrader:
         # Ensure primary_exchange is available
         if config.primary_exchange not in self.connectors:
             config.primary_exchange = next(iter(self.connectors))
-            logger.warning(f"primary_exchange not available — using '{config.primary_exchange}'")
+            logger.warning(
+                f"primary_exchange not available — using '{config.primary_exchange}'"
+            )
 
         # One portfolio per exchange (separate accounting)
         self.portfolios: Dict[str, PaperPortfolio] = {
@@ -657,10 +686,14 @@ class MultiExchangePaperTrader:
             )
             if pf.position > 0:
                 # Close long
-                pf.execute("sell", price, ex_id, symbol, risk_pct=self.cfg.risk_per_trade)
+                pf.execute(
+                    "sell", price, ex_id, symbol, risk_pct=self.cfg.risk_per_trade
+                )
             elif pf.position < 0:
                 # Close short (Cover) – Fix #11
-                pf.execute("buy", price, ex_id, symbol, risk_pct=self.cfg.risk_per_trade)
+                pf.execute(
+                    "buy", price, ex_id, symbol, risk_pct=self.cfg.risk_per_trade
+                )
             return
 
         # 4. Signal from Bot
@@ -687,7 +720,9 @@ class MultiExchangePaperTrader:
         # 6. Execute order (Fix #11: signal=-1 opens short if no long position)
         if signal == 1:
             # BUY: closes short (Cover) OR opens long — execute() decides
-            trade = pf.execute("buy", price, ex_id, symbol, risk_pct=self.cfg.risk_per_trade)
+            trade = pf.execute(
+                "buy", price, ex_id, symbol, risk_pct=self.cfg.risk_per_trade
+            )
             if trade:
                 action = "COVER" if trade.pnl != 0.0 else "BUY"
                 logger.info(
@@ -697,7 +732,9 @@ class MultiExchangePaperTrader:
 
         elif signal == -1:
             # SELL: closes long OR opens short — execute() decides
-            trade = pf.execute("sell", price, ex_id, symbol, risk_pct=self.cfg.risk_per_trade)
+            trade = pf.execute(
+                "sell", price, ex_id, symbol, risk_pct=self.cfg.risk_per_trade
+            )
             if trade:
                 action = "SHORT" if pf.position < 0 else "SELL"
                 logger.info(
@@ -727,7 +764,11 @@ class MultiExchangePaperTrader:
             if hasattr(bot, "compute_signals"):
                 close = df["close"].values.astype(np.float64)
                 sig_arr = bot.compute_signals(close)
-                return int(np.sign(sig_arr[-1])) if sig_arr is not None and len(sig_arr) else 0
+                return (
+                    int(np.sign(sig_arr[-1]))
+                    if sig_arr is not None and len(sig_arr)
+                    else 0
+                )
 
             # PPOAgent API
             if hasattr(bot, "select_action"):

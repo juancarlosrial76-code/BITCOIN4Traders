@@ -1,6 +1,6 @@
 """Ensemble methods module."""
 
-from ensemble.ensemble_agents import (
+from src.ensemble.ensemble_agents import (
     AgentEnsemble,
     DynamicEnsemble,
     ModelSelector,

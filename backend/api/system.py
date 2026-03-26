@@ -10,6 +10,9 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+# Import Secrets Manager
+from src.config import get_secrets
+
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -41,7 +44,8 @@ async def get_system_metrics():
         # Champion cache size
         cache_dir = PROJECT_ROOT / "data/cache"
         cache_mb = (
-            sum(f.stat().st_size for f in cache_dir.glob("*") if f.is_file()) / (1024**2)
+            sum(f.stat().st_size for f in cache_dir.glob("*") if f.is_file())
+            / (1024**2)
             if cache_dir.exists()
             else 0
         )
@@ -128,7 +132,9 @@ async def get_logs():
         }
     )
 
-    binance_key = os.getenv("BINANCE_API_KEY")
+    # Get Binance status from Secrets Manager
+    secrets = get_secrets()
+    binance_key = secrets.binance_api_key
     logs.append(
         {
             "time": datetime.now().strftime("%H:%M:%S"),
@@ -170,7 +176,11 @@ async def get_api_endpoints():
 
     result = []
     for ep in endpoints:
-        method = "POST" if any(x in ep for x in ["start", "stop", "train", "login"]) else "GET"
+        method = (
+            "POST"
+            if any(x in ep for x in ["start", "stop", "train", "login"])
+            else "GET"
+        )
         result.append(
             {
                 "endpoint": ep,
@@ -217,5 +227,6 @@ async def get_env_variables(current_user: dict = Depends(lambda: None)):
     ]
 
     return [
-        {"name": name, "value": _mask(val), "status": _status(val)} for name, val in vars_to_check
+        {"name": name, "value": _mask(val), "status": _status(val)}
+        for name, val in vars_to_check
     ]

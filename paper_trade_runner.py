@@ -307,7 +307,7 @@ def run_paper_trading(
     logger.info(f"Config: {symbol} {timeframe} ${initial_capital}")
 
     try:
-        from darwin_engine import ChampionPersistence
+        from src.math_tools.archive.darwin_legacy import ChampionPersistence
         import os
 
         champion = None

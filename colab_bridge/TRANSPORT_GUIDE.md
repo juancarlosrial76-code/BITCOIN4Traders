@@ -1,50 +1,55 @@
-# BITCOIN4Traders — Transport-Guide
-## Kommunikation Lokal ↔ Colab/Cloud
+# BITCOIN4Traders — Transport Guide
+
+## Communication Local ↔ Colab/Cloud
 
 ---
 
-## Vergleichstabelle
+## Comparison Table
 
-| | Option 1: Redis | Option 2: Telegram | Option 3: Google Drive | Option 4: Ably |
-|---|---|---|---|---|
-| **Latenz** | 30–150 ms | 200–800 ms | 2–15 Sekunden | 50–150 ms |
-| **Kosten** | $0 | $0 | $0 | $0 (Free Tier) |
-| **Externer Account** | Nein | Telegram (vorhanden) | Google (vorhanden) | Ably (neu) |
-| **Setup-Aufwand** | Mittel | Gering | Gering | Gering |
-| **Infrastruktur lokal** | Redis + CF Tunnel | Nichts | drive_manager.py | Nichts |
-| **Für Timeframe** | 1m–1h | 1h+ | 1h+ | 1m–1h |
-| **Zuverlässigkeit** | Sehr hoch | Sehr hoch | Hoch | Sehr hoch |
-| **Offline-Puffer** | Ja (Redis List) | Nein | Ja (Datei) | Ja (100 Msgs) |
-| **Menschenlesbar** | Nein | Ja | Ja (JSON) | Nein |
-| **Datei** | `transport_redis.py` | `transport_telegram.py` | `transport_gdrive.py` | `transport_ably.py` |
+|                          | Option 1: Redis      | Option 2: Telegram      | Option 3: Google Drive | Option 4: Ably      |
+| ------------------------ | -------------------- | ----------------------- | ---------------------- | ------------------- |
+| **Latency**              | 30–150 ms            | 200–800 ms              | 2–15 seconds           | 50–150 ms           |
+| **Cost**                 | $0                   | $0                      | $0                     | $0 (Free Tier)      |
+| **External Account**     | No                   | Telegram (existing)     | Google (existing)      | Ably (new)          |
+| **Setup Effort**         | Medium               | Low                     | Low                    | Low                 |
+| **Local Infrastructure** | Redis + CF Tunnel    | Nothing                 | drive_manager.py       | Nothing             |
+| **For Timeframe**        | 1m–1h                | 1h+                     | 1h+                    | 1m–1h               |
+| **Reliability**          | Very high            | Very high               | High                   | Very high           |
+| **Offline Buffer**       | Yes (Redis List)     | No                      | Yes (File)             | Yes (100 Msgs)      |
+| **Human Readable**       | No                   | Yes                     | Yes (JSON)             | No                  |
+| **File**                 | `transport_redis.py` | `transport_telegram.py` | `transport_gdrive.py`  | `transport_ably.py` |
 
 ---
 
 ## Option 1: Redis + Cloudflare Tunnel
-**Empfohlen für: Sub-Sekunden bis 1m Timeframes**
 
-### Wie es funktioniert
+**Recommended for: Sub-second to 1m timeframes**
+
+### How it works
+
 ```
-Exchange API → Lokal (Redis) → HTTP-Proxy :8766 → Cloudflare Tunnel → Colab (httpx poll)
-Colab (Inferenz) → HTTP-Proxy → Redis PUBLISH → Lokal (Callback)
+Exchange API → Local (Redis) → HTTP Proxy :8766 → Cloudflare Tunnel → Colab (httpx poll)
+Colab (Inference) → HTTP Proxy → Redis PUBLISH → Local (Callback)
 ```
 
-Redis wird lokal betrieben. Colab spricht via HTTP mit einem FastAPI-Proxy,
-der von Cloudflare Tunnel erreichbar gemacht wird. Kein Redis-Client in Colab nötig.
+Redis runs locally. Colab communicates via HTTP with a FastAPI proxy,
+which is made accessible by Cloudflare Tunnel. No Redis client needed in Colab.
 
-### Einrichtung
+### Setup
 
-**1. Redis installieren (lokal, einmalig):**
+**1. Install Redis (local, one-time):**
+
 ```bash
 sudo apt install redis-server    # Ubuntu/Debian
-# oder
+# or
 brew install redis               # macOS
 
-redis-server --daemonize yes     # Starten
+redis-server --daemonize yes     # Start
 redis-cli ping                   # Test → PONG
 ```
 
-**2. Cloudflare Tunnel installieren:**
+**2. Install Cloudflare Tunnel:**
+
 ```bash
 # Ubuntu/Debian:
 curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | \
@@ -54,30 +59,33 @@ echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] \
   sudo tee /etc/apt/sources.list.d/cloudflared.list
 sudo apt-get update && sudo apt-get install cloudflared
 
-# Oder direkt:
+# Or directly:
 wget -O cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
 chmod +x cloudflared
 ```
 
-**3. Python-Pakete:**
+**3. Python packages:**
+
 ```bash
 pip install redis fastapi uvicorn httpx
 ```
 
-**4. Starten:**
+**4. Start:**
+
 ```bash
 # Terminal 1 — Redis
 redis-server
 
 # Terminal 2 — Cloudflare Tunnel
 ./cloudflared tunnel --url http://localhost:8766
-# Gibt aus: https://abc-xyz.trycloudflare.com  ← diese URL merken!
+# Outputs: https://abc-xyz.trycloudflare.com  ← save this URL!
 
-# Terminal 3 — Module A (lokal) mit Redis Transport
+# Terminal 3 — Module A (local) with Redis transport
 python colab_bridge/module_a_local.py --transport redis
 ```
 
 **5. In Colab:**
+
 ```python
 !pip install httpx
 
@@ -93,98 +101,115 @@ engine = ModuleB(transport=transport, model_path="...")
 await engine.run()
 ```
 
-### Latenz-Details
-- Redis PUBLISH lokal: ~1ms
-- Cloudflare Tunnel Overhead: ~30–100ms (je nach Standort)
-- Colab HTTP-Poll Intervall: 1s (einstellbar)
-- **Effektive Signallatenz: 30–150ms** (bei 1s-Polling)
+### Latency Details
+
+- Redis PUBLISH local: ~1ms
+- Cloudflare Tunnel overhead: ~30–100ms (depending on location)
+- Colab HTTP poll interval: 1s (configurable)
+- **Effective signal latency: 30–150ms** (at 1s polling)
 
 ---
 
 ## Option 2: Telegram Bot API
-**Empfohlen für: 1h+ Timeframes, bereits im Projekt integriert**
 
-### Wie es funktioniert
+**Recommended for: 1h+ timeframes, already integrated in project**
+
+### How it works
+
 ```
-Lokal → Telegram API → Telegram Server → Colab (getUpdates long-poll)
+Local → Telegram API → Telegram Server → Colab (getUpdates long-poll)
 ```
-Beide Seiten benutzen denselben Bot-Token. Nachrichten werden als
-Telegram-Nachrichten mit Hashtag-Kodierung gesendet:
+
+Both sides use the same bot token. Messages are sent as
+Telegram messages with hashtag encoding:
 `#bt4t:signals {"action":"BUY","confidence":0.82,...}`
 
-### Einrichtung
+### Setup
 
-**1. Telegram Bot erstellen (falls nicht vorhanden):**
+**1. Create Telegram Bot (if not already done):**
+
 ```
 1. t.me/BotFather → /newbot
-2. Name und Username vergeben
-3. Token speichern: 8512251150:AAFXc_...
+2. Choose name and username
+3. Save token: 8512251150:AAFXc_...
 ```
 
-**2. Chat-ID ermitteln:**
+**2. Get chat ID:**
+
 ```
-1. t.me/userinfobot → gibt deine Chat-ID aus
-   ODER: Bot starten → t.me/getidsbot → Chat-ID
+1. t.me/userinfobot → gives your chat ID
+   OR: Start bot → t.me/getidsbot → chat ID
 ```
 
-**3. In .env aktivieren:**
+**3. Activate in .env:**
+
 ```bash
 # .env
 TELEGRAM_BOT_TOKEN=8512251150:AAFXc_7dGvRXmnEKGv9_9bXYSCxuPijPen8
 TELEGRAM_CHAT_ID=2028041322
 ```
-*(Diese Werte sind bereits im .env vorhanden, nur # entfernen)*
 
-**4. Starten (lokal):**
+_(These values are already in .env, just remove the #)_
+
+**4. Start (local):**
+
 ```python
 from colab_bridge.transports import get_transport
-transport = get_transport("telegram")  # liest aus .env
+transport = get_transport("telegram")  # reads from .env
 ```
 
 **5. In Colab:**
+
 ```python
 import os
-os.environ["TELEGRAM_BOT_TOKEN"] = "dein_token"
-os.environ["TELEGRAM_CHAT_ID"] = "deine_chat_id"
+os.environ["TELEGRAM_BOT_TOKEN"] = "your_token"
+os.environ["TELEGRAM_CHAT_ID"] = "your_chat_id"
 
 from colab_bridge.transports import get_transport
 transport = get_transport("telegram")
 ```
 
-### Besonderheiten
-- **Long-Polling**: Telegram getUpdates wartet bis zu 20s → effektiv Echtzeit-Benachrichtigung
-- **Rate-Limit**: 30 Msg/s an einen Chat (bei 30s-Intervall unkritisch)
-- **Manuell kontrollierbar**: Du kannst `/pause`, `/resume` direkt im Telegram-Chat schicken
-- **Sicherheit**: Nachrichten sind auf Telegram-Servern — keine API-Keys oder Kontostände senden
+### Characteristics
+
+- **Long-Polling**: Telegram getUpdates waits up to 20s → effectively real-time notification
+- **Rate limit**: 30 msg/s to one chat (uncritical at 30s interval)
+- **Manual control**: You can send `/pause`, `/resume` directly in the Telegram chat
+- **Security**: Messages are on Telegram servers — don't send API keys or account balances
 
 ---
 
 ## Option 3: Google Drive
-**Empfohlen für: 1h+ Timeframes, wenn Colab bereits Drive nutzt**
 
-### Wie es funktioniert
+**Recommended for: 1h+ timeframes, when Colab already uses Drive**
+
+### How it works
+
 ```
-Lokal → Datei schreiben → drive_manager.py synct → Google Drive → Colab liest Datei
+Local → Write file → drive_manager.py syncs → Google Drive → Colab reads file
 ```
-Jeder Kanal entspricht einer JSON-Datei auf Drive:
+
+Each channel corresponds to a JSON file on Drive:
+
 ```
 bt4t_bus/
-  market/BTCUSDT_latest.json    ← Lokal schreibt, Colab liest
-  signals/latest.json           ← Colab schreibt, Lokal liest
-  health/heartbeat.json         ← Colab schreibt
-  control/cmd.json              ← Lokal schreibt
+  market/BTCUSDT_latest.json    ← Local writes, Colab reads
+  signals/latest.json           ← Colab writes, Local reads
+  health/heartbeat.json         ← Colab writes
+  control/cmd.json              ← Local writes
 ```
 
-### Einrichtung
+### Setup
 
-**1. Lokal — drive_manager.py konfigurieren:**
+**1. Local — configure drive_manager.py:**
+
 ```bash
-# drive_manager.py ist bereits im Projekt (infrastructure/drive/drive_manager.py)
-# Sync-Verzeichnis in .env:
+# drive_manager.py is already in the project (infrastructure/drive/drive_manager.py)
+# Sync directory in .env:
 BT4T_DRIVE_SYNC_DIR=data/drive_sync
 ```
 
-**2. Starten (lokal):**
+**2. Start (local):**
+
 ```python
 from colab_bridge.transports import get_transport
 transport = get_transport("gdrive", side="local",
@@ -192,6 +217,7 @@ transport = get_transport("gdrive", side="local",
 ```
 
 **3. In Colab:**
+
 ```python
 from google.colab import drive
 drive.mount('/content/drive')
@@ -201,42 +227,50 @@ transport = get_transport("gdrive", side="colab",
     drive_dir="/content/drive/MyDrive/BITCOIN4Traders/bt4t_bus")
 ```
 
-### Latenz-Details
-- Drive-Sync Intervall: 2–15s (abhängig von Google's Sync-Frequenz)
-- **Nur für 1h-Bars geeignet** (15m-Bars grenzwertig)
+### Latency Details
+
+- Drive sync interval: 2–15s (depending on Google's sync frequency)
+- **Only suitable for 1h bars** (15m bars borderline)
 
 ---
 
 ## Option 4: Ably
-**Empfohlen für: Einfachste Einrichtung ohne eigene Infrastruktur**
 
-### Wie es funktioniert
-```
-Lokal → Ably Server (WebSocket) ← Colab
-```
-Beide Seiten verbinden sich direkt zum Ably-Server.
-Kein Tunnel, kein Proxy, keine lokale Infrastruktur nötig.
+**Recommended for: Easiest setup without own infrastructure**
 
-### Einrichtung
+### How it works
 
-**1. Ably Account erstellen:**
 ```
-1. https://ably.com → Sign Up (kostenlos)
+Local → Ably Server (WebSocket) ← Colab
+```
+
+Both sides connect directly to the Ably server.
+No tunnel, no proxy, no local infrastructure needed.
+
+### Setup
+
+**1. Create Ably account:**
+
+```
+1. https://ably.com → Sign Up (free)
 2. Dashboard → Create App → API Keys
-3. Root Key kopieren: xxxxx:yyyyy
+3. Copy Root Key: xxxxx:yyyyy
 ```
 
 **2. In .env:**
+
 ```bash
 ABLY_API_KEY=xxxxx:yyyyy
 ```
 
-**3. Python-Paket:**
+**3. Python package:**
+
 ```bash
-pip install ably   # bereits installiert
+pip install ably   # already installed
 ```
 
-**4. Starten (lokal + Colab identisch):**
+**4. Start (local + Colab identical):**
+
 ```python
 import os
 from colab_bridge.transports import get_transport
@@ -244,58 +278,59 @@ transport = get_transport("ably", api_key=os.getenv("ABLY_API_KEY"))
 ```
 
 ### Free Tier Limits
-- 6 Mio. Nachrichten/Monat
-- Bei 30s Poll-Intervall, 5 Kanäle: ~86.400 Msg/Monat → **weit unter Limit**
-- Nachrichten-History: letzte 100 pro Kanal (für Session-Recovery)
+
+- 6 million messages/month
+- At 30s poll interval, 5 channels: ~86,400 msg/month → **well below limit**
+- Message history: last 100 per channel (for session recovery)
 
 ---
 
-## Transport austauschen (ohne Code-Änderungen)
+## Switching Transports (without code changes)
 
-Alle Transporte implementieren dasselbe Interface (`TransportBase`).
-Module A und Module B akzeptieren jeden Transport:
+All transports implement the same interface (`TransportBase`).
+Module A and Module B accept any transport:
 
 ```python
 from colab_bridge.transports import get_transport
 from colab_bridge.module_a_local import ModuleA
 
-# Einfach Transport wechseln:
+# Simply switch transport:
 transport = get_transport("redis")       # Option 1
 # transport = get_transport("telegram")  # Option 2
 # transport = get_transport("gdrive")    # Option 3
 # transport = get_transport("ably")      # Option 4
 
-# Module A und B bekommen den Transport übergeben
+# Module A and B receive the transport
 engine = ModuleA(transport=transport, ...)
 ```
 
 ---
 
-## Empfehlung nach Use-Case
+## Recommendation by Use Case
 
-| Use-Case | Empfohlener Transport | Warum |
-|---|---|---|
-| 1h-Bars, schnell starten | **Telegram** | Bereits im Projekt, kein Setup |
-| 15m-Bars, kein Account | **Redis** | Schnellste Option, volle Kontrolle |
-| 5m–1m-Bars | **Redis** | Einzige Option unter 500ms |
-| Colab nutzt schon Drive | **Google Drive** | Keine neue Infrastruktur |
-| Einfachste Einrichtung | **Ably** | Kein Tunnel, nur API-Key |
-| Backup/Fallback | **Telegram** | Immer verfügbar |
+| Use Case                 | Recommended Transport | Why                          |
+| ------------------------ | --------------------- | ---------------------------- |
+| 1h bars, quick start     | **Telegram**          | Already in project, no setup |
+| 15m bars, no account     | **Redis**             | Fastest option, full control |
+| 5m–1m bars               | **Redis**             | Only option under 500ms      |
+| Colab already uses Drive | **Google Drive**      | No new infrastructure        |
+| Simplest setup           | **Ably**              | No tunnel, just API key      |
+| Backup/fallback          | **Telegram**          | Always available             |
 
 ---
 
-## Dateistruktur
+## File Structure
 
 ```
 colab_bridge/
 ├── __init__.py
-├── transport_base.py          # Gemeinsames Interface (ABC)
-├── module_a_local.py          # Lokale Ausführungs-Engine
-├── module_b_colab.py          # Colab RL-Inferenz-Engine
+├── transport_base.py          # Shared interface (ABC)
+├── module_a_local.py          # Local execution engine
+├── module_b_colab.py          # Colab RL inference engine
 ├── control_plane.py           # FastAPI Control Server + Client
-├── TRANSPORT_GUIDE.md         # Diese Datei
+├── TRANSPORT_GUIDE.md         # This file
 └── transports/
-    ├── __init__.py            # Factory-Funktion get_transport()
+    ├── __init__.py            # Factory function get_transport()
     ├── transport_redis.py     # Option 1: Redis + Cloudflare Tunnel
     ├── transport_telegram.py  # Option 2: Telegram Bot API
     ├── transport_gdrive.py    # Option 3: Google Drive

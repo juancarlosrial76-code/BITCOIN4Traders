@@ -1,18 +1,18 @@
 """
-papertrade_local.py — Lokaler Paper-Trading-Starter
-====================================================
-Startet den Multi-Exchange Paper Trader mit dem Darwin-Champion als Signal-Engine.
-Kein API-Key erforderlich — läuft komplett mit öffentlichen Exchange-Daten.
+papertrade_local.py — Local Paper-Trading Starter
+==================================================
+Starts the Multi-Exchange Paper Trader with the Darwin Champion as signal engine.
+No API key required — runs entirely on public exchange data.
 
-Verwendung:
-    python papertrade_local.py                     # Standardmäßig Binance, BTC/USDT, 1h
-    python papertrade_local.py --capital 5000      # Startkapital in USDT
-    python papertrade_local.py --exchange binance  # Exchange auswählen
-    python papertrade_local.py --interval 60       # Poll-Intervall in Sekunden
+Usage:
+    python papertrade_local.py                     # Default: Binance, BTC/USDT, 1h
+    python papertrade_local.py --capital 5000      # Starting capital in USDT
+    python papertrade_local.py --exchange binance  # Select exchange
+    python papertrade_local.py --interval 60       # Poll interval in seconds
     python papertrade_local.py --timeframe 15m     # Timeframe (1m, 5m, 15m, 1h, 4h)
-    python papertrade_local.py --symbol ETH/USDT   # Anderes Handelspaar
+    python papertrade_local.py --symbol ETH/USDT   # Different trading pair
 
-Strg+C: Sauber beenden + Trade-Log als Parquet speichern.
+Ctrl+C: Clean shutdown + save trade log as Parquet.
 """
 
 from __future__ import annotations
@@ -25,13 +25,13 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-# ── Projekt-Root ins sys.path ─────────────────────────────────────────────────
+# ── Add project root to sys.path ─────────────────────────────────────────────
 ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT))
 
 from loguru import logger
 
-# ── Logger konfigurieren ──────────────────────────────────────────────────────
+# ── Configure logger ─────────────────────────────────────────────────────────
 LOG_DIR = ROOT / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
@@ -51,44 +51,42 @@ logger.add(
 )
 
 
-# ── Champion laden ────────────────────────────────────────────────────────────
+# ── Load champion ────────────────────────────────────────────────────────────
 
 
 def load_champion():
-    """Lädt den Darwin-Champion aus dem Cache."""
+    """Loads the Darwin Champion from cache."""
     champion_pkl = ROOT / "data/cache/multiverse_champion.pkl"
     champion_meta = ROOT / "data/cache/multiverse_champion_meta.json"
 
     if not champion_pkl.exists():
-        logger.warning(
-            "Kein gespeicherter Champion gefunden -> verwende synthetischen Modus"
-        )
+        logger.warning("No saved champion found -> using synthetic mode")
         return None
 
     try:
-        from darwin_engine import ChampionPersistence
+        from src.math_tools.archive.darwin_legacy import ChampionPersistence
 
         champion = ChampionPersistence.load(
             str(champion_pkl),
             str(champion_meta) if champion_meta.exists() else None,
         )
         logger.success(
-            f"Champion geladen: {getattr(champion, 'name', type(champion).__name__)}"
+            f"Champion loaded: {getattr(champion, 'name', type(champion).__name__)}"
         )
         return champion
     except Exception as e:
-        logger.error(f"Champion laden fehlgeschlagen: {e}")
-        logger.warning("Fallback: synthethisches Signal wird verwendet")
+        logger.error(f"Failed to load champion: {e}")
+        logger.warning("Fallback: using synthetic signal")
         return None
 
 
-# ── Signal-Wrapper (Champion oder Fallback) ───────────────────────────────────
+# ── Signal wrapper (Champion or fallback) ────────────────────────────────────
 
 
 class ChampionSignalAdapter:
     """
-    Adapter zwischen DarwinBot-Champion und MultiExchangePaperTrader.
-    Implementiert das minimale Interface: compute_signals(close_array) -> array
+    Adapter between DarwinBot Champion and MultiExchangePaperTrader.
+    Implements the minimal interface: compute_signals(close_array) -> array
     """
 
     def __init__(self, champion):
@@ -96,16 +94,16 @@ class ChampionSignalAdapter:
         self._tick = 0
 
     def compute_signals(self, close: "np.ndarray") -> "np.ndarray":
-        """Gibt Signal-Array zurück: 1=Long, -1=Short, 0=Flat."""
+        """Returns signal array: 1=Long, -1=Short, 0=Flat."""
         import numpy as np
 
         if self.champion is not None:
             try:
                 return self.champion.compute_signals(close)
             except Exception as e:
-                logger.warning(f"Champion compute_signals Fehler: {e}")
+                logger.warning(f"Champion compute_signals error: {e}")
 
-        # Fallback: einfache RSI-Logik (nur für Demo)
+        # Fallback: simple RSI logic (for demo only)
         self._tick += 1
         n = len(close)
         signals = np.zeros(n)
@@ -122,13 +120,13 @@ class ChampionSignalAdapter:
         return signals
 
 
-# ── Konsolen-Dashboard ────────────────────────────────────────────────────────
+# ── Console dashboard ────────────────────────────────────────────────────────
 
 
 def print_dashboard(
     portfolios: dict, prices: dict, trade_counts: dict, start_time: float
 ):
-    """Gibt ein einfaches Terminal-Dashboard aus."""
+    """Prints a simple terminal dashboard."""
     elapsed = time.time() - start_time
     h, m, s = int(elapsed // 3600), int((elapsed % 3600) // 60), int(elapsed % 60)
 
@@ -136,7 +134,7 @@ def print_dashboard(
     print(
         f"  BITCOIN4Traders — Paper Trade Dashboard    {datetime.now().strftime('%H:%M:%S')}"
     )
-    print(f"  Laufzeit: {h:02d}h {m:02d}m {s:02d}s")
+    print(f"  Runtime: {h:02d}h {m:02d}m {s:02d}s")
     print("═" * 65)
     print(f"  {'Exchange':<12} {'Preis':>12} {'Equity':>12} {'P&L%':>8} {'Trades':>7}")
     print("─" * 65)
@@ -154,10 +152,10 @@ def print_dashboard(
                 f"{pnl_color}{pnl_pct:>7.2f}% {n_trades:>7}"
             )
     print("═" * 65)
-    print("  Strg+C zum sauberen Beenden")
+    print("  Ctrl+C for clean shutdown")
 
 
-# ── Haupt-Trading-Loop ────────────────────────────────────────────────────────
+# ── Main trading loop ────────────────────────────────────────────────────────
 
 
 def run_papertrade(
@@ -171,18 +169,18 @@ def run_papertrade(
     max_drawdown: float = 0.20,
 ):
     """
-    Haupt-Paper-Trading-Loop.
+    Main paper-trading loop.
 
     Parameters
     ----------
-    symbol          : Handelspaar, z.B. 'BTC/USDT'
-    timeframe       : OHLCV-Timeframe
-    capital         : Startkapital (USDT, simuliert)
-    exchanges       : Liste der Exchanges (Standard: ['binance'])
-    poll_interval   : Sekunden zwischen Ticker-Abfragen
-    dashboard_interval: Sekunden zwischen Dashboard-Updates
-    risk_per_trade  : Max. Kapital-% pro Trade (Standard: 1%)
-    max_drawdown    : Circuit-Breaker-Schwelle (Standard: 20%)
+    symbol          : Trading pair, e.g. 'BTC/USDT'
+    timeframe       : OHLCV timeframe
+    capital         : Starting capital (USDT, simulated)
+    exchanges       : List of exchanges (default: ['binance'])
+    poll_interval   : Seconds between ticker requests
+    dashboard_interval: Seconds between dashboard updates
+    risk_per_trade  : Max. capital % per trade (default: 1%)
+    max_drawdown    : Circuit-breaker threshold (default: 20%)
     """
     if exchanges is None:
         exchanges = ["binance"]
@@ -211,36 +209,36 @@ def run_papertrade(
 
     trader = MultiExchangePaperTrader(cfg)
 
-    # ── Signal-Handler für sauberes Beenden ───────────────────────────────────
+    # ── Signal handler for clean shutdown ────────────────────────────────────
     def _on_signal(sig, frame):
-        logger.info("Stopp-Signal empfangen — beende Paper-Trading...")
-        trader.stop()  # setzt self._running = False im Trader
+        logger.info("Stop signal received — shutting down paper trading...")
+        trader.stop()  # sets self._running = False in the trader
 
     signal.signal(signal.SIGINT, _on_signal)
     signal.signal(signal.SIGTERM, _on_signal)
 
     logger.success("=" * 60)
-    logger.success("  BITCOIN4Traders — Paper Trade gestartet")
+    logger.success("  BITCOIN4Traders — Paper Trade started")
     logger.success(f"  Symbol    : {symbol}")
     logger.success(f"  Timeframe : {timeframe}")
-    logger.success(f"  Kapital   : ${capital:,.0f} USDT (simuliert)")
+    logger.success(f"  Capital   : ${capital:,.0f} USDT (simulated)")
     logger.success(f"  Exchanges : {', '.join(exchanges)}")
     logger.success(
         f"  Champion  : {getattr(champion, 'name', 'RSI-Fallback') if champion else 'RSI-Fallback'}"
     )
-    logger.success(f"  Risiko/Trade: {risk_per_trade * 100:.1f}%")
+    logger.success(f"  Risk/Trade  : {risk_per_trade * 100:.1f}%")
     logger.success(f"  CB-Drawdown : {max_drawdown * 100:.0f}%")
     logger.success("=" * 60)
 
-    # ── Trading starten ───────────────────────────────────────────────────────
+    # ── Start trading ────────────────────────────────────────────────────────
     try:
-        trader.run(bot)  # blockiert bis Ctrl+C oder trader.stop()
+        trader.run(bot)  # blocks until Ctrl+C or trader.stop()
     except KeyboardInterrupt:
         trader.stop()
     except Exception as e:
-        logger.error(f"Kritischer Fehler im Trading-Loop: {e}", exc_info=True)
+        logger.error(f"Critical error in trading loop: {e}", exc_info=True)
     finally:
-        logger.success("Paper-Trading beendet. Trade-Log in data/paper_trades/")
+        logger.success("Paper trading stopped. Trade log in data/paper_trades/")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -248,10 +246,10 @@ def run_papertrade(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="BITCOIN4Traders — Lokaler Paper Trader",
+        description="BITCOIN4Traders — Local Paper Trader",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Beispiele:
+Examples:
   python papertrade_local.py
   python papertrade_local.py --capital 5000 --exchange binance kucoin
   python papertrade_local.py --timeframe 15m --interval 30
@@ -259,41 +257,41 @@ Beispiele:
         """,
     )
     parser.add_argument(
-        "--symbol", default="BTC/USDT", help="Handelspaar (Standard: BTC/USDT)"
+        "--symbol", default="BTC/USDT", help="Trading pair (default: BTC/USDT)"
     )
     parser.add_argument(
         "--timeframe",
         default="1h",
         choices=["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d"],
-        help="OHLCV-Timeframe (Standard: 1h)",
+        help="OHLCV timeframe (default: 1h)",
     )
     parser.add_argument(
         "--capital",
         type=float,
         default=10_000.0,
-        help="Startkapital in USDT (Standard: 10000)",
+        help="Starting capital in USDT (default: 10000)",
     )
     parser.add_argument(
         "--exchange",
         nargs="+",
         default=["binance"],
         choices=["binance", "kucoin", "bybit"],
-        help="Exchanges (Standard: binance). Mehrere möglich: --exchange binance kucoin",
+        help="Exchanges (default: binance). Multiple allowed: --exchange binance kucoin",
     )
     parser.add_argument(
         "--interval",
         type=float,
         default=30.0,
-        help="Poll-Intervall in Sekunden (Standard: 30)",
+        help="Poll interval in seconds (default: 30)",
     )
     parser.add_argument(
-        "--risk", type=float, default=1.0, help="Risiko pro Trade in %% (Standard: 1.0)"
+        "--risk", type=float, default=1.0, help="Risk per trade in %% (default: 1.0)"
     )
     parser.add_argument(
         "--max-drawdown",
         type=float,
         default=20.0,
-        help="Circuit-Breaker Drawdown in %% (Standard: 20)",
+        help="Circuit-breaker drawdown in %% (default: 20)",
     )
 
     args = parser.parse_args()

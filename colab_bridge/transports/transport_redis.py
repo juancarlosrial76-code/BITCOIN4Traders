@@ -2,45 +2,45 @@
 Transport Option 1: Redis Pub/Sub + Cloudflare Tunnel
 ======================================================
 
-Latenz    : 30–150 ms  (Redis ~1ms lokal + Tunnel-Overhead ~30–100ms)
-Kosten    : $0 (Redis lokal + Cloudflare Tunnel kostenlos)
-Accounts  : Keine externen Accounts nötig
-Zuverlässig: Sehr hoch (Redis in-memory, CF stabil)
-Vorteile  : Schnellste Option, kein Drittanbieter, volle Kontrolle
-Nachteile : Redis muss lokal laufen, Cloudflare Tunnel muss aktiv sein
+Latency  : 30–150 ms  (Redis ~1ms local + Tunnel overhead ~30–100ms)
+Cost     : $0 (Redis local + Cloudflare Tunnel free)
+Accounts : No external accounts needed
+Reliable : Very high (Redis in-memory, CF stable)
+Pros     : Fastest option, no third-party, full control
+Cons     : Redis must run locally, Cloudflare Tunnel must be active
 
-Architektur:
+Architecture:
 ┌─────────────────────────────────────────────────────────┐
-│  LOKAL                         COLAB                    │
+│  LOCAL                         COLAB                    │
 │                                                         │
-│  Redis Server :6379             HTTP-Client             │
+│  Redis Server :6379             HTTP Client             │
 │       │                              │                  │
 │  Cloudflare Tunnel   ◄──────────────┘                  │
-│  (lokaler Port 6379                                     │
-│   als TCP oder HTTP-Proxy)                              │
+│  (local port 6379                                       │
+│   as TCP or HTTP proxy)                                 │
 │                                                         │
 │  Channels = Redis Pub/Sub Topics                        │
 │  bt4t:signals, bt4t:market:BTCUSDT, ...                 │
 └─────────────────────────────────────────────────────────┘
 
-WICHTIG: Redis unterstützt kein natives TCP-Tunneling über HTTP.
-Daher wird Redis über einen minimalen HTTP-Proxy (FastAPI) exponiert,
-den Cloudflare dann tunnelt. Colab spricht mit dem HTTP-Proxy.
+IMPORTANT: Redis does not support native TCP tunneling over HTTP.
+Therefore Redis is exposed via a minimal HTTP proxy (FastAPI),
+which Cloudflare then tunnels. Colab communicates with the HTTP proxy.
 
-HTTP-Proxy Endpoints (lokal, via Cloudflare erreichbar):
+HTTP Proxy Endpoints (local, reachable via Cloudflare):
   POST /publish         { channel, payload }  → Redis PUBLISH
   GET  /subscribe/{ch}  Server-Sent Events    → Redis SUBSCRIBE
-  GET  /poll/{ch}       Letzte N Nachrichten  → Redis LRANGE (einfacher für Colab)
+  GET  /poll/{ch}       Last N messages       → Redis LRANGE (simpler for Colab)
 
 Installation:
-  Lokal (einmalig):
-    sudo apt install redis-server   # oder: brew install redis
+  Local (one-time):
+    sudo apt install redis-server   # or: brew install redis
     pip install redis aioredis fastapi uvicorn httpx
 
   Colab:
     !pip install httpx
 
-Cloudflare Tunnel starten (separates Terminal):
+Start Cloudflare Tunnel (separate terminal):
   ./cloudflared tunnel --url http://localhost:8766
 """
 
@@ -90,23 +90,23 @@ except ImportError:
 
 from colab_bridge.transport_base import TransportBase
 
-PROXY_PORT = 8766  # HTTP-Proxy Port (Cloudflare tunnelt diesen)
+PROXY_PORT = 8766  # HTTP proxy port (Cloudflare tunnels this)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LOKAL: Redis Publisher + HTTP-Proxy Server
+# LOCAL: Redis Publisher + HTTP Proxy Server
 # ══════════════════════════════════════════════════════════════════════════════
 
 
 class RedisTransportLocal(TransportBase):
     """
-    Lokale Seite: Redis Pub/Sub + FastAPI HTTP-Proxy.
+    Local side: Redis Pub/Sub + FastAPI HTTP proxy.
 
-    Redis PUBLISH sendet an lokale Subscriber und speichert
-    Nachrichten in einer Redis-List (für Colab-Polling).
-    FastAPI exponiert Redis über HTTP für Colab.
+    Redis PUBLISH sends to local subscribers and stores
+    messages in a Redis list (for Colab polling).
+    FastAPI exposes Redis via HTTP for Colab.
 
-    Verwendung:
+    Usage:
         transport = RedisTransportLocal(redis_url="redis://localhost:6379")
         await transport.connect()
         await transport.publish("bt4t:signals", {"action": "BUY", ...})
@@ -116,10 +116,10 @@ class RedisTransportLocal(TransportBase):
         self,
         redis_url: str = "redis://localhost:6379",
         proxy_port: int = PROXY_PORT,
-        list_maxlen: int = 200,  # Wie viele Nachrichten pro Kanal gepuffert werden
+        list_maxlen: int = 200,  # How many messages to buffer per channel
     ):
         if not _REDIS_OK:
-            raise ImportError("pip install redis  (oder: pip install aioredis)")
+            raise ImportError("pip install redis  (or: pip install aioredis)")
         self.redis_url = redis_url
         self.proxy_port = proxy_port
         self.list_maxlen = list_maxlen
@@ -135,15 +135,15 @@ class RedisTransportLocal(TransportBase):
 
     @property
     def latency_class(self) -> str:
-        return "ms"  # 30–150ms Gesamtlatenz
+        return "ms"  # 30–150ms total latency
 
     async def connect(self) -> None:
-        """Verbindet mit Redis und startet HTTP-Proxy."""
+        """Connects to Redis and starts HTTP proxy."""
         self._redis = aioredis.from_url(self.redis_url, decode_responses=True)
         await self._redis.ping()
-        logger.success(f"[Redis] Verbunden: {self.redis_url}")
+        logger.success(f"[Redis] Connected: {self.redis_url}")
 
-        # HTTP-Proxy starten (Colab spricht hierüber)
+        # Start HTTP proxy (Colab communicates through this)
         if _FASTAPI_OK:
             await self._start_proxy()
 
@@ -152,37 +152,37 @@ class RedisTransportLocal(TransportBase):
             self._listener_task.cancel()
         if self._redis:
             await self._redis.aclose()
-        logger.info("[Redis] Getrennt")
+        logger.info("[Redis] Disconnected")
 
     async def publish(self, channel: str, payload: dict) -> None:
         """
-        Publisht auf Redis-Kanal UND speichert in Redis-List (für Colab-Polling).
+        Publishes to Redis channel AND stores in Redis list (for Colab polling).
 
-        Zwei Mechanismen parallel:
-          1. Redis PUBLISH  → für lokale Subscriber (sofort)
-          2. Redis LPUSH    → für Colab HTTP-Poll (gepuffert, FIFO)
+        Two parallel mechanisms:
+          1. Redis PUBLISH  → for local subscribers (immediate)
+          2. Redis LPUSH    → for Colab HTTP poll (buffered, FIFO)
         """
         msg = self.encode(payload)
-        # 1. Redis Pub/Sub (für lokale async-Subscriber)
+        # 1. Redis Pub/Sub (for local async subscribers)
         await self._redis.publish(channel, msg)
-        # 2. Redis List (FIFO-Queue für Colab-Polling)
+        # 2. Redis List (FIFO queue for Colab polling)
         list_key = f"bt4t:queue:{channel}"
         await self._redis.lpush(list_key, msg)
-        await self._redis.ltrim(list_key, 0, self.list_maxlen - 1)  # Maxlänge einhalten
+        await self._redis.ltrim(list_key, 0, self.list_maxlen - 1)  # Enforce max length
         logger.debug(f"[Redis] PUBLISH {channel} ({len(msg)} bytes)")
 
     async def subscribe(self, channel: str, callback: Callable[[dict], None]) -> None:
-        """Registriert Callback für Redis Pub/Sub."""
+        """Registers callback for Redis Pub/Sub."""
         self._callbacks[channel].append(callback)
         if self._pubsub is None:
             self._pubsub = self._redis.pubsub()
         await self._pubsub.subscribe(channel)
         if self._listener_task is None or self._listener_task.done():
             self._listener_task = asyncio.create_task(self._listener_loop())
-        logger.debug(f"[Redis] Abonniert: {channel}")
+        logger.debug(f"[Redis] Subscribed: {channel}")
 
     async def _listener_loop(self) -> None:
-        """Hört auf Redis Pub/Sub und dispatcht Callbacks."""
+        """Listens to Redis Pub/Sub and dispatches callbacks."""
         async for message in self._pubsub.listen():
             if message["type"] != "message":
                 continue
@@ -192,19 +192,19 @@ class RedisTransportLocal(TransportBase):
                 for cb in self._callbacks.get(channel, []):
                     cb(payload)
             except Exception as e:
-                logger.warning(f"[Redis] Listener Fehler: {e}")
+                logger.warning(f"[Redis] Listener error: {e}")
 
-    # ── HTTP-Proxy für Colab ──────────────────────────────────────────────────
+    # ── HTTP proxy for Colab ──────────────────────────────────────────────────
 
     async def _start_proxy(self) -> None:
         """
-        Startet einen minimalen FastAPI HTTP-Proxy.
-        Cloudflare Tunnel exponiert diesen für Colab.
+        Starts a minimal FastAPI HTTP proxy.
+        Cloudflare Tunnel exposes this to Colab.
 
         Endpoints:
-          POST /publish              Colab → lokal publishen
-          GET  /poll/{channel}       Colab pollt neue Nachrichten
-          GET  /health               Healthcheck
+          POST /publish              Colab → publish locally
+          GET  /poll/{channel}       Colab polls new messages
+          GET  /health               Health check
         """
         app = FastAPI(title="BT4T Redis Proxy")
         redis_ref = self._redis
@@ -216,7 +216,7 @@ class RedisTransportLocal(TransportBase):
 
         @app.post("/publish")
         async def proxy_publish(request: Request):
-            """Colab sendet Nachrichten → werden in Redis gepublisht."""
+            """Colab sends messages → published to Redis."""
             body = await request.json()
             channel = body.get("channel", "")
             payload = body.get("payload", {})
@@ -232,10 +232,10 @@ class RedisTransportLocal(TransportBase):
         @app.get("/poll/{channel:path}")
         async def proxy_poll(channel: str, n: int = 10):
             """
-            Colab pollt neue Nachrichten von einem Kanal.
+            Colab polls new messages from a channel.
 
-            Gibt die letzten n Nachrichten zurück (neueste zuerst).
-            Empfohlenes Poll-Intervall: 1–5 Sekunden.
+            Returns the last n messages (newest first).
+            Recommended poll interval: 1–5 seconds.
             """
             list_key = f"bt4t:queue:{channel}"
             raw_list = await redis_ref.lrange(list_key, 0, n - 1)
@@ -249,7 +249,7 @@ class RedisTransportLocal(TransportBase):
 
         @app.delete("/poll/{channel:path}")
         async def proxy_ack(channel: str, n: int = 1):
-            """Colab bestätigt n Nachrichten als verarbeitet (löscht sie aus Queue)."""
+            """Colab acknowledges n messages as processed (removes them from queue)."""
             list_key = f"bt4t:queue:{channel}"
             for _ in range(n):
                 await redis_ref.rpop(list_key)
@@ -260,25 +260,25 @@ class RedisTransportLocal(TransportBase):
         )
         server = uvicorn.Server(config)
         asyncio.create_task(server.serve())
-        logger.success(f"[Redis] HTTP-Proxy gestartet auf ::{self.proxy_port}")
+        logger.success(f"[Redis] HTTP proxy started on ::{self.proxy_port}")
         logger.info(
             f"[Redis] Cloudflare Tunnel: ./cloudflared tunnel --url http://localhost:{self.proxy_port}"
         )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# COLAB: HTTP-Poll Client (kein Redis-Client nötig)
+# COLAB: HTTP Poll Client (no Redis client needed)
 # ══════════════════════════════════════════════════════════════════════════════
 
 
 class RedisTransportColab(TransportBase):
     """
-    Colab-Seite: Pollt den lokalen Redis HTTP-Proxy via Cloudflare Tunnel.
+    Colab side: Polls the local Redis HTTP proxy via Cloudflare Tunnel.
 
-    Kein Redis-Client nötig in Colab — nur httpx.
-    Latenz = Poll-Intervall + Netzwerk-Overhead (~30–150ms bei 1s-Polling).
+    No Redis client needed in Colab — only httpx.
+    Latency = poll interval + network overhead (~30–150ms at 1s polling).
 
-    Verwendung in Colab:
+    Usage in Colab:
         transport = RedisTransportColab(
             proxy_url="https://abc.trycloudflare.com",
             poll_interval_s=1.0,
@@ -290,7 +290,7 @@ class RedisTransportColab(TransportBase):
 
     def __init__(
         self,
-        proxy_url: str,  # Cloudflare Tunnel URL, z.B. https://abc.trycloudflare.com
+        proxy_url: str,  # Cloudflare Tunnel URL, e.g. https://abc.trycloudflare.com
         poll_interval_s: float = 1.0,
     ):
         if not _HTTPX_OK:
@@ -312,11 +312,11 @@ class RedisTransportColab(TransportBase):
 
     async def connect(self) -> None:
         self._client = httpx.AsyncClient(timeout=10.0)
-        # Healthcheck
+        # Health check
         resp = await self._client.get(f"{self.proxy_url}/health")
         resp.raise_for_status()
         self._running = True
-        logger.success(f"[Redis/Colab] Verbunden mit Proxy: {self.proxy_url}")
+        logger.success(f"[Redis/Colab] Connected to proxy: {self.proxy_url}")
 
     async def disconnect(self) -> None:
         self._running = False
@@ -326,7 +326,7 @@ class RedisTransportColab(TransportBase):
             await self._client.aclose()
 
     async def publish(self, channel: str, payload: dict) -> None:
-        """Sendet Nachricht über HTTP-Proxy → Redis → lokaler Subscriber."""
+        """Sends message via HTTP proxy → Redis → local subscriber."""
         resp = await self._client.post(
             f"{self.proxy_url}/publish",
             json={"channel": channel, "payload": payload},
@@ -335,16 +335,16 @@ class RedisTransportColab(TransportBase):
         logger.debug(f"[Redis/Colab] PUBLISH {channel}")
 
     async def subscribe(self, channel: str, callback: Callable[[dict], None]) -> None:
-        """Startet Poll-Loop für Kanal."""
+        """Starts poll loop for channel."""
         self._callbacks[channel].append(callback)
         if channel not in self._poll_tasks:
             self._poll_tasks[channel] = asyncio.create_task(self._poll_loop(channel))
-        logger.debug(f"[Redis/Colab] Abonniert: {channel}")
+        logger.debug(f"[Redis/Colab] Subscribed: {channel}")
 
     async def _poll_loop(self, channel: str) -> None:
-        """Pollt neue Nachrichten und dispatcht Callbacks."""
+        """Polls new messages and dispatches callbacks."""
         encoded_ch = channel.replace(":", "%3A")
-        last_seen: set = set()  # Deduplizierung
+        last_seen: set = set()  # Deduplication
 
         while self._running:
             try:
@@ -355,17 +355,17 @@ class RedisTransportColab(TransportBase):
                 if resp.status_code == 200:
                     data = resp.json()
                     messages = data.get("messages", [])
-                    # Neueste Nachricht verarbeiten (Index 0 = neueste)
+                    # Process newest message (index 0 = newest)
                     for msg in reversed(messages):
                         msg_id = msg.get("timestamp", str(msg))
                         if msg_id not in last_seen:
                             last_seen.add(msg_id)
                             if len(last_seen) > 100:
-                                # Alte IDs entfernen
+                                # Remove old IDs
                                 last_seen = set(list(last_seen)[-50:])
                             for cb in self._callbacks.get(channel, []):
                                 cb(msg)
             except Exception as e:
-                logger.warning(f"[Redis/Colab] Poll Fehler {channel}: {e}")
+                logger.warning(f"[Redis/Colab] Poll error {channel}: {e}")
 
             await asyncio.sleep(self.poll_interval)

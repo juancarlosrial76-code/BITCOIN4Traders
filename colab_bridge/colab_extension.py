@@ -1,69 +1,69 @@
 """
 colab_extension.py — BITCOIN4Traders Colab Extension
 =====================================================
-Ein einziger Import hängt sich in JEDES bestehende Colab-Notebook ein.
-Kein Code-Umbau nötig. Funktioniert als Decorator, Context-Manager und
-globaler Exception-Hook gleichzeitig.
+A single import hooks into EVERY existing Colab notebook.
+No code restructuring needed. Works as a decorator, context manager and
+global exception hook simultaneously.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-VERWENDUNG IN COLAB (erste Zelle):
+USAGE IN COLAB (first cell):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    # Zelle 1 — Extension einrichten (copy-paste, nie ändern)
+    # Cell 1 — set up extension (copy-paste, never change)
     import sys, os
     sys.path.insert(0, '/content/drive/MyDrive/BITCOIN4Traders')
-    os.environ.setdefault('BT4T_LISTENER_URL', 'https://dein.tunnel.dev')
-    os.environ.setdefault('BT4T_API_TOKEN',    'dein-token')
+    os.environ.setdefault('BT4T_LISTENER_URL', 'https://your.tunnel.dev')
+    os.environ.setdefault('BT4T_API_TOKEN',    'your-token')
     os.environ.setdefault('BT4T_NOTEBOOK_ID',  'training_v3')
 
     from colab_bridge.colab_extension import bt4t
-    bt4t.install()   # ← einmal aufrufen, danach läuft alles automatisch
+    bt4t.install()   # ← call once, everything runs automatically afterwards
 
-    # Zelle 2 — dein normaler Training-Code UNVERÄNDERT:
+    # Cell 2 — your normal training code UNCHANGED:
     for epoch in range(100):
         loss = train_one_epoch(model, data)
-        bt4t.step(epoch=epoch, loss=loss)   # ← optional: Fortschritt melden
+        bt4t.step(epoch=epoch, loss=loss)   # ← optional: report progress
 
-    # ODER als Decorator (kein bt4t.step nötig):
+    # OR as a decorator (no bt4t.step needed):
     @bt4t.guard
     def run_training():
         for epoch in range(100):
             loss = train_one_epoch(model, data)
 
-    # ODER als Context-Manager:
+    # OR as a context manager:
     with bt4t.session("training_run_42"):
         train_model(model, data)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-WAS DIE EXTENSION MACHT:
+WHAT THE EXTENSION DOES:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-1. FEHLERBEHANDLUNG (automatisch, kein Code nötig)
-   • Globaler sys.excepthook — fängt JEDEN unbehandelten Fehler
-   • Klassifiziert: OOM / NaN-Loss / CUDA / Import / Timeout / ...
-   • Repariert Parameter im laufenden Prozess (kein Notebook-Neustart nötig)
-   • Sendet Fehlerbericht an lokalen Rechner (HTTP → Drive Fallback)
-   • Kann Training automatisch fortsetzen nach Reparatur
+1. ERROR HANDLING (automatic, no code needed)
+   • Global sys.excepthook — catches EVERY unhandled error
+   • Classifies: OOM / NaN-Loss / CUDA / Import / Timeout / ...
+   • Repairs parameters in the running process (no notebook restart needed)
+   • Sends error report to local machine (HTTP → Drive fallback)
+   • Can automatically resume training after repair
 
-2. ITERATIONS-STEUERUNG (opt-in via bt4t.step())
-   • Fortschritt (epoch, loss, reward) → lokaler Rechner
-   • Empfängt Befehle: PAUSE / RESUME / CHANGE_LR / CHANGE_BS / STOP
-   • Checkpoint-Trigger: automatisch bei Fortschritt-Milestone
-   • Early-Stopping: lokaler Rechner kann Training stoppen
+2. ITERATION CONTROL (opt-in via bt4t.step())
+   • Progress (epoch, loss, reward) → local machine
+   • Receives commands: PAUSE / RESUME / CHANGE_LR / CHANGE_BS / STOP
+   • Checkpoint trigger: automatic at progress milestones
+   • Early stopping: local machine can stop training
 
-3. SESSION-KEEPALIVE (automatisch)
-   • Schreibt alle 10 Min eine echte Compute-Aufgabe → verhindert Colab-Timeout
-   • Heartbeat → lokaler Rechner weiß dass Colab lebt
-   • Erkennt Session-Reset und meldet "COLAB_READY" nach Neustart
+3. SESSION KEEPALIVE (automatic)
+   • Runs a real compute task every 10 min → prevents Colab timeout
+   • Heartbeat → local machine knows Colab is alive
+   • Detects session reset and reports "COLAB_READY" after restart
 
-4. SPEICHER-MANAGEMENT (automatisch)
-   • Überwacht GPU/RAM alle 60s
-   • Bei >85% GPU-Speicher: warnt + optional gc + torch.cuda.empty_cache()
-   • OOM-Prophylaxe: reduziert Batch-Size bevor OOM auftritt
+4. MEMORY MANAGEMENT (automatic)
+   • Monitors GPU/RAM every 60s
+   • At >85% GPU memory: warns + optional gc + torch.cuda.empty_cache()
+   • OOM prophylaxis: reduces batch size before OOM occurs
 
-5. PARAMETER-HOT-RELOAD (via Befehle vom lokalen Rechner)
-   • Hyperparameter während des Trainings ändern ohne Neustart
-   • Werte werden im laufenden Prozess überschrieben
+5. PARAMETER HOT-RELOAD (via commands from local machine)
+   • Change hyperparameters during training without restart
+   • Values are overwritten in the running process
 """
 
 from __future__ import annotations
@@ -84,6 +84,9 @@ from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
+# Import Secrets Manager
+from src.config import get_colab_token
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 try:
     from loguru import logger
@@ -103,7 +106,7 @@ except ImportError:
     )
     logger = logging.getLogger("bt4t")
 
-# ── Optionale Abhängigkeiten (graceful degradation) ───────────────────────────
+# ── Optional dependencies (graceful degradation) ─────────────────────────────
 try:
     import httpx
 
@@ -120,10 +123,10 @@ except ImportError:
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# FEHLER-KLASSIFIZIERER (übernimmt Logik aus error_repair.py, läuft in Colab)
+# ERROR CLASSIFIER (mirrors logic from error_repair.py, runs in Colab)
 # ════════════════════════════════════════════════════════════════════════════════
 
-# Muster → (Fehlertyp, Auto-Reparatur-Aktion, Schwere)
+# Pattern → (error_type, auto-repair action, severity)
 _ERROR_PATTERNS = [
     (
         r"CUDA out of memory|OutOfMemoryError|OOM|out of memory",
@@ -175,8 +178,8 @@ _ERROR_PATTERNS = [
 
 def classify_error(exc: BaseException) -> tuple[str, str, str]:
     """
-    Klassifiziert eine Exception.
-    Gibt (error_type, repair_action, severity) zurück.
+    Classifies an exception.
+    Returns (error_type, repair_action, severity).
     """
     text = f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
     for pattern, etype, action, severity in _ERROR_PATTERNS:
@@ -186,14 +189,14 @@ def classify_error(exc: BaseException) -> tuple[str, str, str]:
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# IN-PROCESS REPARATUR (ändert laufende Variablen, kein Neustart)
+# IN-PROCESS REPAIR (modifies running variables, no restart needed)
 # ════════════════════════════════════════════════════════════════════════════════
 
 
 class InProcessRepair:
     """
-    Repariert Hyperparameter direkt im laufenden Python-Prozess.
-    Sucht Variablen im globalen Namespace des Notebooks (IPython __main__).
+    Repairs hyperparameters directly in the running Python process.
+    Searches for variables in the notebook's global namespace (IPython __main__).
     """
 
     def __init__(self, repair_log: list):
@@ -201,8 +204,8 @@ class InProcessRepair:
 
     def apply(self, action: str, context: dict) -> dict:
         """
-        Führt Reparatur-Aktion aus.
-        Gibt dict mit {action, changes, success} zurück.
+        Executes a repair action.
+        Returns a dict with {action, changes, success}.
         """
         handler = {
             "halve_batch_size": self._halve_batch_size,
@@ -227,17 +230,17 @@ class InProcessRepair:
             self._log.append(record)
             return record
         except Exception as e:
-            logger.warning(f"Reparatur '{action}' fehlgeschlagen: {e}")
+            logger.warning(f"Repair '{action}' failed: {e}")
             return {"action": action, "changes": [], "success": False}
 
     def _get_global_ns(self) -> dict:
-        """Holt den globalen Namespace des Notebooks (__main__)."""
+        """Returns the notebook's global namespace (__main__)."""
         import __main__
 
         return vars(__main__)
 
     def _halve_batch_size(self, ctx: dict) -> list:
-        """Halbiert alle BATCH_SIZE / batch_size Variablen im globalen NS."""
+        """Halves all BATCH_SIZE / batch_size variables in the global namespace."""
         ns = self._get_global_ns()
         changes = []
         for name in list(ns.keys()):
@@ -249,18 +252,18 @@ class InProcessRepair:
                     changes.append(f"{name}: {val} → {new_val}")
                     logger.warning(f"[Repair] {name}: {val} → {new_val}")
 
-        # Auch torch DataLoader patchen wenn vorhanden
+        # Also patch torch DataLoader if available
         if _TORCH:
             gc.collect()
             torch.cuda.empty_cache()
-            logger.info("[Repair] CUDA cache geleert")
+            logger.info("[Repair] CUDA cache cleared")
 
         if not changes:
-            logger.info("[Repair] Keine batch_size Variable gefunden")
+            logger.info("[Repair] No batch_size variable found")
         return changes
 
     def _reduce_lr(self, ctx: dict) -> list:
-        """Reduziert Learning Rate um Faktor 10."""
+        """Reduces learning rate by a factor of 10."""
         ns = self._get_global_ns()
         changes = []
         lr_names = [k for k in ns if re.search(r"(?:learning_rate|lr)\b", k, re.I)]
@@ -272,7 +275,7 @@ class InProcessRepair:
                 changes.append(f"{name}: {val:.2e} → {new_val:.2e}")
                 logger.warning(f"[Repair] {name}: {val:.2e} → {new_val:.2e}")
 
-        # PyTorch Optimizer patchen wenn vorhanden
+        # Patch PyTorch optimizer if available
         if _TORCH:
             for name, obj in ns.items():
                 if hasattr(obj, "param_groups") and hasattr(obj, "step"):
@@ -289,7 +292,7 @@ class InProcessRepair:
         return changes
 
     def _clip_gradients(self, ctx: dict) -> list:
-        """Reduziert gradient_clip_val oder aktiviert Gradient-Clipping."""
+        """Reduces gradient_clip_val or enables gradient clipping."""
         ns = self._get_global_ns()
         changes = []
         for name in list(ns.keys()):
@@ -298,14 +301,14 @@ class InProcessRepair:
                 ns[name] = min(old, 0.5)
                 changes.append(f"{name}: {old} → {ns[name]}")
         if not changes:
-            # Neu setzen
+            # Set new value
             ns["GRADIENT_CLIP_VAL"] = 0.5
-            changes.append("GRADIENT_CLIP_VAL = 0.5 (neu)")
-            logger.info("[Repair] GRADIENT_CLIP_VAL = 0.5 gesetzt")
+            changes.append("GRADIENT_CLIP_VAL = 0.5 (new)")
+            logger.info("[Repair] GRADIENT_CLIP_VAL = 0.5 set")
         return changes
 
     def _pip_install(self, ctx: dict) -> list:
-        """Installiert fehlendes Paket automatisch."""
+        """Automatically installs a missing package."""
         error_msg = ctx.get("error_message", "")
         match = re.search(r"No module named '([^']+)'", error_msg)
         if not match:
@@ -319,7 +322,7 @@ class InProcessRepair:
             capture_output=True,
             text=True,
         )
-        return [f"pip install {module}: {'OK' if result.returncode == 0 else 'FEHLER'}"]
+        return [f"pip install {module}: {'OK' if result.returncode == 0 else 'ERROR'}"]
 
     def _increase_timeout(self, ctx: dict) -> list:
         ns = self._get_global_ns()
@@ -332,16 +335,16 @@ class InProcessRepair:
         return changes
 
     def _skip_batch(self, ctx: dict) -> list:
-        logger.info("[Repair] DATA_ERROR — nächster Batch wird übersprungen")
+        logger.info("[Repair] DATA_ERROR — skipping next batch")
         return ["skip_next_batch_flag = True"]
 
     def _retry_connection(self, ctx: dict) -> list:
-        logger.info("[Repair] CONNECTION — 30s warten, dann weiter")
+        logger.info("[Repair] CONNECTION — waiting 30s, then continuing")
         time.sleep(30)
         return ["waited_30s"]
 
     def _retry_io(self, ctx: dict) -> list:
-        logger.info("[Repair] IO_ERROR — 10s warten")
+        logger.info("[Repair] IO_ERROR — waiting 10s")
         time.sleep(10)
         return ["waited_10s"]
 
@@ -350,15 +353,15 @@ class InProcessRepair:
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# REPORTER (sendet Status/Fehler an lokalen Rechner)
+# REPORTER (sends status/errors to local machine)
 # ════════════════════════════════════════════════════════════════════════════════
 
 
 class Reporter:
     """
-    Sendet Berichte an den lokalen Rechner.
-    Kanal 1: HTTP POST an Listener-URL (schnell)
-    Kanal 2: Google Drive JSON-Datei (Fallback)
+    Sends reports to the local machine.
+    Channel 1: HTTP POST to listener URL (fast)
+    Channel 2: Google Drive JSON file (fallback)
     """
 
     def __init__(self, listener_url: str, api_token: str, notebook_id: str):
@@ -378,7 +381,7 @@ class Reporter:
         self._running = False
 
     def report_error(self, exc: BaseException, error_type: str, repair_applied: dict):
-        """Sendet Fehlerbericht."""
+        """Sends error report."""
         self._queue.append(
             {
                 "type": "error",
@@ -392,7 +395,7 @@ class Reporter:
         )
 
     def report_progress(self, data: dict):
-        """Sendet Trainings-Fortschritt."""
+        """Sends training progress."""
         self._queue.append(
             {
                 "type": "progress",
@@ -403,7 +406,7 @@ class Reporter:
         )
 
     def report_heartbeat(self, extra: dict = None):
-        """Sendet Heartbeat."""
+        """Sends heartbeat."""
         payload = {
             "type": "heartbeat",
             "notebook_id": self.notebook_id,
@@ -415,7 +418,7 @@ class Reporter:
         self._queue.append(payload)
 
     def _send_loop(self):
-        """Hintergrund-Thread: leert die Queue und sendet Nachrichten."""
+        """Background thread: drains the queue and sends messages."""
         while self._running or self._queue:
             if not self._queue:
                 time.sleep(1.0)
@@ -424,7 +427,7 @@ class Reporter:
             self._send_one(payload)
 
     def _send_one(self, payload: dict):
-        """Sendet eine Nachricht. Versucht HTTP, fällt auf Drive zurück."""
+        """Sends one message. Tries HTTP, falls back to Drive."""
         if not self.listener_url:
             self._fallback_drive(payload)
             return
@@ -443,31 +446,31 @@ class Reporter:
                     headers={"X-API-Token": self.api_token},
                 )
                 if resp.status_code == 200:
-                    logger.debug(f"[Reporter] Gesendet: {payload['type']}")
+                    logger.debug(f"[Reporter] Sent: {payload['type']}")
                     return
         except Exception as e:
-            logger.debug(f"[Reporter] HTTP fehlgeschlagen: {e} — versuche Drive")
+            logger.debug(f"[Reporter] HTTP failed: {e} — trying Drive")
 
         self._fallback_drive(payload)
 
     def _fallback_drive(self, payload: dict):
-        """Schreibt Bericht als JSON-Datei — Drive-Manager liest sie."""
+        """Writes report as a JSON file — Drive manager reads it."""
         try:
-            # Prüfe ob Drive gemountet
+            # Check if Drive is mounted
             drive_dir = Path("/content/drive/MyDrive/BITCOIN4Traders/bt4t_bus/reports")
             if drive_dir.parent.parent.parent.exists():
                 drive_dir.mkdir(parents=True, exist_ok=True)
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                 out = drive_dir / f"{payload['type']}_{ts}.json"
                 out.write_text(json.dumps(payload, default=str, indent=2))
-                logger.debug(f"[Reporter] Drive Fallback: {out.name}")
+                logger.debug(f"[Reporter] Drive fallback: {out.name}")
         except Exception as e:
-            logger.debug(f"[Reporter] Drive Fallback fehlgeschlagen: {e}")
+            logger.debug(f"[Reporter] Drive fallback failed: {e}")
 
     def poll_commands(self) -> list[dict]:
         """
-        Fragt den lokalen Rechner nach Befehlen (synchron, für Iteration-Hook).
-        Gibt Liste von Command-Dicts zurück.
+        Polls the local machine for commands (synchronous, for iteration hook).
+        Returns a list of command dicts.
         """
         if not self.listener_url or not _HTTPX:
             return []
@@ -489,7 +492,7 @@ class Reporter:
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# ITERATIONS-CONTROLLER
+# ITERATION CONTROLLER
 # ════════════════════════════════════════════════════════════════════════════════
 
 
@@ -502,16 +505,16 @@ class IterationState:
     extra: dict = field(default_factory=dict)
     paused: bool = False
     stop_requested: bool = False
-    # Hyperparameter die remote geändert werden können
+    # Hyperparameters that can be changed remotely
     lr: Optional[float] = None
     batch_size: Optional[int] = None
-    checkpoint_every: int = 50  # Alle N Steps Checkpoint senden
+    checkpoint_every: int = 50  # Send checkpoint every N steps
 
 
 class IterationController:
     """
-    Steuert den Trainings-Loop von außen.
-    bt4t.step() ruft intern process() auf.
+    Controls the training loop from outside.
+    bt4t.step() internally calls process().
     """
 
     def __init__(self, reporter: Reporter, repair: InProcessRepair):
@@ -519,7 +522,7 @@ class IterationController:
         self.repair = repair
         self.state = IterationState()
         self._last_cmd_poll = 0.0
-        CMD_POLL_INTERVAL = 5.0  # Befehle alle 5s holen
+        CMD_POLL_INTERVAL = 5.0  # Poll commands every 5s
         self._cmd_poll_interval = CMD_POLL_INTERVAL
 
     def process(
@@ -531,14 +534,14 @@ class IterationController:
         **extra,
     ):
         """
-        Wird bei jedem Trainings-Schritt aufgerufen.
-        1. State aktualisieren
-        2. Fortschritt reporten
-        3. Befehle prüfen + ausführen
-        4. Pause-Loop wenn pausiert
-        5. Stop-Flag zurückgeben
+        Called at every training step.
+        1. Update state
+        2. Report progress
+        3. Check + execute commands
+        4. Pause loop when paused
+        5. Return stop flag
         """
-        # State aktualisieren
+        # Update state
         if epoch is not None:
             self.state.epoch = epoch
         if step is not None:
@@ -549,7 +552,7 @@ class IterationController:
             self.state.reward = reward
         self.state.extra = extra
 
-        # Fortschritt senden (nicht jeden Step — alle 10)
+        # Send progress (not every step — every 10)
         if self.state.step % 10 == 0:
             self.reporter.report_progress(
                 {
@@ -563,51 +566,51 @@ class IterationController:
                 }
             )
 
-        # Befehle prüfen (max alle 5s)
+        # Check commands (at most every 5s)
         now = time.time()
         if now - self._last_cmd_poll > self._cmd_poll_interval:
             self._last_cmd_poll = now
             self._process_commands()
 
-        # Pause-Loop
+        # Pause loop
         while self.state.paused and not self.state.stop_requested:
-            logger.info("[bt4t] Training pausiert — warte auf RESUME...")
+            logger.info("[bt4t] Training paused — waiting for RESUME...")
             time.sleep(5.0)
             self._process_commands()
 
         return not self.state.stop_requested
 
     def _process_commands(self):
-        """Verarbeitet Befehle vom lokalen Rechner."""
+        """Processes commands from the local machine."""
         for cmd_dict in self.reporter.poll_commands():
             cmd = cmd_dict.get("cmd", "")
             params = cmd_dict.get("params", {})
             self._execute(cmd, params)
 
     def _execute(self, cmd: str, params: dict):
-        """Führt einen Befehl aus."""
+        """Executes a command."""
         if cmd == "PAUSE":
             self.state.paused = True
-            logger.warning("[bt4t] Training PAUSIERT (Remote-Befehl)")
+            logger.warning("[bt4t] Training PAUSED (remote command)")
 
         elif cmd == "RESUME":
             self.state.paused = False
-            logger.success("[bt4t] Training FORTGESETZT (Remote-Befehl)")
+            logger.success("[bt4t] Training RESUMED (remote command)")
 
         elif cmd == "STOP" or cmd == "SHUTDOWN":
             self.state.stop_requested = True
-            logger.warning("[bt4t] Training STOP angefordert (Remote-Befehl)")
+            logger.warning("[bt4t] Training STOP requested (remote command)")
 
         elif cmd == "CHANGE_LR":
             new_lr = params.get("value")
             if new_lr:
                 self.repair.apply("reduce_lr", {})
-                # Direktes Überschreiben im globalen NS
+                # Directly overwrite in global namespace
                 ns = self.repair._get_global_ns()
                 for k in ns:
                     if re.search(r"(?:learning_rate|lr)\b", k, re.I):
                         ns[k] = float(new_lr)
-                logger.success(f"[bt4t] LR geändert auf {new_lr}")
+                logger.success(f"[bt4t] LR changed to {new_lr}")
 
         elif cmd == "CHANGE_BS":
             new_bs = params.get("value")
@@ -616,12 +619,12 @@ class IterationController:
                 for k in ns:
                     if "batch_size" in k.lower():
                         ns[k] = int(new_bs)
-                logger.success(f"[bt4t] Batch-Size geändert auf {new_bs}")
+                logger.success(f"[bt4t] Batch size changed to {new_bs}")
 
         elif cmd == "RELOAD_MODEL":
             path = params.get("model_path")
-            logger.info(f"[bt4t] RELOAD_MODEL angefordert: {path}")
-            # Signal setzen — Notebook-Code muss reload_requested prüfen
+            logger.info(f"[bt4t] RELOAD_MODEL requested: {path}")
+            # Set signal — notebook code must check reload_requested
             ns = self.repair._get_global_ns()
             ns["BT4T_RELOAD_MODEL_PATH"] = path
             ns["BT4T_RELOAD_REQUESTED"] = True
@@ -638,16 +641,16 @@ class IterationController:
             )
 
         elif cmd != "NONE":
-            logger.debug(f"[bt4t] Unbekannter Befehl: {cmd}")
+            logger.debug(f"[bt4t] Unknown command: {cmd}")
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# SPEICHER-MONITOR
+# MEMORY MONITOR
 # ════════════════════════════════════════════════════════════════════════════════
 
 
 class MemoryMonitor:
-    """Überwacht GPU/RAM und warnt prophylaktisch vor OOM."""
+    """Monitors GPU/RAM and proactively warns before OOM."""
 
     def __init__(self, repair: InProcessRepair, warn_pct: float = 85.0):
         self.repair = repair
@@ -676,14 +679,14 @@ class MemoryMonitor:
         pct = allocated / total * 100
 
         if pct > self.warn_pct:
-            logger.warning(f"[Memory] GPU: {pct:.1f}% — Prophylaktische Bereinigung")
+            logger.warning(f"[Memory] GPU: {pct:.1f}% — Proactive cleanup")
             gc.collect()
             torch.cuda.empty_cache()
             pct_after = torch.cuda.memory_allocated() / total * 100
-            logger.info(f"[Memory] GPU nach Bereinigung: {pct_after:.1f}%")
+            logger.info(f"[Memory] GPU after cleanup: {pct_after:.1f}%")
 
             if pct_after > 95.0:
-                logger.warning("[Memory] GPU >95% — halbe Batch-Size prophylaktisch")
+                logger.warning("[Memory] GPU >95% — proactively halving batch size")
                 self.repair.apply("halve_batch_size", {})
 
 
@@ -694,8 +697,8 @@ class MemoryMonitor:
 
 class ColabKeepalive:
     """
-    Verhindert Colab-Session-Timeout durch echte Compute-Tasks.
-    Colab killt Sessions bei INAKTIVITÄT (kein Output/Compute) — nicht nach Zeit.
+    Prevents Colab session timeout via real compute tasks.
+    Colab kills sessions on INACTIVITY (no output/compute) — not based on time.
     """
 
     def __init__(self, reporter: Reporter, interval_s: float = 600.0):
@@ -708,7 +711,7 @@ class ColabKeepalive:
         self._running = True
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
-        logger.debug(f"[Keepalive] Gestartet (alle {self.interval:.0f}s)")
+        logger.debug(f"[Keepalive] Started (every {self.interval:.0f}s)")
 
     def stop(self):
         self._running = False
@@ -721,10 +724,10 @@ class ColabKeepalive:
             self._tick()
 
     def _tick(self):
-        """Führt minimale Compute-Aufgabe aus (verhindert Timeout)."""
+        """Runs a minimal compute task (prevents timeout)."""
         import numpy as np
 
-        # Echte Arbeit (kein Sleep-Trick) — Colab erkennt aktiven Kernel
+        # Real work (no sleep trick) — Colab detects an active kernel
         _ = np.random.randn(1000, 1000).mean()
         ts = datetime.now().strftime("%H:%M:%S")
         logger.debug(f"[Keepalive] Tick @ {ts}")
@@ -732,18 +735,18 @@ class ColabKeepalive:
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# GLOBALER EXCEPTION HOOK
+# GLOBAL EXCEPTION HOOK
 # ════════════════════════════════════════════════════════════════════════════════
 
 
 class ExceptionHook:
     """
-    Hängt sich als sys.excepthook ein.
-    Fängt alle unbehandelten Exceptions und:
-      1. Klassifiziert den Fehler
-      2. Führt In-Process-Reparatur durch
-      3. Meldet an lokalen Rechner
-      4. Zeigt klare Diagnose-Ausgabe
+    Installs itself as sys.excepthook.
+    Catches all unhandled exceptions and:
+      1. Classifies the error
+      2. Performs in-process repair
+      3. Reports to local machine
+      4. Displays a clear diagnostic output
     """
 
     def __init__(self, reporter: Reporter, repair: InProcessRepair):
@@ -754,31 +757,31 @@ class ExceptionHook:
 
     def install(self):
         sys.excepthook = self._hook
-        logger.debug("[Hook] sys.excepthook installiert")
+        logger.debug("[Hook] sys.excepthook installed")
 
     def uninstall(self):
         sys.excepthook = self._original_hook
 
     def _hook(self, exc_type, exc_value, exc_tb):
-        """Wird bei jeder unbehandelten Exception aufgerufen."""
+        """Called for every unhandled exception."""
         if exc_type is KeyboardInterrupt:
             self._original_hook(exc_type, exc_value, exc_tb)
             return
 
         error_type, action, severity = classify_error(exc_value)
 
-        # Wiederholte gleiche Fehler zählen
+        # Count repeated identical errors
         self._repair_count[error_type] = self._repair_count.get(error_type, 0) + 1
         count = self._repair_count[error_type]
 
         logger.error(
-            f"Exception abgefangen: {exc_type.__name__}\n"
-            f"  Typ:    {error_type} (Schwere: {severity})\n"
-            f"  Aktion: {action}\n"
-            f"  Anzahl: {count}x dieser Fehlertyp"
+            f"Exception caught: {exc_type.__name__}\n"
+            f"  Type:   {error_type} (severity: {severity})\n"
+            f"  Action: {action}\n"
+            f"  Count:  {count}x this error type"
         )
 
-        # Reparatur (max. 5x pro Fehlertyp um Loops zu vermeiden)
+        # Repair (max. 5x per error type to avoid loops)
         repair_result = {"action": "none", "changes": [], "success": False}
         if action != "none" and count <= 5:
             ctx = {
@@ -788,45 +791,49 @@ class ExceptionHook:
             repair_result = self.repair.apply(action, ctx)
             if repair_result["success"]:
                 logger.success(
-                    f"[Hook] Reparatur '{action}' erfolgreich: "
+                    f"[Hook] Repair '{action}' successful: "
                     f"{repair_result['changes']}"
                 )
         elif count > 5:
-            logger.warning(
-                f"[Hook] {error_type} trat {count}x auf — keine weitere Reparatur"
-            )
+            logger.warning(f"[Hook] {error_type} occurred {count}x — no further repair")
 
-        # An lokalen Rechner melden
+        # Report to local machine
         self.reporter.report_error(exc_value, error_type, repair_result)
 
-        # Original-Hook auch aufrufen (Traceback ausgeben)
+        # Also call original hook (print traceback)
         self._original_hook(exc_type, exc_value, exc_tb)
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# HAUPT-KLASSE: bt4t (öffentliche API)
+# MAIN CLASS: bt4t (public API)
 # ════════════════════════════════════════════════════════════════════════════════
 
 
 class BT4TExtension:
     """
-    Öffentliche API der Colab-Extension.
+    Public API of the Colab extension.
 
-    Wird als Singleton `bt4t` importiert:
+    Imported as singleton `bt4t`:
         from colab_bridge.colab_extension import bt4t
         bt4t.install()
     """
 
     def __init__(self):
-        # Konfiguration aus Umgebungsvariablen
+        # Configuration from Secrets Manager (with fallback to environment)
         self._listener_url = os.getenv("BT4T_LISTENER_URL", "")
-        self._api_token = os.getenv("BT4T_API_TOKEN", "bt4t-secret-token")
+
+        # Get token from Secrets Manager
+        secrets_token = get_colab_token()
+        self._api_token = secrets_token or os.getenv(
+            "BT4T_API_TOKEN", "bt4t-secret-token"
+        )
+
         self._notebook_id = os.getenv("BT4T_NOTEBOOK_ID", "colab_notebook")
 
         self._installed = False
         self._repair_log: list = []
 
-        # Komponenten (werden bei install() gestartet)
+        # Components (started during install())
         self._reporter: Optional[Reporter] = None
         self._repair: Optional[InProcessRepair] = None
         self._controller: Optional[IterationController] = None
@@ -848,25 +855,25 @@ class BT4TExtension:
         memory_warn_pct: float = 85.0,
     ) -> "BT4TExtension":
         """
-        Installiert alle Extension-Komponenten.
+        Installs all extension components.
 
-        Parameter:
-            listener_url    : URL des lokalen Control-Servers (z.B. Cloudflare Tunnel)
-            api_token       : Auth-Token (muss mit lokalem Server übereinstimmen)
-            notebook_id     : Name dieses Notebooks (für Logs/Berichte)
-            keepalive       : Colab-Session-Keepalive aktivieren
-            memory_monitor  : GPU/RAM-Überwachung aktivieren
-            exception_hook  : Globalen Exception-Hook installieren
-            keepalive_interval_s : Keepalive-Intervall in Sekunden (Standard: 600)
-            memory_warn_pct : GPU-Warnschwelle in % (Standard: 85%)
+        Parameters:
+            listener_url    : URL of the local control server (e.g. Cloudflare Tunnel)
+            api_token       : Auth token (must match local server)
+            notebook_id     : Name of this notebook (for logs/reports)
+            keepalive       : Enable Colab session keepalive
+            memory_monitor  : Enable GPU/RAM monitoring
+            exception_hook  : Install global exception hook
+            keepalive_interval_s : Keepalive interval in seconds (default: 600)
+            memory_warn_pct : GPU warning threshold in % (default: 85%)
 
-        Gibt self zurück für Method-Chaining.
+        Returns self for method chaining.
         """
         if self._installed:
-            logger.warning("[bt4t] Extension bereits installiert — überspringe")
+            logger.warning("[bt4t] Extension already installed — skipping")
             return self
 
-        # Konfiguration übernehmen
+        # Apply configuration
         if listener_url:
             self._listener_url = listener_url
         if api_token:
@@ -874,49 +881,49 @@ class BT4TExtension:
         if notebook_id:
             self._notebook_id = notebook_id
 
-        # Komponenten initialisieren
+        # Initialize components
         self._reporter = Reporter(
             self._listener_url, self._api_token, self._notebook_id
         )
         self._repair = InProcessRepair(self._repair_log)
         self._controller = IterationController(self._reporter, self._repair)
 
-        # Reporter starten
+        # Start reporter
         self._reporter.start()
 
-        # Keepalive
+        # Start keepalive
         if keepalive:
             self._keepalive = ColabKeepalive(self._reporter, keepalive_interval_s)
             self._keepalive.start()
 
-        # Speicher-Monitor
+        # Start memory monitor
         if memory_monitor:
             self._memory_mon = MemoryMonitor(self._repair, memory_warn_pct)
             self._memory_mon.start()
 
-        # Exception-Hook
+        # Install exception hook
         if exception_hook:
             self._hook = ExceptionHook(self._reporter, self._repair)
             self._hook.install()
 
         self._installed = True
 
-        # Startup-Heartbeat
+        # Startup heartbeat
         self._reporter.report_heartbeat({"event": "COLAB_READY", "installed": True})
 
         logger.success("=" * 55)
-        logger.success("  bt4t Extension installiert")
+        logger.success("  bt4t Extension installed")
         logger.success(f"  Notebook  : {self._notebook_id}")
-        logger.success(f"  Listener  : {self._listener_url or '(nicht gesetzt)'}")
-        logger.success(f"  Keepalive : {'an' if keepalive else 'aus'}")
-        logger.success(f"  Memory    : {'an' if memory_monitor else 'aus'}")
-        logger.success(f"  ExcHook   : {'an' if exception_hook else 'aus'}")
+        logger.success(f"  Listener  : {self._listener_url or '(not set)'}")
+        logger.success(f"  Keepalive : {'on' if keepalive else 'off'}")
+        logger.success(f"  Memory    : {'on' if memory_monitor else 'off'}")
+        logger.success(f"  ExcHook   : {'on' if exception_hook else 'off'}")
         logger.success("=" * 55)
 
         return self
 
     def uninstall(self):
-        """Entfernt alle Hooks und stoppt alle Threads."""
+        """Removes all hooks and stops all threads."""
         if self._hook:
             self._hook.uninstall()
         if self._keepalive:
@@ -926,9 +933,9 @@ class BT4TExtension:
         if self._reporter:
             self._reporter.stop()
         self._installed = False
-        logger.info("[bt4t] Extension deinstalliert")
+        logger.info("[bt4t] Extension uninstalled")
 
-    # ── Öffentliche API ───────────────────────────────────────────────────────
+    # ── Public API ────────────────────────────────────────────────────────────
 
     def step(
         self,
@@ -939,18 +946,18 @@ class BT4TExtension:
         **extra,
     ) -> bool:
         """
-        Muss bei jedem Trainings-Schritt aufgerufen werden (optional).
+        Should be called at every training step (optional).
 
-        Meldet Fortschritt, prüft Befehle, führt Pause-Loop aus.
+        Reports progress, checks commands, runs pause loop.
 
         Returns:
-            bool: False wenn Training gestoppt werden soll.
+            bool: False if training should be stopped.
 
-        Verwendung:
+        Usage:
             for epoch in range(100):
                 loss = train(...)
                 if not bt4t.step(epoch=epoch, loss=float(loss)):
-                    break   # Training gestoppt
+                    break   # Training stopped
         """
         if not self._installed:
             return True
@@ -960,9 +967,9 @@ class BT4TExtension:
 
     def guard(self, fn: Callable) -> Callable:
         """
-        Decorator: schützt eine Funktion mit automatischer Fehlerbehandlung.
+        Decorator: protects a function with automatic error handling.
 
-        Verwendung:
+        Usage:
             @bt4t.guard
             def run_training():
                 for epoch in range(100):
@@ -976,13 +983,13 @@ class BT4TExtension:
                 try:
                     return fn(*args, **kwargs)
                 except KeyboardInterrupt:
-                    logger.info("[bt4t.guard] KeyboardInterrupt — abgebrochen")
+                    logger.info("[bt4t.guard] KeyboardInterrupt — aborted")
                     raise
                 except Exception as exc:
                     error_type, action, severity = classify_error(exc)
                     logger.error(
                         f"[bt4t.guard] Exception in '{fn.__name__}' "
-                        f"(Versuch {attempt + 1}/{max_retries}): "
+                        f"(attempt {attempt + 1}/{max_retries}): "
                         f"{type(exc).__name__}: {exc}"
                     )
                     ctx = {"error_message": str(exc), "error_type": error_type}
@@ -991,7 +998,7 @@ class BT4TExtension:
 
                     if attempt < max_retries - 1 and severity != "high":
                         wait = 10 * (attempt + 1)
-                        logger.info(f"[bt4t.guard] Warte {wait}s vor Wiederholung...")
+                        logger.info(f"[bt4t.guard] Waiting {wait}s before retry...")
                         time.sleep(wait)
                     else:
                         raise
@@ -1001,21 +1008,21 @@ class BT4TExtension:
     @contextmanager
     def session(self, name: str = ""):
         """
-        Context-Manager: schützt einen Code-Block.
+        Context manager: protects a code block.
 
-        Verwendung:
+        Usage:
             with bt4t.session("training_run_42"):
                 train_model(model, data)
         """
         label = name or f"session_{int(time.time())}"
-        logger.info(f"[bt4t] Session gestartet: {label}")
+        logger.info(f"[bt4t] Session started: {label}")
         self._reporter.report_heartbeat({"event": "SESSION_START", "name": label})
         try:
             yield self
             self._reporter.report_heartbeat(
                 {"event": "SESSION_END", "name": label, "status": "OK"}
             )
-            logger.success(f"[bt4t] Session beendet: {label}")
+            logger.success(f"[bt4t] Session ended: {label}")
         except KeyboardInterrupt:
             self._reporter.report_heartbeat(
                 {"event": "SESSION_END", "name": label, "status": "INTERRUPTED"}
@@ -1038,8 +1045,8 @@ class BT4TExtension:
 
     def send_checkpoint(self, model_path: str = None, metrics: dict = None):
         """
-        Meldet einen Checkpoint an den lokalen Rechner.
-        Optional: Pfad zum gespeicherten Modell.
+        Reports a checkpoint to the local machine.
+        Optional: path to the saved model.
         """
         self._reporter.report_progress(
             {
@@ -1050,17 +1057,17 @@ class BT4TExtension:
                 "step": self._controller.state.step,
             }
         )
-        logger.info(f"[bt4t] Checkpoint gemeldet: {model_path or '(kein Pfad)'}")
+        logger.info(f"[bt4t] Checkpoint reported: {model_path or '(no path)'}")
 
     def send_alert(self, message: str, level: str = "INFO"):
-        """Sendet eine manuelle Nachricht an den lokalen Rechner."""
+        """Sends a manual message to the local machine."""
         self._reporter.report_progress(
             {"event": "ALERT", "level": level, "message": message}
         )
 
     @property
     def should_stop(self) -> bool:
-        """True wenn Training gestoppt werden soll (Remote-Befehl)."""
+        """True if training should be stopped (remote command)."""
         if not self._controller:
             return False
         return self._controller.state.stop_requested
@@ -1072,11 +1079,11 @@ class BT4TExtension:
         return self._controller.state.paused
 
     def repair_log(self) -> list:
-        """Gibt alle durchgeführten Reparaturen zurück."""
+        """Returns all repairs that have been performed."""
         return list(self._repair_log)
 
     def status(self) -> dict:
-        """Gibt den aktuellen Extension-Status zurück."""
+        """Returns the current extension status."""
         state = self._controller.state if self._controller else IterationState()
         return {
             "installed": self._installed,
@@ -1091,12 +1098,12 @@ class BT4TExtension:
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# Singleton-Instanz
+# Singleton instance
 # ════════════════════════════════════════════════════════════════════════════════
 
 bt4t = BT4TExtension()
 
-# ── Hilfsfunktion ─────────────────────────────────────────────────────────────
+# ── Helper function ───────────────────────────────────────────────────────────
 
 
 def _isnan(v) -> bool:

@@ -12,11 +12,26 @@ import {
   ResponsiveContainer,
   AreaChart,
   Area,
-  LineChart,
-  Line,
 } from 'recharts';
-import { TrendingUp, TrendingDown, DollarSign, Activity, Wallet, Percent, Zap, Power, PowerOff } from 'lucide-react';
-import { TooltipContent, TooltipTrigger, Tooltip as CustomTooltip } from '../components/ui/Tooltip';
+import {
+  TrendingUp,
+  TrendingDown,
+  DollarSign,
+  Activity,
+  Wallet,
+  Zap,
+  Power,
+  PowerOff,
+  Wifi,
+  WifiOff,
+  Pause,
+  Info,
+  ArrowUp,
+  ArrowDown,
+  BarChart3,
+  Target,
+  Shield,
+} from 'lucide-react';
 
 interface PricePoint {
   time: string;
@@ -34,31 +49,23 @@ interface MetricCardProps {
 
 function MetricCard({ label, value, change, positive, icon: Icon, helpText }: MetricCardProps) {
   return (
-    <CustomTooltip>
-      <TooltipTrigger asChild>
-        <Card className="hover:border-bitcoin-orange/30 transition-colors cursor-help">
-          <div className="flex items-start justify-between">
-            <div>
-              <p className="text-sm text-text-secondary">{label}</p>
-              <p className="text-2xl font-bold text-text-primary mt-1">{value}</p>
-              {change && (
-                <p className={`text-sm mt-1 ${positive ? 'text-green-400' : 'text-red-400'}`}>
-                  {change}
-                </p>
-              )}
-            </div>
-            <div className="p-2 bg-bitcoin-orange/10 rounded-lg">
-              <Icon className="text-bitcoin-orange" size={20} />
-            </div>
-          </div>
-        </Card>
-      </TooltipTrigger>
-      {helpText && (
-        <TooltipContent>
-          <p>{helpText}</p>
-        </TooltipContent>
-      )}
-    </CustomTooltip>
+    <Card className="hover:border-bitcoin-orange/30 transition-colors">
+      <div className="flex items-start justify-between">
+        <div>
+          <p className="text-sm text-text-secondary">{label}</p>
+          <p className="text-2xl font-bold text-text-primary mt-1">{value}</p>
+          {change && (
+            <p className={`text-sm mt-1 ${positive ? 'text-green-400' : 'text-red-400'}`}>
+              {change}
+            </p>
+          )}
+        </div>
+        <div className="p-2 bg-bitcoin-orange/10 rounded-lg">
+          <Icon className="text-bitcoin-orange" size={20} />
+        </div>
+      </div>
+      {helpText && <p className="text-xs text-text-muted mt-2">{helpText}</p>}
+    </Card>
   );
 }
 
@@ -73,10 +80,12 @@ export function Dashboard() {
   const [totalTrades, setTotalTrades] = useState('0');
   const [sharpeRatio, setSharpeRatio] = useState('0.00');
   const [maxDrawdown, setMaxDrawdown] = useState('0%');
-  const [signal, setSignal] = useState({ label: 'FLAT', signal: 0, champion: 'None' });
+  const [signal, setSignal] = useState({ label: 'FLAT', signal: 0, champion: 'None', reason: '' });
   const [balance, setBalance] = useState({ USDT: 0, BTC: 0 });
   const [equityCurve, setEquityCurve] = useState<{ timestamp: string; value: number }[]>([]);
   const [, setIsLoading] = useState(true);
+  const [tradingMode, setTradingMode] = useState<'paper' | 'live'>('paper');
+  const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
 
   useEffect(() => {
     const fetchData = async () => {
@@ -87,25 +96,30 @@ export function Dashboard() {
           api.analytics.getMetrics(),
           api.trading.getBalance(),
         ]);
-        
+
         setIsRunning(status.is_running);
+        setTradingMode(status.mode === 'live' ? 'live' : 'paper');
+
+        const signalMap: Record<string, number> = { LONG: 1, SHORT: -1, FLAT: 0 };
         setSignal({
           label: status.champion_signal || 'FLAT',
-          signal: status.champion_signal === 'LONG' ? 1 : status.champion_signal === 'SHORT' ? -1 : 0,
+          signal: signalMap[status.champion_signal || 'FLAT'] || 0,
           champion: status.champion_name || 'None',
+          reason: 'Automatic signal from trained model',
         });
-        
+
         setWinRate(formatPercent(metrics.winRate));
         setTotalTrades(metrics.totalTrades.toString());
         setSharpeRatio(formatNumber(metrics.sharpeRatio));
         setMaxDrawdown(formatPercent(-metrics.maxDrawdown));
-        
+
         const pnl = metrics.totalReturn * 10000;
         setDailyPnL(formatCurrency(pnl));
         setDailyPnLPercent(formatPercent(metrics.totalReturn));
         setPortfolioValue(formatCurrency(10000 * (1 + metrics.totalReturn)));
-        
+
         setBalance(bal.balance);
+        setLastUpdate(new Date());
       } catch (e) {
         console.error('Failed to fetch data:', e);
       } finally {
@@ -113,7 +127,7 @@ export function Dashboard() {
       }
     };
     fetchData();
-    
+
     const interval = setInterval(fetchData, 30000);
     return () => clearInterval(interval);
   }, [setIsRunning]);
@@ -137,7 +151,7 @@ export function Dashboard() {
       setCurrentPrice(lastPrice);
       const now = new Date();
       const time = now.toLocaleTimeString();
-      setPriceHistory((prev) => {
+      setPriceHistory(prev => {
         const newHistory = [...prev, { time, price: lastPrice }].slice(-50);
         return newHistory;
       });
@@ -146,12 +160,15 @@ export function Dashboard() {
   }, [lastPrice, setCurrentPrice, addPricePoint]);
 
   const price = lastPrice || 0;
-  const chartData = priceHistory.length > 0 ? priceHistory : 
-    equityCurve.length > 0 ? equityCurve.map(d => ({ time: d.timestamp.slice(11, 16), price: d.value })) :
-    Array.from({ length: 50 }, (_, i) => ({
-      time: new Date(Date.now() - (50 - i) * 60000).toLocaleTimeString(),
-      price: 42000 + Math.random() * 2000 - 1000,
-    }));
+  const chartData =
+    priceHistory.length > 0
+      ? priceHistory
+      : equityCurve.length > 0
+        ? equityCurve.map(d => ({ time: d.timestamp.slice(11, 16), price: d.value }))
+        : Array.from({ length: 50 }, (_, i) => ({
+            time: new Date(Date.now() - (50 - i) * 60000).toLocaleTimeString(),
+            price: 42000 + Math.random() * 2000 - 1000,
+          }));
 
   const handleStartTrading = async () => {
     try {
@@ -171,111 +188,226 @@ export function Dashboard() {
     }
   };
 
+  const signalInfo = {
+    LONG: {
+      color: 'bg-green-500',
+      text: 'text-green-400',
+      icon: ArrowUp,
+      label: 'KAUFEN',
+      desc: 'Signal empfiehlt Long-Position',
+    },
+    SHORT: {
+      color: 'bg-red-500',
+      text: 'text-red-400',
+      icon: ArrowDown,
+      label: 'VERKAUFEN',
+      desc: 'Signal empfiehlt Short-Position',
+    },
+    FLAT: {
+      color: 'bg-gray-500',
+      text: 'text-gray-400',
+      icon: Pause,
+      label: 'FLACH',
+      desc: 'Kein klares Signal - keine Position',
+    },
+  };
+
+  const currentSignal = signalInfo[signal.label as keyof typeof signalInfo] || signalInfo.FLAT;
+  const SignalIcon = currentSignal.icon;
+
   const metrics = [
-    { 
-      label: 'Portfolio Wert', 
-      value: portfolioValue, 
-      change: dailyPnLPercent, 
+    {
+      label: 'Portfolio Wert',
+      value: portfolioValue,
+      change: dailyPnLPercent,
       positive: parseFloat(dailyPnLPercent) >= 0,
       icon: Wallet,
-      helpText: 'Aktueller Gesamtwert des Portfolios inkl. aller Positionen'
+      helpText: 'Aktueller Gesamtwert',
     },
-    { 
-      label: 'Tages-P&L', 
-      value: dailyPnL, 
+    {
+      label: 'Tages-P&L',
+      value: dailyPnL,
       change: dailyPnLPercent,
       positive: parseFloat(dailyPnLPercent) >= 0,
       icon: DollarSign,
-      helpText: 'Gewinn/Verlust des aktuellen Tages'
+      helpText: 'Gewinn/Verlust heute',
     },
-    { 
-      label: 'Win Rate', 
-      value: winRate, 
-      icon: Percent,
-      helpText: 'Prozentualer Anteil gewonnener Trades'
-    },
-    { 
-      label: 'Trades Gesamt', 
-      value: totalTrades, 
-      icon: Activity,
-      helpText: 'Anzahl aller ausgeführten Trades seit Start'
-    },
-    { 
-      label: 'Sharpe Ratio', 
-      value: sharpeRatio, 
+    { label: 'Win Rate', value: winRate, icon: Target, helpText: 'Prozent gewonnener Trades' },
+    { label: 'Trades', value: totalTrades, icon: Activity, helpText: 'Gesamtzahl aller Trades' },
+    {
+      label: 'Sharpe',
+      value: sharpeRatio,
       icon: TrendingUp,
-      helpText: 'Risiko-adjustierte Rendite (>= 1.0 = gut, >= 2.0 = sehr gut)'
+      helpText: 'Risiko-adjustierte Rendite',
     },
-    { 
-      label: 'Max Drawdown', 
-      value: maxDrawdown, 
-      icon: TrendingDown,
-      helpText: 'Maximaler Verlust vom Allzeithoch'
-    },
+    { label: 'Max DD', value: maxDrawdown, icon: TrendingDown, helpText: 'Maximaler Verlust' },
   ];
-
-  const signalColor = signal.signal === 1 ? 'text-green-400 bg-green-500/10' : 
-                      signal.signal === -1 ? 'text-red-400 bg-red-500/10' : 
-                      'text-gray-400 bg-gray-500/10';
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-text-primary">Dashboard</h1>
-          <p className="text-text-secondary">Übersicht deines Trading Bot</p>
-        </div>
+      {/* MODE BANNER */}
+      <div
+        className={`rounded-xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 ${
+          tradingMode === 'live'
+            ? 'bg-red-500/10 border border-red-500/30'
+            : 'bg-yellow-500/10 border border-yellow-500/30'
+        }`}
+      >
         <div className="flex items-center gap-3">
-          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg ${isConnected ? 'bg-green-500/10' : 'bg-gray-500/10'}`}>
-            <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-gray-500'}`}></div>
-            <span className="text-sm text-text-secondary">{isConnected ? 'Live' : 'Getrennt'}</span>
+          <div
+            className={`w-12 h-12 rounded-full flex items-center justify-center ${
+              tradingMode === 'live' ? 'bg-red-500/20' : 'bg-yellow-500/20'
+            }`}
+          >
+            {tradingMode === 'live' ? (
+              <Zap className="text-red-400" size={24} />
+            ) : (
+              <Shield className="text-yellow-400" size={24} />
+            )}
           </div>
-          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg ${isRunning ? 'bg-green-500/10' : 'bg-gray-500/10'}`}>
-            <div className={`w-3 h-3 rounded-full ${isRunning ? 'bg-green-500 animate-pulse' : 'bg-gray-500'}`}></div>
-            <span className="text-sm text-text-secondary">{isRunning ? 'Bot Läuft' : 'Bot Gestoppt'}</span>
+          <div>
+            <h2 className="text-xl font-bold flex items-center gap-2">
+              {tradingMode === 'live' ? (
+                <>
+                  <span className="text-red-400">LIVE TRADING</span>
+                  <span className="text-xs bg-red-500 text-white px-2 py-0.5 rounded">
+                    ECHTES GELD
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span className="text-yellow-400">PAPER TRADING</span>
+                  <span className="text-xs bg-yellow-500 text-black px-2 py-0.5 rounded">
+                    SIMULATION
+                  </span>
+                </>
+              )}
+            </h2>
+            <p className="text-sm text-text-secondary">
+              {tradingMode === 'live'
+                ? 'Handel mit echtem Binance-Konto aktiv'
+                : 'Simulation mit virtuellem Guthaben - kein echtes Risiko'}
+            </p>
+          </div>
+        </div>
+
+        {/* Connection Status */}
+        <div className="flex items-center gap-4">
+          <div
+            className={`flex items-center gap-2 px-3 py-2 rounded-lg ${
+              isConnected ? 'bg-green-500/10' : 'bg-red-500/10'
+            }`}
+          >
+            {isConnected ? (
+              <Wifi className="text-green-400" size={18} />
+            ) : (
+              <WifiOff className="text-red-400" size={18} />
+            )}
+            <span
+              className={`text-sm font-medium ${isConnected ? 'text-green-400' : 'text-red-400'}`}
+            >
+              {isConnected ? 'Verbunden' : 'Getrennt'}
+            </span>
+          </div>
+          <div className="text-xs text-text-muted">
+            Letzte Aktualisierung: {lastUpdate.toLocaleTimeString()}
           </div>
         </div>
       </div>
 
-      {/* Signal Banner */}
-      <Card className={`border-l-4 ${signalColor.replace('text-', 'border-l-').split(' ')[0]}`}>
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+      {/* SIGNAL BANNER */}
+      <Card
+        className={`border-l-4 ${
+          signal.signal === 1
+            ? 'border-l-green-500'
+            : signal.signal === -1
+              ? 'border-l-red-500'
+              : 'border-l-gray-500'
+        }`}
+      >
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div className="flex items-center gap-4">
-            <div className={`p-3 rounded-lg ${signalColor}`}>
-              {signal.signal === 1 ? <Zap size={24} /> : signal.signal === -1 ? <Zap size={24} /> : <Activity size={24} />}
+            <div className={`p-4 rounded-xl ${currentSignal.color}/20`}>
+              <SignalIcon className={currentSignal.text} size={32} />
             </div>
             <div>
               <p className="text-sm text-text-secondary">Aktuelles Signal</p>
-              <p className="text-xl font-bold">{signal.label}</p>
-              <p className="text-xs text-text-muted">von {signal.champion}</p>
+              <h3 className={`text-2xl font-bold ${currentSignal.text}`}>{currentSignal.label}</h3>
+              <p className="text-sm text-text-muted">{currentSignal.desc}</p>
             </div>
           </div>
-          <div className="flex gap-2">
+
+          <div className="flex gap-3">
             {isRunning ? (
               <button
                 onClick={handleStopTrading}
-                className="flex items-center gap-2 px-4 py-2 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 rounded-lg text-red-400 transition-colors"
+                className="flex items-center gap-2 px-6 py-3 bg-red-500 hover:bg-red-600 text-white rounded-lg font-semibold transition-colors"
               >
-                <PowerOff size={18} />
-                <span>Trading Stoppen</span>
+                <PowerOff size={20} />
+                <span>Trading STOPPEN</span>
               </button>
             ) : (
               <button
                 onClick={handleStartTrading}
-                className="flex items-center gap-2 px-4 py-2 bg-green-500/10 hover:bg-green-500/20 border border-green-500/20 rounded-lg text-green-400 transition-colors"
+                className="flex items-center gap-2 px-6 py-3 bg-green-500 hover:bg-green-600 text-white rounded-lg font-semibold transition-colors"
               >
-                <Power size={18} />
-                <span>Trading Starten</span>
+                <Power size={20} />
+                <span>Trading STARTEN</span>
               </button>
             )}
           </div>
         </div>
       </Card>
 
+      {/* Bot Status */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <Card className={isRunning ? 'bg-green-500/5 border-green-500/30' : 'bg-gray-500/5'}>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div
+                className={`w-3 h-3 rounded-full ${isRunning ? 'bg-green-500 animate-pulse' : 'bg-gray-500'}`}
+              />
+              <span className="font-medium">Trading Bot</span>
+            </div>
+            <span className={`text-sm ${isRunning ? 'text-green-400' : 'text-gray-400'}`}>
+              {isRunning ? 'AKTIV' : 'INAKTIV'}
+            </span>
+          </div>
+          <p className="text-xs text-text-muted mt-2">
+            {isRunning
+              ? 'Der Bot führt automatisch Trades basierend auf Signalen aus'
+              : 'Bot ist gestoppt - keine automatischen Trades'}
+          </p>
+        </Card>
+
+        <Card className="bg-bitcoin-orange/5 border-bitcoin-orange/30">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <BarChart3 className="text-bitcoin-orange" size={20} />
+              <span className="font-medium">Datenquelle</span>
+            </div>
+            <span className="text-sm text-bitcoin-orange">Binance</span>
+          </div>
+          <p className="text-xs text-text-muted mt-2">
+            Preisdaten in Echtzeit von Binance Exchange
+          </p>
+        </Card>
+
+        <Card className="bg-blue-500/5 border-blue-500/30">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Activity className="text-blue-400" size={20} />
+              <span className="font-medium">Modell</span>
+            </div>
+            <span className="text-sm text-blue-400 truncate max-w-[150px]">{signal.champion}</span>
+          </div>
+          <p className="text-xs text-text-muted mt-2">KI-Modell generiert Trading-Signale</p>
+        </Card>
+      </div>
+
       {/* Metrics Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
-        {metrics.map((metric) => {
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+        {metrics.map(metric => {
           const Icon = metric.icon;
           return (
             <MetricCard
@@ -293,7 +425,7 @@ export function Dashboard() {
 
       {/* Charts Row */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <Card className="lg:col-span-2" title="BTC/USDT Preis" helpText="Echtzeit-Preis in USDT von Binance">
+        <Card className="lg:col-span-2" title="BTC/USDT Preis" helpText="Live-Preis von Binance">
           <div className="h-80">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={chartData}>
@@ -305,12 +437,12 @@ export function Dashboard() {
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="#333" />
                 <XAxis dataKey="time" stroke="#666" fontSize={12} tick={{ fill: '#666' }} />
-                <YAxis 
-                  stroke="#666" 
-                  fontSize={12} 
+                <YAxis
+                  stroke="#666"
+                  fontSize={12}
                   tick={{ fill: '#666' }}
                   domain={['auto', 'auto']}
-                  tickFormatter={(v) => `$${(v/1000).toFixed(0)}k`}
+                  tickFormatter={v => `$${(v / 1000).toFixed(0)}k`}
                 />
                 <Tooltip
                   contentStyle={{
@@ -319,7 +451,6 @@ export function Dashboard() {
                     borderRadius: '8px',
                     color: '#fff',
                   }}
-                  labelStyle={{ color: '#fff' }}
                   formatter={(value: number) => [`$${value.toLocaleString()}`, 'Preis']}
                 />
                 <Area
@@ -353,28 +484,34 @@ export function Dashboard() {
               <div className="pt-3 border-t border-border">
                 <div className="flex justify-between text-sm mb-2">
                   <span className="text-text-secondary">Aktueller Preis</span>
-                  <span className="text-text-primary font-medium">${price > 0 ? price.toLocaleString() : '0'}</span>
+                  <span className="text-text-primary font-medium">
+                    ${price > 0 ? price.toLocaleString() : '0'}
+                  </span>
                 </div>
                 <div className="flex justify-between text-sm mb-2">
                   <span className="text-text-secondary">24h Hoch</span>
-                  <span className="text-text-primary">${price > 0 ? (price * 1.023).toLocaleString() : '0'}</span>
+                  <span className="text-text-primary">
+                    ${price > 0 ? (price * 1.023).toLocaleString() : '0'}
+                  </span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-text-secondary">24h Tief</span>
-                  <span className="text-text-primary">${price > 0 ? (price * 0.985).toLocaleString() : '0'}</span>
+                  <span className="text-text-primary">
+                    ${price > 0 ? (price * 0.985).toLocaleString() : '0'}
+                  </span>
                 </div>
               </div>
             </div>
           </Card>
 
-          <Card title="Quick Actions">
+          <Card title="Schnellaktionen">
             <div className="space-y-3">
               <button className="w-full flex items-center gap-3 p-3 bg-green-500/10 hover:bg-green-500/20 border border-green-500/20 rounded-lg transition-colors">
-                <TrendingUp className="text-green-400" size={20} />
+                <ArrowUp className="text-green-400" size={20} />
                 <span className="text-green-400 font-medium">Kauf Order</span>
               </button>
               <button className="w-full flex items-center gap-3 p-3 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 rounded-lg transition-colors">
-                <TrendingDown className="text-red-400" size={20} />
+                <ArrowDown className="text-red-400" size={20} />
                 <span className="text-red-400 font-medium">Verkauf Order</span>
               </button>
             </div>
@@ -382,48 +519,29 @@ export function Dashboard() {
         </div>
       </div>
 
-      {/* Equity Curve */}
-      {equityCurve.length > 0 && (
-        <Card title="Equity Curve" helpText="Verlauf des Portfolio-Werts über Zeit">
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={equityCurve}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-                <XAxis 
-                  dataKey="timestamp" 
-                  stroke="#666" 
-                  fontSize={12} 
-                  tick={{ fill: '#666' }}
-                  tickFormatter={(v) => v.slice(5, 10)}
-                />
-                <YAxis 
-                  stroke="#666" 
-                  fontSize={12} 
-                  tick={{ fill: '#666' }}
-                  tickFormatter={(v) => `$${(v/1000).toFixed(0)}k`}
-                />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: '#1a1a1a',
-                    border: '1px solid #333',
-                    borderRadius: '8px',
-                    color: '#fff',
-                  }}
-                  labelStyle={{ color: '#fff' }}
-                  formatter={(value: number) => [`$${value.toLocaleString()}`, 'Wert']}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="value"
-                  stroke="#22c55e"
-                  strokeWidth={2}
-                  dot={false}
-                />
-              </LineChart>
-            </ResponsiveContainer>
+      {/* Info Box */}
+      <Card className="bg-blue-500/5 border-blue-500/30">
+        <div className="flex items-start gap-3">
+          <Info className="text-blue-400 flex-shrink-0 mt-0.5" size={20} />
+          <div>
+            <h4 className="font-medium text-text-primary">So funktioniert&apos;s</h4>
+            <ol className="text-sm text-text-secondary mt-2 space-y-1 list-decimal list-inside">
+              <li>
+                Das <strong>Signal</strong> oben zeigt die aktuelle Handelsempfehlung des KI-Modells
+              </li>
+              <li>
+                Klicke auf <strong>&quot;Trading Starten&quot;</strong> um den Bot zu aktivieren
+              </li>
+              <li>
+                Der Bot führt <strong>automatisierte Trades</strong> basierend auf Signalen aus
+              </li>
+              <li>
+                Im <strong>Paper-Modus</strong> wird mit virtuellem Geld gehandelt - kein Risiko!
+              </li>
+            </ol>
           </div>
-        </Card>
-      )}
+        </div>
+      </Card>
     </div>
   );
 }

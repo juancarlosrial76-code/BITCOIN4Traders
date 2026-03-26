@@ -1,26 +1,26 @@
-# colab_bridge — Vollständige Dokumentation
+# colab_bridge — Complete Documentation
 
 **Version:** 1.0.0  
-**Projekt:** BITCOIN4Traders (Reinforcement Learning Trading Bot)  
-**Zweck:** Kommunikations-Bridge zwischen lokalem Rechner (Paper-Trading-Executor) und Google Colab / Cloud (RL-Modell-Inferenz)
+**Project:** BITCOIN4Traders (Reinforcement Learning Trading Bot)  
+**Purpose:** Communication bridge between local machine (paper trading executor) and Google Colab / Cloud (RL model inference)
 
 ---
 
-## Inhaltsverzeichnis
+## Table of Contents
 
-1. [Systemübersicht](#1-systemübersicht)
-2. [Architektur-Diagramm](#2-architektur-diagramm)
-3. [Verzeichnisstruktur](#3-verzeichnisstruktur)
-4. [Kanal-Schema](#4-kanal-schema)
-5. [Schnellstart (5 Minuten)](#5-schnellstart-5-minuten)
-6. [Modul-Referenz](#6-modul-referenz)
-   - 6.1 [transport_base.py — Abstraktes Interface](#61-transport_basepy--abstraktes-interface)
-   - 6.2 [module_a_local.py — Lokale Engine](#62-module_a_localpy--lokale-engine)
-   - 6.3 [module_b_colab.py — Colab RL-Engine](#63-module_b_colabpy--colab-rl-engine)
-   - 6.4 [control_plane.py — Steuerungsschicht](#64-control_planepy--steuerungsschicht)
+1. [System Overview](#1-system-overview)
+2. [Architecture Diagram](#2-architecture-diagram)
+3. [Directory Structure](#3-directory-structure)
+4. [Channel Schema](#4-channel-schema)
+5. [Quick Start (5 minutes)](#5-quick-start-5-minutes)
+6. [Module Reference](#6-module-reference)
+   - 6.1 [transport_base.py — Abstract Interface](#61-transport_basepy--abstract-interface)
+   - 6.2 [module_a_local.py — Local Engine](#62-module_a_localpy--local-engine)
+   - 6.3 [module_b_colab.py — Colab RL Engine](#63-module_b_colabpy--colab-rl-engine)
+   - 6.4 [control_plane.py — Control Layer](#64-control_planepy--control-layer)
    - 6.5 [colab_extension.py — Colab Extension](#65-colab_extensionpy--colab-extension)
-   - 6.6 [transports/ — Alle 4 Transport-Optionen](#66-transports--alle-4-transport-optionen)
-7. [Colab Extension — Detailreferenz](#7-colab-extension--detailreferenz)
+   - 6.6 [transports/ — All 4 Transport Options](#66-transports--all-4-transport-options)
+7. [Colab Extension — Detailed Reference](#7-colab-extension--detailed-reference)
    - 7.1 [classify_error()](#71-classify_error)
    - 7.2 [InProcessRepair](#72-inprocessrepair)
    - 7.3 [Reporter](#73-reporter)
@@ -28,85 +28,85 @@
    - 7.5 [MemoryMonitor](#75-memorymonitor)
    - 7.6 [ColabKeepalive](#76-colabkeepalive)
    - 7.7 [ExceptionHook](#77-exceptionhook)
-   - 7.8 [BT4TExtension / bt4t (öffentliche API)](#78-bt4textension--bt4t-öffentliche-api)
-8. [Befehls-Referenz](#8-befehls-referenz)
-9. [Fehlerbehandlungs-Tabelle](#9-fehlerbehandlungs-tabelle)
-10. [Umgebungsvariablen](#10-umgebungsvariablen)
-11. [Abhängigkeiten](#11-abhängigkeiten)
-12. [Copy-Paste Colab-Zellen](#12-copy-paste-colab-zellen)
+   - 7.8 [BT4TExtension / bt4t (public API)](#78-bt4textension--bt4t-public-api)
+8. [Command Reference](#8-command-reference)
+9. [Error Handling Table](#9-error-handling-table)
+10. [Environment Variables](#10-environment-variables)
+11. [Dependencies](#11-dependencies)
+12. [Copy-Paste Colab Cells](#12-copy-paste-colab-cells)
 13. [Troubleshooting](#13-troubleshooting)
 
 ---
 
-## 1. Systemübersicht
+## 1. System Overview
 
-Das `colab_bridge`-System löst ein fundamentales Problem beim RL-Trading: Das trainierte Modell läuft in der Cloud (Google Colab / GPU-Server), der eigentliche Paper-Trader soll aber lokal mit echten Marktdaten arbeiten und Trades ausführen.
+The `colab_bridge` system solves a fundamental problem in RL trading: the trained model runs in the cloud (Google Colab / GPU server), but the actual paper trader should work locally with real market data and execute trades.
 
-**Das System besteht aus drei Schichten:**
+**The system consists of three layers:**
 
-| Schicht | Komponente | Läuft auf |
-|---------|-----------|-----------|
-| **Ausführung** | Module A (`module_a_local.py`) | Lokaler Rechner (24/7) |
-| **Inferenz** | Module B (`module_b_colab.py`) | Google Colab / Cloud |
-| **Steuerung** | Control Plane (`control_plane.py`) | Lokal + Colab |
-| **Extension** | `colab_extension.py` | Ausschließlich Colab |
+| Layer         | Component                          | Runs on              |
+| ------------- | ---------------------------------- | -------------------- |
+| **Execution** | Module A (`module_a_local.py`)     | Local machine (24/7) |
+| **Inference** | Module B (`module_b_colab.py`)     | Google Colab / Cloud |
+| **Control**   | Control Plane (`control_plane.py`) | Local + Colab        |
+| **Extension** | `colab_extension.py`               | Colab only           |
 
-**Datenfluss (vereinfacht):**
+**Data flow (simplified):**
 
 ```
-Lokaler Rechner                    Google Colab
-────────────────                   ────────────
+Local Machine                      Google Colab
+─────────────────                  ────────────
 Binance OHLCV
     ↓
-Feature-Berechnung
+Feature Computation
     ↓
 Module A  ──── bt4t:market ────→  Module B
-              (Ably/Redis/…)          ↓
-                                   RL-Inferenz
-                                      ↓
+               (Ably/Redis/…)          ↓
+                                    RL Inference
+                                       ↓
 Module A  ←─── bt4t:signals ────  Signal (BUY/SELL/HOLD)
     ↓
-Paper-Order ausführen
+Execute Paper Order
     ↓
-Portfolio-State ─── bt4t:portfolio → Module B (Kontext)
+Portfolio State ─── bt4t:portfolio → Module B (context)
 ```
 
 ---
 
-## 2. Architektur-Diagramm
+## 2. Architecture Diagram
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│  LOKALER RECHNER                                                     │
+│  LOCAL MACHINE                                                       │
 │                                                                      │
 │  ┌──────────────────┐      ┌─────────────────────────────────────┐  │
 │  │    Module A       │      │        Control Server               │  │
 │  │ (module_a_local)  │      │       (FastAPI :8765)               │  │
 │  │                  │      │                                     │  │
-│  │ - Binance OHLCV  │      │  GET  /colab/command  ← Colab pollt │  │
-│  │ - RSI/BB/MACD    │      │  POST /colab/command  → Befehle     │  │
+│  │ - Binance OHLCV  │      │  GET  /colab/command  ← Colab polls │  │
+│  │ - RSI/BB/MACD    │      │  POST /colab/command  → Commands    │  │
 │  │ - LocalPortfolio │      │  POST /colab/status   ← Status      │  │
-│  │ - Signal-Check   │      │  GET  /positions      → Portfolio   │  │
-│  │ - Paper-Orders   │      │  POST /trading/pause               │  │
+│  │ - Signal Check   │      │  GET  /positions      → Portfolio   │  │
+│  │ - Paper Orders   │      │  POST /trading/pause               │  │
 │  └────────┬─────────┘      └──────────────┬────────────────────┘  │
 │           │                               │                         │
 │           │  Ably / Redis / Telegram /    │  Cloudflare Tunnel      │
-│           │  Google Drive                 │  (HTTPS öffentl. URL)   │
+│           │  Google Drive                 │  (HTTPS public URL)     │
 └───────────┼───────────────────────────────┼─────────────────────────┘
             │                               │
             │         INTERNET              │
             │                               │
 ┌───────────┼───────────────────────────────┼─────────────────────────┐
 │  GOOGLE COLAB                             │                          │
-│           │                               │ HTTP Poll (alle 5s)      │
+│           │                               │ HTTP Poll (every 5s)    │
 │  ┌────────┴──────────┐      ┌─────────────┴──────────────────────┐  │
 │  │    Module B        │      │       Control Client               │  │
-│  │ (module_b_colab)   │      │   (Colab-Seite der ControlPlane)  │  │
+│  │ (module_b_colab)   │      │   (Colab side of ControlPlane)    │  │
 │  │                   │      │                                    │  │
-│  │ - ModelAdapter    │      │  - pollt Befehle alle 5s          │  │
-│  │   Darwin/.pth/SB3 │      │  - führt PAUSE/RESUME/etc. aus    │  │
-│  │ - Obs-Buffer(60)  │      │  - sendet Status zurück            │  │
-│  │ - RL-Inferenz     │      │                                    │  │
+│  │ - ModelAdapter    │      │  - polls commands every 5s        │  │
+│  │   Darwin/.pth/SB3 │      │  - executes PAUSE/RESUME/etc.     │  │
+│  │ - Obs-Buffer(60)  │      │  - sends status back              │  │
+│  │ - RL Inference    │      │                                    │  │
 │  │ - Heartbeat (10s) │      └────────────────────────────────────┘  │
 │  └───────────────────┘                                              │
 │                                                                      │
@@ -116,8 +116,8 @@ Portfolio-State ─── bt4t:portfolio → Module B (Kontext)
 │  │  Reporter        → HTTP POST → Drive Fallback                │   │
 │  │  InProcessRepair → batch_size / LR / gradient_clip           │   │
 │  │  IterationCtrl   → PAUSE/RESUME/CHANGE_LR/CHANGE_BS          │   │
-│  │  MemoryMonitor   → GPU-Check alle 60s                        │   │
-│  │  ColabKeepalive  → numpy compute alle 600s                   │   │
+│  │  MemoryMonitor   → GPU check every 60s                       │   │
+│  │  ColabKeepalive  → numpy compute every 600s                  │   │
 │  │  ExceptionHook   → sys.excepthook (global)                   │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────┘
@@ -125,20 +125,20 @@ Portfolio-State ─── bt4t:portfolio → Module B (Kontext)
 
 ---
 
-## 3. Verzeichnisstruktur
+## 3. Directory Structure
 
 ```
 colab_bridge/
 │
-├── __init__.py              # Paket-Init, Version 1.0.0
-├── transport_base.py        # Abstraktes Interface (ABC) für alle Transporte
-├── module_a_local.py        # Lokale Ausführungs-Engine
-├── module_b_colab.py        # Colab RL-Inferenz-Engine
+├── __init__.py              # Package init, Version 1.0.0
+├── transport_base.py        # Abstract interface (ABC) for all transports
+├── module_a_local.py        # Local execution engine
+├── module_b_colab.py        # Colab RL inference engine
 ├── control_plane.py         # FastAPI ControlServer + ControlClient
 ├── colab_extension.py       # Colab Extension (bt4t Singleton)
 │
-├── DOKUMENTATION.md         # Diese Datei
-├── TRANSPORT_GUIDE.md       # Transport-Vergleich und Setup
+├── DOKUMENTATION.md         # This file
+├── TRANSPORT_GUIDE.md       # Transport comparison and setup
 │
 └── transports/
     ├── __init__.py           # Factory get_transport()
@@ -150,20 +150,20 @@ colab_bridge/
 
 ---
 
-## 4. Kanal-Schema
+## 4. Channel Schema
 
-Alle Transporte verwenden identische Kanal-Namen (definiert in `transport_base.py`):
+All transports use identical channel names (defined in `transport_base.py`):
 
-| Konstante | Kanalname | Richtung | Inhalt |
-|-----------|-----------|----------|--------|
-| `CH_MARKET` | `bt4t:market:{symbol}` | Lokal → Colab | OHLCV + Features (RSI/BB/MACD) |
-| `CH_SIGNALS` | `bt4t:signals` | Colab → Lokal | Handelssignal (BUY/SELL/HOLD + Confidence) |
-| `CH_PORTFOLIO` | `bt4t:portfolio:state` | Lokal → Colab | Portfolio-State (Equity, Position, P&L) |
-| `CH_HEALTH` | `bt4t:health` | Colab → Lokal | Heartbeat (alle 10s) |
-| `CH_CONTROL` | `bt4t:control:cmd` | Lokal → Colab | Steuerbefehle (PAUSE/RESUME/RELOAD/…) |
-| `CH_ACK` | `bt4t:control:ack` | Colab → Lokal | Bestätigung für Befehle |
+| Constant       | Channel name           | Direction     | Content                                   |
+| -------------- | ---------------------- | ------------- | ----------------------------------------- |
+| `CH_MARKET`    | `bt4t:market:{symbol}` | Local → Colab | OHLCV + Features (RSI/BB/MACD)            |
+| `CH_SIGNALS`   | `bt4t:signals`         | Colab → Local | Trade signal (BUY/SELL/HOLD + Confidence) |
+| `CH_PORTFOLIO` | `bt4t:portfolio:state` | Local → Colab | Portfolio state (Equity, Position, P&L)   |
+| `CH_HEALTH`    | `bt4t:health`          | Colab → Local | Heartbeat (every 10s)                     |
+| `CH_CONTROL`   | `bt4t:control:cmd`     | Local → Colab | Control commands (PAUSE/RESUME/RELOAD/…)  |
+| `CH_ACK`       | `bt4t:control:ack`     | Colab → Local | Acknowledgement for commands              |
 
-### Signal-Payload (`bt4t:signals`)
+### Signal Payload (`bt4t:signals`)
 
 ```json
 {
@@ -174,12 +174,12 @@ Alle Transporte verwenden identische Kanal-Namen (definiert in `transport_base.p
   "timestamp_utc": "2024-01-15T10:30:00+00:00",
   "inference_latency_ms": 12.3,
   "signal_n": 42,
-  "portfolio_equity": 10500.00,
+  "portfolio_equity": 10500.0,
   "portfolio_return_pct": 5.0
 }
 ```
 
-### Market-Payload (`bt4t:market:BTCUSDT`)
+### Market Payload (`bt4t:market:BTCUSDT`)
 
 ```json
 {
@@ -200,58 +200,58 @@ Alle Transporte verwenden identische Kanal-Namen (definiert in `transport_base.p
 
 ---
 
-## 5. Schnellstart (5 Minuten)
+## 5. Quick Start (5 minutes)
 
-### Schritt 1: Ably Account erstellen (kostenlos)
+### Step 1: Create Ably account (free)
 
 ```
 1. https://ably.com → "Sign up for free"
 2. Create App → "BITCOIN4Traders"
-3. API Keys → Root Key kopieren
-4. In .env eintragen: ABLY_API_KEY=your_root_key_here
+3. API Keys → Copy Root Key
+4. Add to .env: ABLY_API_KEY=your_root_key_here
 ```
 
-### Schritt 2: Lokalen Stack starten
+### Step 2: Start local stack
 
 ```bash
-# Terminal 1: Cloudflare Tunnel (optional, für Control-Plane)
+# Terminal 1: Cloudflare Tunnel (optional, for Control Plane)
 ./cloudflared tunnel --url http://localhost:8765
 
-# Terminal 2: Vollständiger lokaler Stack
+# Terminal 2: Full local stack
 python colab_bridge/control_plane.py full \
     --ably-key $ABLY_API_KEY \
     --capital 10000
 
-# ODER: Nur Module A (ohne Control Server)
+# OR: Module A only (without Control Server)
 python colab_bridge/module_a_local.py \
     --ably-key $ABLY_API_KEY \
     --symbol BTC/USDT \
     --interval 30
 ```
 
-### Schritt 3: Google Colab einrichten
+### Step 3: Set up Google Colab
 
-Erste Zelle im Colab-Notebook (copy-paste, einmalig):
+First cell in Colab notebook (copy-paste, one-time):
 
 ```python
-# ─── Zelle 1: Setup ───────────────────────────────────────────
+# ─── Cell 1: Setup ───────────────────────────────────────────
 import sys, os
 from google.colab import drive
 drive.mount('/content/drive')
 
 sys.path.insert(0, '/content/drive/MyDrive/BITCOIN4Traders')
 
-# Konfiguration (URL aus Terminal 1 kopieren)
+# Configuration (copy URL from Terminal 1)
 os.environ['BT4T_LISTENER_URL'] = 'https://abc-def.trycloudflare.com'
 os.environ['BT4T_API_TOKEN']    = 'bt4t-secret-token'
 os.environ['BT4T_NOTEBOOK_ID']  = 'training_v1'
 os.environ['ABLY_API_KEY']      = 'your_ably_key'
 
-# bt4t Extension laden
+# Load bt4t Extension
 from colab_bridge.colab_extension import bt4t
 bt4t.install()
 
-# Module B starten
+# Start Module B
 from colab_bridge.module_b_colab import ModuleB
 import asyncio
 
@@ -264,116 +264,120 @@ await engine.run()
 
 ---
 
-## 6. Modul-Referenz
+## 6. Module Reference
 
-### 6.1 `transport_base.py` — Abstraktes Interface
+### 6.1 `transport_base.py` — Abstract Interface
 
-Definiert das gemeinsame Interface für alle 4 Transporte und die Kanal-Konstanten.
+Defines the shared interface for all 4 transports and the channel constants.
 
-#### Klasse: `TransportBase` (ABC)
+#### Class: `TransportBase` (ABC)
 
-Jeder Transport muss diese 5 Methoden implementieren:
+Each transport must implement these 5 methods:
 
-| Methode | Signatur | Beschreibung |
-|---------|---------|--------------|
-| `connect` | `async connect() -> None` | Verbindung aufbauen. Wirft Exception bei Fehler. |
-| `disconnect` | `async disconnect() -> None` | Verbindung sauber trennen. |
-| `publish` | `async publish(channel: str, payload: dict) -> None` | Nachricht auf Kanal senden. |
-| `subscribe` | `async subscribe(channel: str, callback: Callable) -> None` | Callback für eingehende Nachrichten registrieren. |
-| `name` | `@property -> str` | Name des Transports für Logging. |
-| `latency_class` | `@property -> str` | Latenzklasse: `'ms'` / `'sub-second'` / `'seconds'` |
+| Method          | Signature                                                   | Description                                          |
+| --------------- | ----------------------------------------------------------- | ---------------------------------------------------- |
+| `connect`       | `async connect() -> None`                                   | Establish connection. Raises exception on error.     |
+| `disconnect`    | `async disconnect() -> None`                                | Cleanly disconnect.                                  |
+| `publish`       | `async publish(channel: str, payload: dict) -> None`        | Send message on channel.                             |
+| `subscribe`     | `async subscribe(channel: str, callback: Callable) -> None` | Register callback for incoming messages.             |
+| `name`          | `@property -> str`                                          | Name of transport for logging.                       |
+| `latency_class` | `@property -> str`                                          | Latency class: `'ms'` / `'sub-second'` / `'seconds'` |
 
-#### Hilfsmethoden (statisch):
+#### Helper methods (static):
 
 ```python
-TransportBase.encode(payload: dict) -> str     # dict → JSON-String
+TransportBase.encode(payload: dict) -> str     # dict → JSON string
 TransportBase.decode(data: str|bytes|dict) -> dict  # JSON → dict
 ```
 
 ---
 
-### 6.2 `module_a_local.py` — Lokale Engine
+### 6.2 `module_a_local.py` — Local Engine
 
-Läuft auf dem lokalen Rechner (24/7). Verbindet Exchange mit Colab über Ably.
+Runs on the local machine (24/7). Connects exchange with Colab via Ably.
 
-#### Klasse: `LocalPaperPortfolio`
+#### Class: `LocalPaperPortfolio`
 
-In-Memory Paper-Portfolio. Keine externe Datenbank nötig.
+In-memory paper portfolio. No external database needed.
 
 ```python
 portfolio = LocalPaperPortfolio(
-    initial_capital=10_000.0,  # Startkapital in USDT
-    fee_rate=0.001             # 0.1% Handelsgebühr
+    initial_capital=10_000.0,  # Starting capital in USDT
+    fee_rate=0.001             # 0.1% trading fee
 )
 ```
 
-| Methode | Beschreibung |
-|---------|-------------|
-| `execute(side, price, confidence)` | Simuliert Market-Order. Gibt Trade-Dict zurück oder `None`. |
-| `current_equity(price)` | Berechnet aktuellen Gesamtwert (Cash + Position). |
-| `state_dict(price)` | Gibt vollständigen Portfolio-State als Dict zurück. |
-| `pause()` / `resume()` | Stoppt/startet Trading (bei Heartbeat-Timeout). |
+| Method                             | Description                                           |
+| ---------------------------------- | ----------------------------------------------------- |
+| `execute(side, price, confidence)` | Simulates market order. Returns trade dict or `None`. |
+| `current_equity(price)`            | Calculates current total value (cash + position).     |
+| `state_dict(price)`                | Returns complete portfolio state as dict.             |
+| `pause()` / `resume()`             | Stops/starts trading (on heartbeat timeout).          |
 
-**Trade-Dict (Rückgabe von `execute()`):**
+**Trade Dict (returned by `execute()`):**
+
 ```python
 {
     "timestamp": "2024-01-15T10:30:00+00:00",
     "action": "BUY",    # BUY / SELL / SHORT / COVER
     "side": "buy",
-    "qty": 0.0023,      # BTC-Menge
-    "price": 42315.0,   # Fill-Preis (inkl. 0.03% Slippage)
+    "qty": 0.0023,      # BTC quantity
+    "price": 42315.0,   # Fill price (incl. 0.03% slippage)
     "fee": 0.09,
-    "pnl": 0.0,         # Realisierter P&L (0 bei Eröffnung)
-    "confidence": 0.78  # Signal-Konfidenz
+    "pnl": 0.0,         # Realized P&L (0 on opening)
+    "confidence": 0.78  # Signal confidence
 }
 ```
 
-#### Funktion: `compute_features(df: pd.DataFrame) -> dict`
+#### Function: `compute_features(df: pd.DataFrame) -> dict`
 
-Berechnet Trading-Features aus OHLCV DataFrame (200 Bars empfohlen).
+Computes trading features from OHLCV DataFrame (200 bars recommended).
 
-**Berechnete Features:**
+**Computed Features:**
 
-| Feature | Beschreibung | Formel |
-|---------|-------------|--------|
-| `rsi14` | RSI mit 14 Perioden | Wilder's RSI |
-| `bb_pct` | Position in Bollinger Band (0–1) | `(close - lower) / (upper - lower)` |
-| `bb_upper` / `bb_lower` | Bollinger Bands (20, 2σ) | SMA20 ± 2×STD20 |
-| `macd` | MACD Linie | EMA12 − EMA26 |
-| `vol_ratio` | Volumen relativ zum 20er Durchschnitt | `vol / mean(vol[-20:])` |
-| `return_1h` | 1-Bar Return | `close[-1]/close[-2] - 1` |
-| `return_4h` | 4-Bar Return | `close[-1]/close[-5] - 1` |
-| `return_24h` | 24-Bar Return | `close[-1]/close[-25] - 1` |
-| `sma20` | Einfacher Durchschnitt (20) | `mean(close[-20:])` |
-| `close_60` | Letzte 60 Close-Werte | Array für RL-Observation |
+| Feature                 | Description                       | Formula                             |
+| ----------------------- | --------------------------------- | ----------------------------------- |
+| `rsi14`                 | RSI with 14 periods               | Wilder's RSI                        |
+| `bb_pct`                | Position in Bollinger Band (0–1)  | `(close - lower) / (upper - lower)` |
+| `bb_upper` / `bb_lower` | Bollinger Bands (20, 2σ)          | SMA20 ± 2×STD20                     |
+| `macd`                  | MACD line                         | EMA12 − EMA26                       |
+| `vol_ratio`             | Volume relative to 20-bar average | `vol / mean(vol[-20:])`             |
+| `return_1h`             | 1-bar return                      | `close[-1]/close[-2] - 1`           |
+| `return_4h`             | 4-bar return                      | `close[-1]/close[-5] - 1`           |
+| `return_24h`            | 24-bar return                     | `close[-1]/close[-25] - 1`          |
+| `sma20`                 | Simple moving average (20)        | `mean(close[-20:])`                 |
+| `close_60`              | Last 60 close values              | Array for RL observation            |
 
-#### Klasse: `ModuleA`
+#### Class: `ModuleA`
 
 ```python
 engine = ModuleA(
     ably_key="your_key",          # ABLY_API_KEY
-    symbol="BTC/USDT",            # CCXT-Format
-    timeframe="1h",               # OHLCV-Timeframe
-    exchange_id="binance",        # CCXT Exchange-ID
-    poll_interval_s=30.0,         # Sekunden zwischen OHLCV-Abfragen
-    initial_capital=10_000.0,     # Startkapital USDT
+    symbol="BTC/USDT",            # CCXT format
+    timeframe="1h",               # OHLCV timeframe
+    exchange_id="binance",        # CCXT exchange ID
+    poll_interval_s=30.0,         # Seconds between OHLCV requests
+    initial_capital=10_000.0,     # Starting capital USDT
 )
-await engine.run()                # Blockiert bis Ctrl+C
+await engine.run()                # Blocks until Ctrl+C
 ```
 
-**Interner Loop (alle `poll_interval_s`):**
-1. OHLCV via CCXT holen (200 Bars)
-2. `compute_features()` aufrufen
-3. Features auf `bt4t:market:BTCUSDT` publishen
-4. Alle 5 Ticks: Portfolio-State auf `bt4t:portfolio:state` publishen
-5. Heartbeat-Alter prüfen (Timeout: 90s)
-6. Alle 10 Ticks: Status-Log ausgeben
+**Internal Loop (every `poll_interval_s`):**
 
-**Signal-Validierung (automatisch in `_on_signal()`):**
-- Staleness-Check: Signal älter als 10s → verwerfen
-- Confidence-Check: Unter 0.55 → verwerfen
+1. Fetch OHLCV via CCXT (200 bars)
+2. Call `compute_features()`
+3. Publish features to `bt4t:market:BTCUSDT`
+4. Every 5 ticks: publish portfolio state to `bt4t:portfolio:state`
+5. Check heartbeat age (timeout: 90s)
+6. Every 10 ticks: print status log
 
-**Befehle an Colab senden:**
+**Signal validation (automatic in `_on_signal()`):**
+
+- Staleness check: signal older than 10s → discard
+- Confidence check: below 0.55 → discard
+
+**Send commands to Colab:**
+
 ```python
 await engine.send_command("PAUSE_INFERENCE")
 await engine.send_command("RELOAD_MODEL", {"model_path": "/path/to/model.pkl"})
@@ -381,6 +385,7 @@ await engine.send_command("SHUTDOWN")
 ```
 
 **CLI:**
+
 ```bash
 python colab_bridge/module_a_local.py [--symbol BTC/USDT] [--timeframe 1h]
     [--exchange binance] [--interval 30] [--capital 10000] [--ably-key KEY]
@@ -388,68 +393,73 @@ python colab_bridge/module_a_local.py [--symbol BTC/USDT] [--timeframe 1h]
 
 ---
 
-### 6.3 `module_b_colab.py` — Colab RL-Engine
+### 6.3 `module_b_colab.py` — Colab RL Engine
 
-Läuft in Google Colab. Empfängt Marktdaten, führt RL-Inferenz durch.
+Runs in Google Colab. Receives market data, runs RL inference.
 
-#### Klasse: `ModelAdapter`
+#### Class: `ModelAdapter`
 
-Abstraktionsschicht die 4 Modell-Typen unterstützt:
+Abstraction layer supporting 4 model types:
 
 ```python
 adapter = ModelAdapter(
-    model_path="/path/to/model.pkl",  # oder .pth, .zip, None
+    model_path="/path/to/model.pkl",  # or .pth, .zip, None
     model_type="auto"                  # auto / darwin / sb3 / pytorch / rsi_fallback
 )
 action, confidence = adapter.predict(close_array, features_dict)
 ```
 
-**Lade-Priorität (auto):**
+**Load priority (auto):**
 
-| Reihenfolge | Dateiendung | Modell-Typ | Beschreibung |
-|-------------|-------------|-----------|--------------|
-| 1 | `.pkl` | `darwin` | Darwin-Champion aus Multiverse-Training |
-| 2 | `.pth` | `pytorch` | PyTorch Checkpoint (fällt auf RSI zurück) |
-| 3 | `.zip` oder `sb3` im Pfad | `sb3` | Stable-Baselines3 PPO |
-| 4 | kein Pfad / Laden fehlgeschlagen | `rsi_fallback` | RSI-Signal (kein Modell nötig) |
+| Order | File extension          | Model type     | Description                              |
+| ----- | ----------------------- | -------------- | ---------------------------------------- |
+| 1     | `.pkl`                  | `darwin`       | Darwin Champion from Multiverse training |
+| 2     | `.pth`                  | `pytorch`      | PyTorch checkpoint (falls back to RSI)   |
+| 3     | `.zip` or `sb3` in path | `sb3`          | Stable-Baselines3 PPO                    |
+| 4     | no path / load failed   | `rsi_fallback` | RSI signal (no model needed)             |
 
-**Darwin-Inferenz:**
+**Darwin inference:**
+
 ```python
-# intern: model.compute_signals(close_array)
-# Konfidenz = Clip(abs(sigs[-10:]).mean() + 0.5, 0, 1)
+# internally: model.compute_signals(close_array)
+# Confidence = Clip(abs(sigs[-10:]).mean() + 0.5, 0, 1)
 # Signal = sign(sigs[-1]) → 1=BUY, -1=SELL, 0=HOLD
 ```
 
-**RSI-Fallback-Inferenz:**
+**RSI fallback inference:**
+
 ```python
-# RSI < 30 → BUY  mit confidence = 0.5 + (30-rsi)/60
-# RSI > 70 → SELL mit confidence = 0.5 + (rsi-70)/60
-# sonst    → HOLD
+# RSI < 30 → BUY  with confidence = 0.5 + (30-rsi)/60
+# RSI > 70 → SELL with confidence = 0.5 + (rsi-70)/60
+# else     → HOLD
 ```
 
-**Modell neu laden:**
+**Reload model:**
+
 ```python
-adapter.reload("/path/to/new_model.pkl")  # oder None = gleicher Pfad
+adapter.reload("/path/to/new_model.pkl")  # or None = same path
 ```
 
-#### Klasse: `ModuleB`
+#### Class: `ModuleB`
 
 ```python
 engine = ModuleB(
     ably_key="your_key",
     model_path="/content/drive/MyDrive/.../multiverse_champion.pkl",
-    symbol="BTCUSDT",          # Ohne Slash (Ably-Kanal-Format)
-    min_confidence=0.55,       # Signale unter dieser Schwelle → HOLD
+    symbol="BTCUSDT",          # Without slash (Ably channel format)
+    min_confidence=0.55,       # Signals below this threshold → HOLD
 )
-await engine.run()             # Blockiert bis SHUTDOWN oder Ctrl+C
+await engine.run()             # Blocks until SHUTDOWN or Ctrl+C
 ```
 
-**Observation-Buffer:**
-- Rolling Window der letzten 70 Marktdaten-Updates (`deque(maxlen=70)`)
-- Inferenz startet wenn Buffer ≥ 20 Einträge hat
-- RL-Observation = letzten 60 Bars + 6 skalare Features
+**Observation buffer:**
 
-**Heartbeat (automatisch alle 10s):**
+- Rolling window of last 70 market data updates (`deque(maxlen=70)`)
+- Inference starts when buffer ≥ 20 entries
+- RL observation = last 60 bars + 6 scalar features
+
+**Heartbeat (automatic every 10s):**
+
 ```json
 {
   "model_loaded": true,
@@ -463,25 +473,27 @@ await engine.run()             # Blockiert bis SHUTDOWN oder Ctrl+C
 }
 ```
 
-**Empfangene Befehle (von `bt4t:control:cmd`):**
+**Received commands (from `bt4t:control:cmd`):**
 
-| Befehl | Effekt |
-|--------|--------|
-| `PAUSE_INFERENCE` | Stoppt RL-Inferenz (keine Signale) |
-| `RESUME` | Setzt Inferenz fort |
-| `RELOAD_MODEL` | Lädt Modell neu (`params.model_path`) |
-| `SHUTDOWN` | Beendet Module B |
-| `STATUS` | Sendet Status-ACK |
+| Command           | Effect                              |
+| ----------------- | ----------------------------------- |
+| `PAUSE_INFERENCE` | Stops RL inference (no signals)     |
+| `RESUME`          | Resumes inference                   |
+| `RELOAD_MODEL`    | Reloads model (`params.model_path`) |
+| `SHUTDOWN`        | Terminates Module B                 |
+| `STATUS`          | Sends status ACK                    |
 
-**Hilfsfunktionen:**
+**Helper functions:**
+
 ```python
 from colab_bridge.module_b_colab import colab_setup, find_champion_on_drive
 
-project_path = colab_setup(drive_mount=True)   # Mountet Drive, gibt Pfad zurück
-champion = find_champion_on_drive(project_path) # Sucht .pkl Datei
+project_path = colab_setup(drive_mount=True)   # Mounts Drive, returns path
+champion = find_champion_on_drive(project_path) # Searches for .pkl file
 ```
 
-**CLI (für vast.ai / lokale GPU):**
+**CLI (for vast.ai / local GPU):**
+
 ```bash
 python colab_bridge/module_b_colab.py \
     --ably-key $ABLY_API_KEY \
@@ -492,35 +504,36 @@ python colab_bridge/module_b_colab.py \
 
 ---
 
-### 6.4 `control_plane.py` — Steuerungsschicht
+### 6.4 `control_plane.py` — Control Layer
 
-#### Klasse: `ControlServer`
+#### Class: `ControlServer`
 
-FastAPI-Server der lokal läuft und via Cloudflare Tunnel erreichbar ist.
+FastAPI server that runs locally and is accessible via Cloudflare Tunnel.
 
 ```python
 server = ControlServer(
     port=8765,
     token="bt4t-secret-token",  # CONTROL_API_TOKEN
-    module_a=engine,             # Optional: ModuleA-Referenz für Portfolio-State
+    module_a=engine,             # Optional: ModuleA reference for portfolio state
 )
 await server.start()
 ```
 
-**API-Endpunkte:**
+**API endpoints:**
 
-| Method | Endpunkt | Auth | Beschreibung |
-|--------|---------|------|--------------|
-| `GET` | `/health` | nein | Healthcheck |
-| `GET` | `/status` | Bearer | Uptime, Queue-Länge, Colab-Status |
-| `GET` | `/positions` | Bearer | Aktueller Portfolio-State |
-| `GET` | `/colab/command` | Bearer | Nächster Befehl für Colab (Colab pollt hier) |
-| `POST` | `/colab/command` | Bearer | Befehl an Colab senden |
-| `POST` | `/colab/status` | Bearer | Colab reportet Status |
-| `POST` | `/trading/pause` | Bearer | Portfolio + Inferenz pausieren |
-| `POST` | `/trading/resume` | Bearer | Portfolio + Inferenz fortsetzen |
+| Method | Endpoint          | Auth   | Description                               |
+| ------ | ----------------- | ------ | ----------------------------------------- |
+| `GET`  | `/health`         | no     | Health check                              |
+| `GET`  | `/status`         | Bearer | Uptime, queue length, Colab status        |
+| `GET`  | `/positions`      | Bearer | Current portfolio state                   |
+| `GET`  | `/colab/command`  | Bearer | Next command for Colab (Colab polls here) |
+| `POST` | `/colab/command`  | Bearer | Send command to Colab                     |
+| `POST` | `/colab/status`   | Bearer | Colab reports status                      |
+| `POST` | `/trading/pause`  | Bearer | Pause portfolio + inference               |
+| `POST` | `/trading/resume` | Bearer | Resume portfolio + inference              |
 
-**Befehl an Colab senden (HTTP):**
+**Send command to Colab (HTTP):**
+
 ```bash
 curl -X POST http://localhost:8765/colab/command \
   -H "Authorization: Bearer bt4t-secret-token" \
@@ -528,14 +541,14 @@ curl -X POST http://localhost:8765/colab/command \
   -d '{"cmd": "PAUSE_INFERENCE", "params": {}}'
 ```
 
-**Gültige Commands für `POST /colab/command`:**
+**Valid commands for `POST /colab/command`:**
 `PAUSE_INFERENCE` | `RESUME` | `RELOAD_MODEL` | `SHUTDOWN` | `STATUS`
 
-**Befehl-Expiry:** Befehle die länger als 60s in der Queue warten werden automatisch verworfen.
+**Command expiry:** Commands waiting in the queue for more than 60s are automatically discarded.
 
-#### Klasse: `ControlClient`
+#### Class: `ControlClient`
 
-Läuft in Colab neben Module B. Pollt ControlServer alle 5s.
+Runs in Colab alongside Module B. Polls ControlServer every 5s.
 
 ```python
 client = ControlClient(
@@ -544,23 +557,23 @@ client = ControlClient(
     token="bt4t-secret-token",
     poll_interval_s=5.0,
 )
-asyncio.create_task(client.run())  # Als async Task starten
+asyncio.create_task(client.run())  # Start as async task
 ```
 
-#### Funktion: `start_cloudflare_tunnel(port) -> Optional[str]`
+#### Function: `start_cloudflare_tunnel(port) -> Optional[str]`
 
-Startet `cloudflared`-Prozess und gibt die öffentliche HTTPS-URL zurück.
+Starts `cloudflared` process and returns the public HTTPS URL.
 
 ```python
 url = await start_cloudflare_tunnel(port=8765)
 # → "https://abc-def.trycloudflare.com"
 ```
 
-Voraussetzung: `cloudflared` muss installiert sein.
+Prerequisite: `cloudflared` must be installed.
 
-#### Funktion: `start_full_local_stack()`
+#### Function: `start_full_local_stack()`
 
-Startet Module A + ControlServer + Cloudflare Tunnel in einem Aufruf:
+Starts Module A + ControlServer + Cloudflare Tunnel in one call:
 
 ```python
 await start_full_local_stack(
@@ -576,10 +589,11 @@ await start_full_local_stack(
 ```
 
 **CLI:**
+
 ```bash
-python colab_bridge/control_plane.py server   # Nur Control Server
-python colab_bridge/control_plane.py tunnel   # Nur Cloudflare Tunnel
-python colab_bridge/control_plane.py full \   # Alles zusammen
+python colab_bridge/control_plane.py server   # Control Server only
+python colab_bridge/control_plane.py tunnel   # Cloudflare Tunnel only
+python colab_bridge/control_plane.py full \   # Everything together
     --ably-key $ABLY_API_KEY \
     --capital 10000 --symbol BTC/USDT
 ```
@@ -588,22 +602,23 @@ python colab_bridge/control_plane.py full \   # Alles zusammen
 
 ### 6.5 `colab_extension.py` — Colab Extension
 
-Die Extension hängt sich mit **einem einzigen Import** in jedes bestehende Colab-Notebook ein. Kein Code-Umbau nötig.
+The extension hooks into any existing Colab notebook with **a single import**. No code restructuring needed.
 
-**Singleton-Import:**
+**Singleton import:**
+
 ```python
 from colab_bridge.colab_extension import bt4t
 ```
 
-Das Objekt `bt4t` ist eine globale Singleton-Instanz der `BT4TExtension`-Klasse.
+The `bt4t` object is a global singleton instance of the `BT4TExtension` class.
 
-Die detaillierte Referenz aller Klassen findet sich in [Kapitel 7](#7-colab-extension--detailreferenz).
+The detailed reference for all classes can be found in [Chapter 7](#7-colab-extension--detailed-reference).
 
 ---
 
-### 6.6 `transports/` — Alle 4 Transport-Optionen
+### 6.6 `transports/` — All 4 Transport Options
 
-#### Factory-Funktion: `get_transport()`
+#### Factory Function: `get_transport()`
 
 ```python
 from colab_bridge.transports import get_transport
@@ -612,7 +627,7 @@ from colab_bridge.transports import get_transport
 t = get_transport("ably", api_key="root:xxx")
 
 # Redis
-t = get_transport("redis", side="local")    # auf lokalem Rechner
+t = get_transport("redis", side="local")    # on local machine
 t = get_transport("redis", side="colab",    # in Colab
     redis_url="https://tunnel.dev/redis")
 
@@ -626,20 +641,20 @@ t = get_transport("gdrive", side="local")
 t = get_transport("gdrive", side="colab")
 ```
 
-#### Vergleich der 4 Optionen:
+#### Comparison of the 4 options:
 
-| Option | Latenz | Kosten | Konto | Beste für |
-|--------|--------|--------|-------|-----------|
-| **Ably** | 50–150ms | Free Tier: 100 Conn | Ja (Ably) | Primärtransport |
-| **Redis** | 30–150ms | Kostenlos | Nein | Kein externer Account |
-| **Telegram** | 200–800ms | Kostenlos | Bot-Token | Bereits in .env |
-| **Google Drive** | 2–15s | Kostenlos | Google | Fallback / Debug |
+| Option           | Latency   | Cost                | Account    | Best for            |
+| ---------------- | --------- | ------------------- | ---------- | ------------------- |
+| **Ably**         | 50–150ms  | Free Tier: 100 Conn | Yes (Ably) | Primary transport   |
+| **Redis**        | 30–150ms  | Free                | No         | No external account |
+| **Telegram**     | 200–800ms | Free                | Bot token  | Already in .env     |
+| **Google Drive** | 2–15s     | Free                | Google     | Fallback / Debug    |
 
-Ausführliche Setup-Anleitungen: [TRANSPORT_GUIDE.md](TRANSPORT_GUIDE.md)
+Detailed setup instructions: [TRANSPORT_GUIDE.md](TRANSPORT_GUIDE.md)
 
 ---
 
-## 7. Colab Extension — Detailreferenz
+## 7. Colab Extension — Detailed Reference
 
 ### 7.1 `classify_error()`
 
@@ -647,25 +662,26 @@ Ausführliche Setup-Anleitungen: [TRANSPORT_GUIDE.md](TRANSPORT_GUIDE.md)
 error_type, repair_action, severity = classify_error(exc)
 ```
 
-Klassifiziert eine Exception anhand von Regex-Mustern.
+Classifies an exception based on regex patterns.
 
-**Erkannte Fehlertypen:**
+**Recognized error types:**
 
-| Fehlertyp | Erkennungs-Pattern | Aktion | Schwere |
-|-----------|-------------------|--------|---------|
-| `OOM` | `CUDA out of memory`, `OutOfMemoryError`, `OOM` | `halve_batch_size` | high |
-| `NAN_LOSS` | `nan`, `NaN`, `inf.*loss/reward/gradient` | `reduce_lr` | high |
-| `EXPLODING` | `gradient.*explod`, `loss.*explod`, `overflow` | `clip_gradients` | high |
-| `IMPORT` | `ModuleNotFoundError`, `No module named` | `pip_install` | medium |
-| `TIMEOUT` | `TimeoutError`, `ReadTimeout`, `socket.timeout` | `increase_timeout` | low |
-| `CONNECTION` | `ConnectionError`, `ConnectTimeout` | `retry_connection` | medium |
-| `CUDA_ERROR` | `RuntimeError.*CUDA`, `device-side assert` | `halve_batch_size` | high |
-| `DATA_ERROR` | `KeyError`, `IndexError`, `ValueError.*batch/data` | `skip_batch` | medium |
-| `IO_ERROR` | `PermissionError`, `FileNotFoundError.*drive/model` | `retry_io` | medium |
-| `INTERRUPTED` | `KeyboardInterrupt` | `none` | low |
-| `UNKNOWN` | (kein Muster passt) | `none` | medium |
+| Error type    | Detection pattern                                   | Action             | Severity |
+| ------------- | --------------------------------------------------- | ------------------ | -------- |
+| `OOM`         | `CUDA out of memory`, `OutOfMemoryError`, `OOM`     | `halve_batch_size` | high     |
+| `NAN_LOSS`    | `nan`, `NaN`, `inf.*loss/reward/gradient`           | `reduce_lr`        | high     |
+| `EXPLODING`   | `gradient.*explod`, `loss.*explod`, `overflow`      | `clip_gradients`   | high     |
+| `IMPORT`      | `ModuleNotFoundError`, `No module named`            | `pip_install`      | medium   |
+| `TIMEOUT`     | `TimeoutError`, `ReadTimeout`, `socket.timeout`     | `increase_timeout` | low      |
+| `CONNECTION`  | `ConnectionError`, `ConnectTimeout`                 | `retry_connection` | medium   |
+| `CUDA_ERROR`  | `RuntimeError.*CUDA`, `device-side assert`          | `halve_batch_size` | high     |
+| `DATA_ERROR`  | `KeyError`, `IndexError`, `ValueError.*batch/data`  | `skip_batch`       | medium   |
+| `IO_ERROR`    | `PermissionError`, `FileNotFoundError.*drive/model` | `retry_io`         | medium   |
+| `INTERRUPTED` | `KeyboardInterrupt`                                 | `none`             | low      |
+| `UNKNOWN`     | (no pattern matches)                                | `none`             | medium   |
 
-**Beispiel:**
+**Example:**
+
 ```python
 try:
     train(model, data)
@@ -678,8 +694,8 @@ except Exception as exc:
 
 ### 7.2 `InProcessRepair`
 
-Repariert Hyperparameter direkt im laufenden Python-Prozess ohne Notebook-Neustart.  
-Sucht Variablen im globalen Namespace (`__main__`).
+Repairs hyperparameters directly in the running Python process without notebook restart.  
+Searches for variables in the global namespace (`__main__`).
 
 ```python
 repair = InProcessRepair(repair_log=[])
@@ -687,21 +703,22 @@ result = repair.apply("halve_batch_size", context={})
 # result = {"action": "halve_batch_size", "changes": ["BATCH_SIZE: 32 → 16"], "success": True}
 ```
 
-**Methode `apply(action, context) -> dict`:**
+**Method `apply(action, context) -> dict`:**
 
-| Aktion | Was wird geändert |
-|--------|-------------------|
-| `halve_batch_size` | Halbiert alle `batch_size`-Variablen im globalen NS. Leert CUDA-Cache. |
-| `reduce_lr` | Reduziert `learning_rate`/`lr`-Variablen um Faktor 10. Patcht auch PyTorch-Optimizer. |
-| `clip_gradients` | Setzt `gradient_clip_val` auf min(aktuell, 0.5). Neu: `GRADIENT_CLIP_VAL = 0.5`. |
-| `pip_install` | Installiert fehlendes Paket aus Fehlermeldung via `pip`. |
-| `increase_timeout` | Verdoppelt alle `timeout`-Variablen im globalen NS. |
-| `skip_batch` | Loggt Warnung (Signal für Notebook-Code). |
-| `retry_connection` | Wartet 30s. |
-| `retry_io` | Wartet 10s. |
-| `none` | Keine Aktion. |
+| Action             | What gets changed                                                                    |
+| ------------------ | ------------------------------------------------------------------------------------ |
+| `halve_batch_size` | Halves all `batch_size` variables in global NS. Clears CUDA cache.                   |
+| `reduce_lr`        | Reduces `learning_rate`/`lr` variables by factor 10. Also patches PyTorch optimizer. |
+| `clip_gradients`   | Sets `gradient_clip_val` to min(current, 0.5). New: `GRADIENT_CLIP_VAL = 0.5`.       |
+| `pip_install`      | Installs missing package from error message via `pip`.                               |
+| `increase_timeout` | Doubles all `timeout` variables in global NS.                                        |
+| `skip_batch`       | Logs warning (signal for notebook code).                                             |
+| `retry_connection` | Waits 30s.                                                                           |
+| `retry_io`         | Waits 10s.                                                                           |
+| `none`             | No action.                                                                           |
 
-**Rückgabe-Dict:**
+**Return dict:**
+
 ```python
 {
     "timestamp": "2024-01-15T10:30:00+00:00",
@@ -711,13 +728,13 @@ result = repair.apply("halve_batch_size", context={})
 }
 ```
 
-**Wichtig:** Die Reparatur ist nur wirksam wenn die Variablen im globalen Namespace existieren. Lokale Variablen in Funktionen werden nicht erfasst.
+**Important:** The repair only takes effect if the variables exist in the global namespace. Local variables inside functions are not captured.
 
 ---
 
 ### 7.3 `Reporter`
 
-Sendet Berichte an den lokalen Rechner. Dual-Kanal: HTTP POST → Google Drive Fallback.
+Sends reports to the local machine. Dual channel: HTTP POST → Google Drive fallback.
 
 ```python
 reporter = Reporter(
@@ -725,187 +742,195 @@ reporter = Reporter(
     api_token="bt4t-secret-token",
     notebook_id="training_v1"
 )
-reporter.start()   # Hintergrund-Send-Thread starten
-reporter.stop()    # Thread stoppen
+reporter.start()   # Start background send thread
+reporter.stop()    # Stop thread
 ```
 
-**Öffentliche Methoden:**
+**Public methods:**
 
-| Methode | Beschreibung |
-|---------|-------------|
-| `report_error(exc, error_type, repair_applied)` | Sendet Fehlerbericht mit Stacktrace |
-| `report_progress(data: dict)` | Sendet Trainings-Fortschritt (Epoch, Loss, Reward) |
-| `report_heartbeat(extra={})` | Sendet Heartbeat mit Status `COLAB_ALIVE` |
-| `poll_commands() -> list[dict]` | Fragt lokalen Rechner synchron nach Befehlen |
+| Method                                          | Description                                    |
+| ----------------------------------------------- | ---------------------------------------------- |
+| `report_error(exc, error_type, repair_applied)` | Sends error report with stack trace            |
+| `report_progress(data: dict)`                   | Sends training progress (epoch, loss, reward)  |
+| `report_heartbeat(extra={})`                    | Sends heartbeat with status `COLAB_ALIVE`      |
+| `poll_commands() -> list[dict]`                 | Synchronously polls local machine for commands |
 
-**Sendemechanismus:**
-1. Alle Berichte werden in interne Queue gestellt
-2. Hintergrund-Thread (`_send_loop`) leert Queue kontinuierlich
-3. Jede Nachricht: HTTP POST an `{listener_url}/report_error`
-4. Bei HTTP-Fehler: JSON-Datei in `/content/drive/MyDrive/BITCOIN4Traders/bt4t_bus/reports/`
+**Send mechanism:**
 
-**Befehle pollen (`poll_commands()`):**
+1. All reports are put in internal queue
+2. Background thread (`_send_loop`) continuously drains queue
+3. Each message: HTTP POST to `{listener_url}/report_error`
+4. On HTTP error: JSON file in `/content/drive/MyDrive/BITCOIN4Traders/bt4t_bus/reports/`
+
+**Poll commands (`poll_commands()`):**
+
 ```python
 commands = reporter.poll_commands()
-# → [{"cmd": "PAUSE", "params": {}}]   oder []
+# → [{"cmd": "PAUSE", "params": {}}]   or []
 ```
-Fragt `GET {listener_url}/colab/command` (max. 5s Timeout).
+
+Requests `GET {listener_url}/colab/command` (max. 5s timeout).
 
 ---
 
 ### 7.4 `IterationController`
 
-Steuert den Trainings-Loop von außen. Wird intern von `bt4t.step()` aufgerufen.
+Controls the training loop from outside. Called internally by `bt4t.step()`.
 
 ```python
 controller = IterationController(reporter=reporter, repair=repair)
 should_continue = controller.process(epoch=5, step=100, loss=0.42, reward=1.5)
 ```
 
-**Methode `process(...) -> bool`:**
+**Method `process(...) -> bool`:**
 
-Wird bei jedem Trainings-Schritt aufgerufen. Gibt `False` zurück wenn Training gestoppt werden soll.
+Called at every training step. Returns `False` when training should stop.
 
-Interne Schritte:
-1. State aktualisieren (epoch, step, loss, reward)
-2. Alle 10 Steps: Fortschritt via Reporter senden
-3. Alle 5s: Befehle pollen + ausführen
-4. Wenn pausiert: Warte-Loop (prüft alle 5s ob RESUME kommt)
+Internal steps:
+
+1. Update state (epoch, step, loss, reward)
+2. Every 10 steps: send progress via Reporter
+3. Every 5s: poll commands + execute
+4. When paused: wait loop (checks every 5s for RESUME)
 5. Return: `not stop_requested`
 
-**`IterationState` Felder:**
+**`IterationState` fields:**
 
 ```python
-state.epoch            # Aktueller Epoch
-state.step             # Aktueller Step
-state.loss             # Letzter Loss-Wert
-state.reward           # Letzter Reward-Wert
-state.paused           # True wenn PAUSE-Befehl empfangen
-state.stop_requested   # True wenn STOP-Befehl empfangen
-state.lr               # Remote-gesetzte Learning Rate
-state.batch_size       # Remote-gesetzte Batch Size
-state.checkpoint_every # Checkpoint alle N Steps (Standard: 50)
+state.epoch            # Current epoch
+state.step             # Current step
+state.loss             # Last loss value
+state.reward           # Last reward value
+state.paused           # True when PAUSE command received
+state.stop_requested   # True when STOP command received
+state.lr               # Remotely set learning rate
+state.batch_size       # Remotely set batch size
+state.checkpoint_every # Checkpoint every N steps (default: 50)
 ```
 
-**Verarbeitete Befehle:**
+**Processed commands:**
 
-| Befehl | Effekt auf State |
-|--------|-----------------|
-| `PAUSE` | `paused = True` → Warte-Loop |
-| `RESUME` | `paused = False` → Warte-Loop verlassen |
-| `STOP` / `SHUTDOWN` | `stop_requested = True` → Loop gibt False zurück |
-| `CHANGE_LR` | Setzt LR im globalen NS + PyTorch-Optimizer |
-| `CHANGE_BS` | Setzt `batch_size` im globalen NS |
-| `RELOAD_MODEL` | Setzt `BT4T_RELOAD_REQUESTED = True` + `BT4T_RELOAD_MODEL_PATH` im globalen NS |
-| `STATUS` | Sendet aktuellen State als Fortschritts-Bericht |
+| Command             | Effect on state                                                             |
+| ------------------- | --------------------------------------------------------------------------- |
+| `PAUSE`             | `paused = True` → wait loop                                                 |
+| `RESUME`            | `paused = False` → exit wait loop                                           |
+| `STOP` / `SHUTDOWN` | `stop_requested = True` → loop returns False                                |
+| `CHANGE_LR`         | Sets LR in global NS + PyTorch optimizer                                    |
+| `CHANGE_BS`         | Sets `batch_size` in global NS                                              |
+| `RELOAD_MODEL`      | Sets `BT4T_RELOAD_REQUESTED = True` + `BT4T_RELOAD_MODEL_PATH` in global NS |
+| `STATUS`            | Sends current state as progress report                                      |
 
 ---
 
 ### 7.5 `MemoryMonitor`
 
-Überwacht GPU-Speicher alle 60s und führt prophylaktische Bereinigung durch.
+Monitors GPU memory every 60s and performs prophylactic cleanup.
 
 ```python
 monitor = MemoryMonitor(
     repair=repair,
-    warn_pct=85.0    # Warnschwelle in % (Standard: 85%)
+    warn_pct=85.0    # Warning threshold in % (default: 85%)
 )
-monitor.start()   # Hintergrund-Thread starten
-monitor.stop()    # Thread stoppen
+monitor.start()   # Start background thread
+monitor.stop()    # Stop thread
 ```
 
-**Automatisches Verhalten:**
-- `GPU > 85%`: `gc.collect()` + `torch.cuda.empty_cache()` → Log-Ausgabe
-- `GPU > 95%` nach Bereinigung: `repair.apply("halve_batch_size", {})` → Batch-Size halbieren
+**Automatic behavior:**
 
-Funktioniert nur wenn `torch` installiert und GPU verfügbar ist. Andernfalls: No-op.
+- `GPU > 85%`: `gc.collect()` + `torch.cuda.empty_cache()` → log output
+- `GPU > 95%` after cleanup: `repair.apply("halve_batch_size", {})` → halve batch size
+
+Only works if `torch` is installed and GPU is available. Otherwise: no-op.
 
 ---
 
 ### 7.6 `ColabKeepalive`
 
-Verhindert Colab-Session-Timeout durch echte Compute-Aufgaben.
+Prevents Colab session timeout through real compute tasks.
 
 ```python
 keepalive = ColabKeepalive(
     reporter=reporter,
-    interval_s=600.0    # Alle 10 Minuten (Standard)
+    interval_s=600.0    # Every 10 minutes (default)
 )
 keepalive.start()
 keepalive.stop()
 ```
 
-**Mechanismus:**
-- Alle `interval_s` Sekunden: `numpy.random.randn(1000, 1000).mean()` (echte Compute-Aufgabe)
-- Schreibt kein Sleep-Trick — Colab erkennt aktiven Kernel durch GPU-CPU-Aktivität
-- Sendet Heartbeat mit `{"keepalive_tick": "HH:MM:SS"}`
+**Mechanism:**
 
-**Hinweis:** Colab killt Sessions bei **Inaktivität** (kein Output/Compute), nicht nach einer festen Zeit. Die numpy-Berechnung simuliert echte Aktivität.
+- Every `interval_s` seconds: `numpy.random.randn(1000, 1000).mean()` (real compute task)
+- No sleep trick — Colab detects active kernel through GPU-CPU activity
+- Sends heartbeat with `{"keepalive_tick": "HH:MM:SS"}`
+
+**Note:** Colab kills sessions due to **inactivity** (no output/compute), not after a fixed time. The numpy computation simulates real activity.
 
 ---
 
 ### 7.7 `ExceptionHook`
 
-Globaler `sys.excepthook` — fängt alle unbehandelten Exceptions.
+Global `sys.excepthook` — catches all unhandled exceptions.
 
 ```python
 hook = ExceptionHook(reporter=reporter, repair=repair)
-hook.install()    # sys.excepthook überschreiben
-hook.uninstall()  # Original-Hook wiederherstellen
+hook.install()    # Override sys.excepthook
+hook.uninstall()  # Restore original hook
 ```
 
-**Ablauf bei Exception:**
-1. `KeyboardInterrupt` → an Original-Hook weitergeben (keine Behandlung)
-2. `classify_error(exc)` aufrufen → Fehlertyp + Aktion + Schwere
-3. Reparatur-Zähler für diesen Fehlertyp erhöhen
-4. Wenn `action != "none"` und `count <= 5`: `repair.apply(action, ctx)` aufrufen
-5. Wenn `count > 5`: Warnung "keine weitere Reparatur" (verhindert Endlos-Loop)
-6. `reporter.report_error(exc, error_type, repair_result)` aufrufen
-7. Original-Hook aufrufen (Traceback im Notebook ausgeben)
+**Flow on exception:**
+
+1. `KeyboardInterrupt` → pass to original hook (no handling)
+2. Call `classify_error(exc)` → error type + action + severity
+3. Increment repair counter for this error type
+4. If `action != "none"` and `count <= 5`: call `repair.apply(action, ctx)`
+5. If `count > 5`: warning "no further repair" (prevents infinite loop)
+6. Call `reporter.report_error(exc, error_type, repair_result)`
+7. Call original hook (print traceback in notebook)
 
 ---
 
-### 7.8 `BT4TExtension` / `bt4t` (öffentliche API)
+### 7.8 `BT4TExtension` / `bt4t` (public API)
 
-Das Singleton `bt4t` ist die einzige öffentliche Schnittstelle der Extension.
+The singleton `bt4t` is the only public interface of the extension.
 
 ```python
 from colab_bridge.colab_extension import bt4t
 ```
 
-#### `bt4t.install()` — Extension einrichten
+#### `bt4t.install()` — Set up extension
 
 ```python
 bt4t.install(
-    listener_url="https://abc-def.trycloudflare.com",  # Optional (auch via ENV)
+    listener_url="https://abc-def.trycloudflare.com",  # Optional (also via ENV)
     api_token="bt4t-secret-token",    # Optional
     notebook_id="training_v1",        # Optional
-    keepalive=True,                   # Colab-Keepalive aktivieren
-    memory_monitor=True,              # GPU-Überwachung aktivieren
-    exception_hook=True,              # Globalen Exception-Hook installieren
-    keepalive_interval_s=600.0,       # Keepalive-Intervall
-    memory_warn_pct=85.0,             # GPU-Warnschwelle %
+    keepalive=True,                   # Enable Colab keepalive
+    memory_monitor=True,              # Enable GPU monitoring
+    exception_hook=True,              # Install global exception hook
+    keepalive_interval_s=600.0,       # Keepalive interval
+    memory_warn_pct=85.0,             # GPU warning threshold %
 )
 ```
 
-- Gibt `self` zurück (Method-Chaining möglich)
-- Idempotent: zweiter Aufruf loggt Warnung und tut nichts
-- Sendet `COLAB_READY` Heartbeat nach erfolgreicher Installation
-- Liest Konfiguration aus Umgebungsvariablen (Override möglich via Parameter)
+- Returns `self` (method chaining possible)
+- Idempotent: second call logs warning and does nothing
+- Sends `COLAB_READY` heartbeat after successful installation
+- Reads configuration from environment variables (override possible via parameters)
 
-**Ausgabe nach `install()`:**
+**Output after `install()`:**
+
 ```
 ═══════════════════════════════════════════════════════
-  bt4t Extension installiert
+  bt4t Extension installed
   Notebook  : training_v1
   Listener  : https://abc-def.trycloudflare.com
-  Keepalive : an
-  Memory    : an
-  ExcHook   : an
+  Keepalive : on
+  Memory    : on
+  ExcHook   : on
 ═══════════════════════════════════════════════════════
 ```
 
-#### `bt4t.step()` — Trainings-Schritt melden
+#### `bt4t.step()` — Report training step
 
 ```python
 should_continue = bt4t.step(
@@ -913,19 +938,19 @@ should_continue = bt4t.step(
     step=100,
     loss=0.42,
     reward=1.5,
-    # beliebige weitere kwargs werden als "extra" mitgesendet
+    # any additional kwargs are sent as "extra"
     accuracy=0.94,
 )
-# False wenn STOP-Befehl empfangen
+# False when STOP command received
 
-# Typische Verwendung:
+# Typical usage:
 for epoch in range(100):
     loss = train_one_epoch(model, data)
     if not bt4t.step(epoch=epoch, loss=float(loss)):
         break
 ```
 
-Wenn Extension nicht installiert (`bt4t.install()` nicht aufgerufen): gibt immer `True` zurück.
+If extension not installed (`bt4t.install()` not called): always returns `True`.
 
 #### `bt4t.guard` — Decorator
 
@@ -937,24 +962,24 @@ def run_training():
         bt4t.step(epoch=epoch, loss=loss)
 ```
 
-- Max. 3 Versuche bei Fehler
-- Klassifiziert Fehler + führt Reparatur aus
-- Sendet Fehlerbericht
-- Bei `high`-Schwere oder letztem Versuch: re-raise
-- `KeyboardInterrupt` wird immer sofort weitergegeben
+- Max. 3 retries on error
+- Classifies error + performs repair
+- Sends error report
+- On `high` severity or last attempt: re-raise
+- `KeyboardInterrupt` is always passed through immediately
 
-#### `bt4t.session()` — Context-Manager
+#### `bt4t.session()` — Context manager
 
 ```python
 with bt4t.session("experiment_42"):
     train_model(model, data)
 ```
 
-- Sendet `SESSION_START` Heartbeat beim Eintritt
-- Sendet `SESSION_END` mit Status `OK` / `ERROR` / `INTERRUPTED` beim Verlassen
-- Bei Exception: Fehler klassifizieren + reparieren + melden, dann re-raise
+- Sends `SESSION_START` heartbeat on entry
+- Sends `SESSION_END` with status `OK` / `ERROR` / `INTERRUPTED` on exit
+- On exception: classify error + repair + report, then re-raise
 
-#### `bt4t.send_checkpoint()` — Checkpoint melden
+#### `bt4t.send_checkpoint()` — Report checkpoint
 
 ```python
 bt4t.send_checkpoint(
@@ -963,16 +988,16 @@ bt4t.send_checkpoint(
 )
 ```
 
-Sendet `CHECKPOINT`-Event mit aktuellem Epoch/Step und optionalen Metriken.
+Sends `CHECKPOINT` event with current epoch/step and optional metrics.
 
-#### `bt4t.send_alert()` — Manuelle Nachricht
+#### `bt4t.send_alert()` — Manual message
 
 ```python
-bt4t.send_alert("Epoch 50 abgeschlossen", level="INFO")
-bt4t.send_alert("WARNUNG: Loss divergiert!", level="WARNING")
+bt4t.send_alert("Epoch 50 completed", level="INFO")
+bt4t.send_alert("WARNING: Loss diverging!", level="WARNING")
 ```
 
-#### `bt4t.status()` — Aktuellen Status abfragen
+#### `bt4t.status()` — Query current status
 
 ```python
 status = bt4t.status()
@@ -988,7 +1013,7 @@ status = bt4t.status()
 # }
 ```
 
-#### `bt4t.repair_log()` — Reparatur-Protokoll
+#### `bt4t.repair_log()` — Repair log
 
 ```python
 repairs = bt4t.repair_log()
@@ -999,134 +1024,137 @@ repairs = bt4t.repair_log()
 # ]
 ```
 
-#### `bt4t.should_stop` / `bt4t.is_paused` — Eigenschaften
+#### `bt4t.should_stop` / `bt4t.is_paused` — Properties
 
 ```python
 if bt4t.should_stop:
-    print("Training soll gestoppt werden")
+    print("Training should be stopped")
 if bt4t.is_paused:
-    print("Training ist pausiert")
+    print("Training is paused")
 ```
 
-#### `bt4t.uninstall()` — Extension entfernen
+#### `bt4t.uninstall()` — Remove extension
 
 ```python
-bt4t.uninstall()  # Alle Hooks entfernen, alle Threads stoppen
+bt4t.uninstall()  # Remove all hooks, stop all threads
 ```
 
 ---
 
-## 8. Befehls-Referenz
+## 8. Command Reference
 
-### Befehle von Lokal → Colab (via `bt4t:control:cmd` oder `POST /colab/command`)
+### Commands Local → Colab (via `bt4t:control:cmd` or `POST /colab/command`)
 
-| Befehl | Parameter | Verarbeitet von | Beschreibung |
-|--------|-----------|----------------|--------------|
-| `PAUSE_INFERENCE` | – | ModuleB | Stoppt RL-Inferenz in Module B |
-| `RESUME` | – | ModuleB + IterationCtrl | Setzt Inferenz + Training fort |
-| `RELOAD_MODEL` | `model_path: str` | ModuleB + IterationCtrl | Lädt neues Modell |
-| `SHUTDOWN` | – | ModuleB | Beendet Module B sauber |
-| `STATUS` | – | ModuleB + IterationCtrl | Fordert Status-Bericht an |
-| `PAUSE` | – | IterationController | Pausiert Training-Loop |
-| `STOP` | – | IterationController | Stoppt Training-Loop (gibt `False` bei `step()`) |
-| `CHANGE_LR` | `value: float` | IterationController | Ändert Learning Rate live |
-| `CHANGE_BS` | `value: int` | IterationController | Ändert Batch Size live |
+| Command           | Parameters        | Processed by            | Description                                       |
+| ----------------- | ----------------- | ----------------------- | ------------------------------------------------- |
+| `PAUSE_INFERENCE` | –                 | ModuleB                 | Stops RL inference in Module B                    |
+| `RESUME`          | –                 | ModuleB + IterationCtrl | Resumes inference + training                      |
+| `RELOAD_MODEL`    | `model_path: str` | ModuleB + IterationCtrl | Loads new model                                   |
+| `SHUTDOWN`        | –                 | ModuleB                 | Cleanly shuts down Module B                       |
+| `STATUS`          | –                 | ModuleB + IterationCtrl | Requests status report                            |
+| `PAUSE`           | –                 | IterationController     | Pauses training loop                              |
+| `STOP`            | –                 | IterationController     | Stops training loop (returns `False` at `step()`) |
+| `CHANGE_LR`       | `value: float`    | IterationController     | Changes learning rate live                        |
+| `CHANGE_BS`       | `value: int`      | IterationController     | Changes batch size live                           |
 
-### Befehle von Colab → Lokal (via `bt4t:control:ack`)
+### Commands Colab → Local (via `bt4t:control:ack`)
 
-| Event | Inhalt | Beschreibung |
-|-------|--------|--------------|
-| ACK | `{cmd, status, msg}` | Bestätigung für jeden empfangenen Befehl |
+| Event | Content              | Description                                |
+| ----- | -------------------- | ------------------------------------------ |
+| ACK   | `{cmd, status, msg}` | Acknowledgement for every received command |
 
-### Events von Colab → Lokal (via Reporter HTTP POST)
+### Events Colab → Local (via Reporter HTTP POST)
 
-| Typ | Felder | Beschreibung |
-|-----|--------|--------------|
-| `heartbeat` | `{status, notebook_id, timestamp_utc}` | Lebenszeichen (auch: `COLAB_READY`, `SESSION_START`) |
-| `progress` | `{epoch, step, loss, reward}` | Trainings-Fortschritt (alle 10 Steps) |
-| `error` | `{error_type, error_message, stacktrace, repair_applied}` | Fehlerbericht |
-| `CHECKPOINT` | `{model_path, metrics, epoch, step}` | Checkpoint-Meldung |
-| `ALERT` | `{level, message}` | Manuelle Nachricht |
-
----
-
-## 9. Fehlerbehandlungs-Tabelle
-
-| Fehler tritt auf | Erkannt als | Automatische Aktion | Ergebnis |
-|-----------------|-------------|---------------------|---------|
-| GPU-Speicher voll | `OOM` | `halve_batch_size` | BATCH_SIZE /2, CUDA cache geleert |
-| Loss ist NaN | `NAN_LOSS` | `reduce_lr` | LR /10, Optimizer-LR angepasst |
-| Gradient-Explosion | `EXPLODING` | `clip_gradients` | GRADIENT_CLIP_VAL = 0.5 |
-| Fehlende Bibliothek | `IMPORT` | `pip_install` | Automatisches pip install |
-| Netzwerk-Timeout | `TIMEOUT` | `increase_timeout` | Timeout-Variablen ×2 |
-| Verbindungsfehler | `CONNECTION` | `retry_connection` | 30s warten |
-| CUDA Runtime-Fehler | `CUDA_ERROR` | `halve_batch_size` | Wie OOM |
-| Falsche Daten | `DATA_ERROR` | `skip_batch` | Flag setzen |
-| Drive nicht erreichbar | `IO_ERROR` | `retry_io` | 10s warten |
-| Gleicher Fehler >5x | Beliebig | Keine weitere Reparatur | Endlos-Loop vermieden |
-
-**Dreistufige Eskalation:**
-1. **ExceptionHook** fängt unbehandelte Exceptions (automatisch)
-2. **`bt4t.guard`-Decorator** versucht bis zu 3x (opt-in)
-3. **`bt4t.session`-Context-Manager** fängt + meldet (opt-in)
+| Type         | Fields                                                    | Description                                         |
+| ------------ | --------------------------------------------------------- | --------------------------------------------------- |
+| `heartbeat`  | `{status, notebook_id, timestamp_utc}`                    | Sign of life (also: `COLAB_READY`, `SESSION_START`) |
+| `progress`   | `{epoch, step, loss, reward}`                             | Training progress (every 10 steps)                  |
+| `error`      | `{error_type, error_message, stacktrace, repair_applied}` | Error report                                        |
+| `CHECKPOINT` | `{model_path, metrics, epoch, step}`                      | Checkpoint notification                             |
+| `ALERT`      | `{level, message}`                                        | Manual message                                      |
 
 ---
 
-## 10. Umgebungsvariablen
+## 9. Error Handling Table
 
-### Für die Colab Extension (`colab_extension.py`)
+| Error occurs       | Recognized as | Automatic action   | Result                            |
+| ------------------ | ------------- | ------------------ | --------------------------------- |
+| GPU memory full    | `OOM`         | `halve_batch_size` | BATCH_SIZE /2, CUDA cache cleared |
+| Loss is NaN        | `NAN_LOSS`    | `reduce_lr`        | LR /10, optimizer LR adjusted     |
+| Gradient explosion | `EXPLODING`   | `clip_gradients`   | GRADIENT_CLIP_VAL = 0.5           |
+| Missing library    | `IMPORT`      | `pip_install`      | Automatic pip install             |
+| Network timeout    | `TIMEOUT`     | `increase_timeout` | Timeout variables ×2              |
+| Connection error   | `CONNECTION`  | `retry_connection` | Wait 30s                          |
+| CUDA runtime error | `CUDA_ERROR`  | `halve_batch_size` | Like OOM                          |
+| Invalid data       | `DATA_ERROR`  | `skip_batch`       | Set flag                          |
+| Drive unreachable  | `IO_ERROR`    | `retry_io`         | Wait 10s                          |
+| Same error >5x     | Any           | No further repair  | Infinite loop prevented           |
 
-| Variable | Standard | Beschreibung |
-|---------|---------|--------------|
-| `BT4T_LISTENER_URL` | `""` | HTTPS-URL des lokalen Control Servers (Cloudflare Tunnel) |
-| `BT4T_API_TOKEN` | `"bt4t-secret-token"` | Shared Secret (muss mit ControlServer übereinstimmen) |
-| `BT4T_NOTEBOOK_ID` | `"colab_notebook"` | Name des Notebooks für Logs/Berichte |
+**Three-level escalation:**
 
-### Für das gesamte System
-
-| Variable | Datei | Beschreibung |
-|---------|-------|--------------|
-| `ABLY_API_KEY` | `.env` | Ably Root API Key (kostenlos) |
-| `CONTROL_API_TOKEN` | `.env` | Bearer Token für ControlServer-Auth |
-| `CONTROL_PORT` | `.env` | ControlServer-Port (Standard: 8765) |
-| `CONTROL_SERVER_URL` | Colab ENV | URL des Cloudflare Tunnels (in Colab setzen) |
-| `TELEGRAM_BOT_TOKEN` | `.env` | Bot-Token für Telegram-Transport (bereits in .env) |
-| `TELEGRAM_CHAT_ID` | `.env` | Telegram Chat-ID (bereits in .env, auskommentiert) |
+1. **ExceptionHook** catches unhandled exceptions (automatic)
+2. **`bt4t.guard` decorator** tries up to 3 times (opt-in)
+3. **`bt4t.session` context manager** catches + reports (opt-in)
 
 ---
 
-## 11. Abhängigkeiten
+## 10. Environment Variables
 
-### Pflicht (lokal)
+### For the Colab Extension (`colab_extension.py`)
+
+| Variable            | Default               | Description                                               |
+| ------------------- | --------------------- | --------------------------------------------------------- |
+| `BT4T_LISTENER_URL` | `""`                  | HTTPS URL of the local Control Server (Cloudflare Tunnel) |
+| `BT4T_API_TOKEN`    | `"bt4t-secret-token"` | Shared secret (must match ControlServer)                  |
+| `BT4T_NOTEBOOK_ID`  | `"colab_notebook"`    | Notebook name for logs/reports                            |
+
+### For the entire system
+
+| Variable             | File      | Description                                        |
+| -------------------- | --------- | -------------------------------------------------- |
+| `ABLY_API_KEY`       | `.env`    | Ably Root API Key (free)                           |
+| `CONTROL_API_TOKEN`  | `.env`    | Bearer token for ControlServer auth                |
+| `CONTROL_PORT`       | `.env`    | ControlServer port (default: 8765)                 |
+| `CONTROL_SERVER_URL` | Colab ENV | URL of the Cloudflare Tunnel (set in Colab)        |
+| `TELEGRAM_BOT_TOKEN` | `.env`    | Bot token for Telegram transport (already in .env) |
+| `TELEGRAM_CHAT_ID`   | `.env`    | Telegram chat ID (already in .env, commented out)  |
+
+---
+
+## 11. Dependencies
+
+### Required (local)
+
 ```bash
 pip install ably ccxt numpy pandas loguru
 ```
 
-### Pflicht (Colab, Module B)
+### Required (Colab, Module B)
+
 ```bash
 pip install ably loguru numpy
 ```
 
-### Optional (für jeweilige Features)
+### Optional (for respective features)
 
-| Paket | Feature |
-|-------|---------|
-| `fastapi uvicorn` | ControlServer |
-| `httpx` | ControlClient + Reporter HTTP |
-| `torch` | PyTorch-Modelle + GPU-Monitor |
-| `stable-baselines3` | SB3-Modelle |
-| `redis` | Redis-Transport |
-| `cloudflared` | Cloudflare Tunnel (CLI-Tool, kein Python-Paket) |
+| Package             | Feature                                            |
+| ------------------- | -------------------------------------------------- |
+| `fastapi uvicorn`   | ControlServer                                      |
+| `httpx`             | ControlClient + Reporter HTTP                      |
+| `torch`             | PyTorch models + GPU monitor                       |
+| `stable-baselines3` | SB3 models                                         |
+| `redis`             | Redis transport                                    |
+| `cloudflared`       | Cloudflare Tunnel (CLI tool, not a Python package) |
 
 ### Graceful Degradation
 
-Alle optionalen Pakete werden mit `try/except ImportError` behandelt. Das System läuft auch ohne sie — nur die entsprechenden Features sind deaktiviert.
+All optional packages are handled with `try/except ImportError`. The system runs without them — only the corresponding features are disabled.
 
 ---
 
-## 12. Copy-Paste Colab-Zellen
+## 12. Copy-Paste Colab Cells
 
-### Zelle 1: Einmalig ausführen (Setup)
+### Cell 1: Run once (Setup)
 
 ```python
 # ─── bt4t Extension Setup ──────────────────────────────────────────
@@ -1135,21 +1163,21 @@ from google.colab import drive
 drive.mount('/content/drive')
 sys.path.insert(0, '/content/drive/MyDrive/BITCOIN4Traders')
 
-# Konfiguration setzen (URL aus lokalem Terminal kopieren)
-os.environ.setdefault('BT4T_LISTENER_URL', 'https://DEINE_URL.trycloudflare.com')
+# Set configuration (copy URL from local terminal)
+os.environ.setdefault('BT4T_LISTENER_URL', 'https://YOUR_URL.trycloudflare.com')
 os.environ.setdefault('BT4T_API_TOKEN',    'bt4t-secret-token')
 os.environ.setdefault('BT4T_NOTEBOOK_ID',  'training_v1')
-os.environ.setdefault('ABLY_API_KEY',      'DEIN_ABLY_KEY')
+os.environ.setdefault('ABLY_API_KEY',      'YOUR_ABLY_KEY')
 
 from colab_bridge.colab_extension import bt4t
 bt4t.install()
-print("Setup abgeschlossen:", bt4t.status())
+print("Setup complete:", bt4t.status())
 ```
 
-### Zelle 2: Module B starten
+### Cell 2: Start Module B
 
 ```python
-# ─── Module B (RL-Inferenz) starten ────────────────────────────────
+# ─── Module B (RL Inference) start ─────────────────────────────────
 from colab_bridge.module_b_colab import ModuleB, find_champion_on_drive
 
 champion_path = find_champion_on_drive('/content/drive/MyDrive/BITCOIN4Traders')
@@ -1163,36 +1191,36 @@ engine = ModuleB(
 await engine.run()
 ```
 
-### Zelle 3: RL-Training mit bt4t.step() (Muster)
+### Cell 3: RL training with bt4t.step() (pattern)
 
 ```python
-# ─── Training mit Extension-Überwachung ────────────────────────────
+# ─── Training with extension monitoring ────────────────────────────
 from colab_bridge.colab_extension import bt4t
 
-# Normaler Training-Code — nur bt4t.step() hinzufügen
+# Normal training code — just add bt4t.step()
 for epoch in range(1000):
     loss = train_one_epoch(model, optimizer, data)
     reward = evaluate(model, env)
 
-    # bt4t.step() gibt False zurück wenn STOP-Befehl empfangen
+    # bt4t.step() returns False when STOP command received
     if not bt4t.step(epoch=epoch, loss=float(loss), reward=float(reward)):
-        print("Training vom lokalen Rechner gestoppt")
+        print("Training stopped from local machine")
         break
 
-    # Checkpoint alle 100 Epochs
+    # Checkpoint every 100 epochs
     if epoch % 100 == 0:
         save_path = f"/content/drive/MyDrive/.../model_ep{epoch}.pth"
         torch.save(model.state_dict(), save_path)
         bt4t.send_checkpoint(save_path, {"loss": loss, "reward": reward})
 ```
 
-### Zelle 4: Training mit Decorator
+### Cell 4: Training with decorator
 
 ```python
-# ─── Training mit bt4t.guard Decorator ────────────────────────────
+# ─── Training with bt4t.guard decorator ────────────────────────────
 from colab_bridge.colab_extension import bt4t
 
-@bt4t.guard   # Automatischer Retry + Fehlerbehandlung
+@bt4t.guard   # Automatic retry + error handling
 def run_full_training():
     for epoch in range(1000):
         loss = train_one_epoch(model, optimizer, data)
@@ -1201,10 +1229,10 @@ def run_full_training():
 run_full_training()
 ```
 
-### Zelle 5: Training mit Context-Manager
+### Cell 5: Training with context manager
 
 ```python
-# ─── Training mit Context-Manager ─────────────────────────────────
+# ─── Training with context manager ─────────────────────────────────
 from colab_bridge.colab_extension import bt4t
 
 with bt4t.session("experiment_v3_bollinger"):
@@ -1214,28 +1242,29 @@ with bt4t.session("experiment_v3_bollinger"):
             break
 ```
 
-### Zelle 6: Befehl vom Colab aus senden
+### Cell 6: Send command from Colab
 
 ```python
-# ─── Status abrufen ────────────────────────────────────────────────
+# ─── Query status ───────────────────────────────────────────────────
 print(bt4t.status())
-print("Reparaturen:", bt4t.repair_log())
+print("Repairs:", bt4t.repair_log())
 
-# Manuelle Warnung senden
-bt4t.send_alert("Epoch 500 erreicht — bitte Metriken prüfen", level="INFO")
+# Send manual alert
+bt4t.send_alert("Epoch 500 reached — please check metrics", level="INFO")
 ```
 
 ---
 
 ## 13. Troubleshooting
 
-### "Kein Ably API Key"
+### "No Ably API Key"
 
 ```
-FEHLER: Kein Ably API Key!
+ERROR: No Ably API Key!
 ```
 
-**Lösung:** `ABLY_API_KEY` setzen:
+**Solution:** Set `ABLY_API_KEY`:
+
 ```bash
 # In .env:
 ABLY_API_KEY=root.XXXXX:YYYYY
@@ -1246,98 +1275,104 @@ os.environ['ABLY_API_KEY'] = 'root.XXXXX:YYYYY'
 
 ---
 
-### Colab empfängt keine Marktdaten
+### Colab receives no market data
 
-**Symptom:** `obs_buffer_size` bleibt 0, `last_market_data_age_s` steigt.
+**Symptom:** `obs_buffer_size` stays 0, `last_market_data_age_s` increases.
 
 **Checklist:**
-1. Läuft Module A lokal? `python colab_bridge/module_a_local.py`
-2. Gleicher Ably-Key auf beiden Seiten?
-3. Symbol-Format korrekt? Module A: `BTC/USDT`, Module B: `BTCUSDT`
-4. Ably-Verbindung aktiv? Siehe `connected` Log-Meldung
+
+1. Is Module A running locally? `python colab_bridge/module_a_local.py`
+2. Same Ably key on both sides?
+3. Symbol format correct? Module A: `BTC/USDT`, Module B: `BTCUSDT`
+4. Ably connection active? See `connected` log message
 
 ---
 
-### Lokaler Rechner empfängt keine Signale
+### Local machine receives no signals
 
-**Symptom:** Kein "Signal empfangen" im Module-A-Log.
+**Symptom:** No "Signal received" in Module A log.
 
 **Checklist:**
-1. Läuft Module B in Colab?
-2. Reicht Confidence-Schwelle? Aktuell: 0.55 (senken mit `--min-conf 0.4`)
-3. Reicht Observation-Buffer? Inferenz startet erst bei ≥ 20 Einträgen
-4. Ably-Kanal korrekt? `bt4t:signals`
+
+1. Is Module B running in Colab?
+2. Is confidence threshold sufficient? Currently: 0.55 (lower with `--min-conf 0.4`)
+3. Is observation buffer sufficient? Inference only starts at ≥ 20 entries
+4. Ably channel correct? `bt4t:signals`
 
 ---
 
-### Trading ist pausiert obwohl Colab läuft
+### Trading is paused even though Colab is running
 
-**Symptom:** "Portfolio: Trading PAUSIERT (kein Colab-Heartbeat)"
+**Symptom:** "Portfolio: Trading PAUSED (no Colab heartbeat)"
 
-**Ursache:** Kein Heartbeat von Colab in den letzten 90 Sekunden.
+**Cause:** No heartbeat from Colab in the last 90 seconds.
 
-**Lösung:**
+**Solution:**
+
 ```python
-# In Colab: Heartbeat-Intervall prüfen (Standard 10s)
-# Module B läuft? await engine.run() ausführen
+# In Colab: check heartbeat interval (default 10s)
+# Is Module B running? Execute await engine.run()
 
-# Manuell fortsetzen (HTTP):
+# Resume manually (HTTP):
 curl -X POST http://localhost:8765/trading/resume \
   -H "Authorization: Bearer bt4t-secret-token"
 ```
 
 ---
 
-### bt4t Extension sendet keine Berichte
+### bt4t Extension sends no reports
 
-**Symptom:** "HTTP fehlgeschlagen" + "Drive Fallback"
+**Symptom:** "HTTP failed" + "Drive Fallback"
 
 **Checklist:**
-1. `BT4T_LISTENER_URL` gesetzt und korrekt?
-2. Cloudflare Tunnel läuft lokal? (`./cloudflared tunnel --url http://localhost:8765`)
-3. ControlServer läuft? (`python colab_bridge/control_plane.py server`)
-4. Falls Drive-Fallback genügt: Meldungen in `/content/drive/MyDrive/BITCOIN4Traders/bt4t_bus/reports/`
+
+1. `BT4T_LISTENER_URL` set and correct?
+2. Cloudflare Tunnel running locally? (`./cloudflared tunnel --url http://localhost:8765`)
+3. ControlServer running? (`python colab_bridge/control_plane.py server`)
+4. If Drive fallback is sufficient: messages in `/content/drive/MyDrive/BITCOIN4Traders/bt4t_bus/reports/`
 
 ---
 
-### OOM trotz MemoryMonitor
+### OOM despite MemoryMonitor
 
-**Symptom:** Training bricht mit OOM ab obwohl Monitor läuft.
+**Symptom:** Training crashes with OOM even though monitor is running.
 
-**Ursache:** Monitor prüft nur alle 60s. OOM kann dazwischen auftreten.
+**Cause:** Monitor only checks every 60s. OOM can occur in between.
 
-**Lösung:** `bt4t.guard` oder `bt4t.session` zusätzlich verwenden — der ExceptionHook fängt OOM und halbiert `batch_size` im laufenden Prozess.
+**Solution:** Use `bt4t.guard` or `bt4t.session` additionally — the ExceptionHook catches OOM and halves `batch_size` in the running process.
 
 ---
 
-### "Extension bereits installiert"
+### "Extension already installed"
 
 ```
-WARNING | [bt4t] Extension bereits installiert — überspringe
+WARNING | [bt4t] Extension already installed — skipping
 ```
 
-Kein Fehler. `bt4t.install()` ist idempotent — mehrfache Aufrufe sind sicher.
+Not an error. `bt4t.install()` is idempotent — multiple calls are safe.
 
 ---
 
-### Reparatur schlägt fehl ("keine batch_size Variable gefunden")
+### Repair fails ("no batch_size variable found")
 
-**Ursache:** Batch-Size-Variable hat unüblichen Namen oder ist eine lokale Variable.
+**Cause:** Batch size variable has an unusual name or is a local variable.
 
-**Lösung:** Variable umbenennen:
+**Solution:** Rename variable:
+
 ```python
-# Statt:
+# Instead of:
 bs = 32
-# Verwende:
-BATCH_SIZE = 32   # oder batch_size = 32
+# Use:
+BATCH_SIZE = 32   # or batch_size = 32
 ```
 
-Oder manuell nach Reparatur anpassen:
+Or adjust manually after repair:
+
 ```python
-# Nach InProcessRepair: prüfe ob Änderung gewünscht
+# After InProcessRepair: check if change was desired
 print(bt4t.repair_log())
 ```
 
 ---
 
-*Dokumentation generiert: 2026-03-12 | BITCOIN4Traders v1.0.0*
+_Documentation generated: 2026-03-12 | BITCOIN4Traders v1.0.0_

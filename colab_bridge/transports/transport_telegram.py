@@ -1,49 +1,49 @@
 """
-Transport Option 2: Telegram Bot API als Nachrichtenbus
-========================================================
+Transport Option 2: Telegram Bot API as message bus
+====================================================
 
-Latenz    : 200–800 ms  (Telegram-Server Roundtrip)
-Kosten    : $0 (Telegram ist kostenlos)
-Accounts  : Telegram Bot bereits im Projekt vorhanden (.env)
-Zuverlässig: Sehr hoch (Telegram ist hochverfügbar)
-Vorteile  : Bereits integriert, kein neuer Account, funktioniert überall
-            Human-readable Messages, manuelle Kontrolle möglich
-Nachteile : 200–800ms Latenz, Rate-Limit (30 Msg/s an einen Chat),
-            Nur für 1h+ Timeframes sinnvoll, nicht für Sub-Sekunden-Trading
+Latency  : 200–800 ms  (Telegram server round trip)
+Cost     : $0 (Telegram is free)
+Accounts : Telegram bot already in project (.env)
+Reliable : Very high (Telegram is highly available)
+Pros     : Already integrated, no new account needed, works everywhere,
+           human-readable messages, manual control possible
+Cons     : 200–800ms latency, rate limit (30 msg/s to one chat),
+           only useful for 1h+ timeframes, not for sub-second trading
 
-Architektur:
+Architecture:
 ┌─────────────────────────────────────────────────────────┐
-│  LOKAL                         COLAB                    │
+│  LOCAL                         COLAB                    │
 │                                                         │
 │  Telegram Bot                  Telegram Bot             │
-│  sendet Marktdaten             pollt Updates            │
-│  an Chat-ID                    (getUpdates API)         │
+│  sends market data             polls updates            │
+│  to chat ID                    (getUpdates API)         │
 │       │                              │                  │
 │       └──── Telegram Server ─────────┘                  │
 │                                                         │
-│  Kanal-Kodierung: JSON in Nachricht                     │
+│  Channel encoding: JSON in message                      │
 │  Format: #bt4t:signals {"action":"BUY","conf":0.8,...}  │
 └─────────────────────────────────────────────────────────┘
 
-Voraussetzung:
-  TELEGRAM_BOT_TOKEN und TELEGRAM_CHAT_ID in .env setzen
-  (Im Projekt bereits vorhanden, aber aktuell leer)
+Prerequisites:
+  Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env
+  (Already in project, but currently empty)
 
-  Bot erstellen: t.me/BotFather → /newbot
-  Chat-ID finden: t.me/userinfobot
+  Create bot: t.me/BotFather → /newbot
+  Find chat ID: t.me/userinfobot
 
 Installation:
-  pip install httpx  (bereits installiert)
+  pip install httpx  (already installed)
 
-Rate-Limits:
-  Telegram erlaubt max. 30 Nachrichten/Sekunde an einen Chat.
-  Für 1h-Bars: 1 Msg/30min → völlig unkritisch.
-  Für 1m-Bars: könnte Rate-Limit treffen bei vielen Kanälen.
+Rate limits:
+  Telegram allows max. 30 messages/second to one chat.
+  For 1h bars: 1 msg/30min → completely uncritical.
+  For 1m bars: could hit rate limit with many channels.
 
-Sicherheit:
-  Nachrichten sind Klartext auf Telegram-Servern.
-  Für Signale mit kleinen Positionsgrößen akzeptabel.
-  Keine API-Keys oder sensible Daten senden.
+Security:
+  Messages are plain text on Telegram servers.
+  Acceptable for signals with small position sizes.
+  Do not send API keys or sensitive data.
 """
 
 from __future__ import annotations
@@ -72,32 +72,32 @@ except ImportError:
 
 from colab_bridge.transport_base import TransportBase
 
-# ── Nachrichtenformat ─────────────────────────────────────────────────────────
-# Alle Nachrichten haben dieses Format:
+# ── Message format ────────────────────────────────────────────────────────────
+# All messages have this format:
 # #bt4t:{channel} {json_payload}
 #
-# Beispiel:
+# Example:
 # #bt4t:signals {"action":"BUY","confidence":0.82,"timestamp_utc":"..."}
 #
-# Das # am Anfang macht es zu einem Hashtag → einfaches Filtern.
+# The # at the start makes it a hashtag → easy filtering.
 
 MSG_PREFIX = "#bt4t:"
-MAX_MSG_LEN = 4096  # Telegram Limit
-POLL_INTERVAL_S = 2.0  # Update-Polling-Intervall
-RATE_LIMIT_S = 0.1  # Min. 100ms zwischen Nachrichten (10 Msg/s max)
+MAX_MSG_LEN = 4096  # Telegram limit
+POLL_INTERVAL_S = 2.0  # Update polling interval
+RATE_LIMIT_S = 0.1  # Min. 100ms between messages (10 msg/s max)
 
 
 class TelegramTransport(TransportBase):
     """
-    Telegram Bot API als bidirektionaler Nachrichtenbus.
+    Telegram Bot API as bidirectional message bus.
 
-    Funktioniert für BEIDE Seiten (lokal und Colab) identisch.
-    Beide Seiten benutzen denselben Bot-Token und Chat-ID.
+    Works identically for BOTH sides (local and Colab).
+    Both sides use the same bot token and chat ID.
 
-    Sender:  sendet JSON-Nachricht mit Kanal-Hashtag
-    Empfänger: pollt getUpdates und filtert nach Hashtag
+    Sender:   sends JSON message with channel hashtag
+    Receiver: polls getUpdates and filters by hashtag
 
-    Verwendung (lokal UND in Colab identisch):
+    Usage (local AND in Colab identical):
         transport = TelegramTransport(
             bot_token="8512...",
             chat_id="2028041322",
@@ -116,16 +116,16 @@ class TelegramTransport(TransportBase):
         if not _HTTPX_OK:
             raise ImportError("pip install httpx")
 
-        # Aus .env laden falls nicht angegeben
+        # Load from .env if not provided
         self.bot_token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN", "")
         self.chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID", "")
 
         if not self.bot_token:
             raise ValueError(
-                "TELEGRAM_BOT_TOKEN fehlt!\n"
-                "1. Bot erstellen: t.me/BotFather → /newbot\n"
-                "2. In .env: TELEGRAM_BOT_TOKEN=dein_token\n"
-                "3. TELEGRAM_CHAT_ID=deine_chat_id"
+                "TELEGRAM_BOT_TOKEN missing!\n"
+                "1. Create bot: t.me/BotFather → /newbot\n"
+                "2. In .env: TELEGRAM_BOT_TOKEN=your_token\n"
+                "3. TELEGRAM_CHAT_ID=your_chat_id"
             )
 
         self._base_url = f"https://api.telegram.org/bot{self.bot_token}"
@@ -133,8 +133,8 @@ class TelegramTransport(TransportBase):
 
         self._client: Optional[httpx.AsyncClient] = None
         self._callbacks: Dict[str, List[Callable]] = defaultdict(list)
-        self._update_id: int = 0  # Letzter verarbeiteter Update-ID
-        self._seen_ids: Set[int] = set()  # Deduplizierung
+        self._update_id: int = 0  # Last processed update ID
+        self._seen_ids: Set[int] = set()  # Deduplication
         self._poll_task: Optional[asyncio.Task] = None
         self._running = False
         self._last_send_time: float = 0.0
@@ -148,17 +148,17 @@ class TelegramTransport(TransportBase):
         return "sub-second"  # 200–800ms
 
     async def connect(self) -> None:
-        """Verbindung testen und Poll-Loop starten."""
+        """Test connection and start poll loop."""
         self._client = httpx.AsyncClient(timeout=15.0)
-        # Bot-Info abrufen (Verbindungstest)
+        # Fetch bot info (connection test)
         resp = await self._client.get(f"{self._base_url}/getMe")
         data = resp.json()
         if not data.get("ok"):
-            raise ConnectionError(f"Telegram Bot Fehler: {data.get('description')}")
+            raise ConnectionError(f"Telegram Bot error: {data.get('description')}")
         bot_name = data["result"]["username"]
         self._running = True
         self._poll_task = asyncio.create_task(self._poll_loop())
-        logger.success(f"[Telegram] Verbunden als @{bot_name} | Chat: {self.chat_id}")
+        logger.success(f"[Telegram] Connected as @{bot_name} | Chat: {self.chat_id}")
 
     async def disconnect(self) -> None:
         self._running = False
@@ -166,26 +166,26 @@ class TelegramTransport(TransportBase):
             self._poll_task.cancel()
         if self._client:
             await self._client.aclose()
-        logger.info("[Telegram] Getrennt")
+        logger.info("[Telegram] Disconnected")
 
     async def publish(self, channel: str, payload: dict) -> None:
         """
-        Sendet Nachricht als Telegram-Nachricht.
+        Sends message as Telegram message.
 
         Format: #bt4t:{channel} {json}
-        Lange Nachrichten werden gekürzt (Marktdaten ohne close_60 Array).
+        Long messages are truncated (market data without close_60 array).
         """
-        # close_60 Array kürzen (zu lang für Telegram)
+        # Truncate close_60 array (too long for Telegram)
         compact = {k: v for k, v in payload.items() if k != "close_60"}
-        compact["_ch"] = channel  # Kanal im Payload für Deduplizierung
+        compact["_ch"] = channel  # Channel in payload for deduplication
 
         msg_text = f"{MSG_PREFIX}{channel} {json.dumps(compact, default=str)}"
 
-        # Nachricht kürzen wenn nötig
+        # Truncate message if needed
         if len(msg_text) > MAX_MSG_LEN:
             msg_text = msg_text[: MAX_MSG_LEN - 10] + "...[CUT]"
 
-        # Rate-Limiting: min. 100ms zwischen Nachrichten
+        # Rate limiting: min. 100ms between messages
         elapsed = time.time() - self._last_send_time
         if elapsed < RATE_LIMIT_S:
             await asyncio.sleep(RATE_LIMIT_S - elapsed)
@@ -195,29 +195,29 @@ class TelegramTransport(TransportBase):
             json={
                 "chat_id": self.chat_id,
                 "text": msg_text,
-                "disable_notification": True,  # Kein Ton
+                "disable_notification": True,  # Silent
             },
         )
         self._last_send_time = time.time()
 
         if resp.status_code != 200:
-            logger.warning(f"[Telegram] sendMessage Fehler: {resp.text[:200]}")
+            logger.warning(f"[Telegram] sendMessage error: {resp.text[:200]}")
         else:
             logger.debug(f"[Telegram] PUBLISH {channel} ({len(msg_text)} chars)")
 
     async def subscribe(self, channel: str, callback: Callable[[dict], None]) -> None:
-        """Registriert Callback für eingehende Nachrichten auf Kanal."""
+        """Registers callback for incoming messages on channel."""
         self._callbacks[channel].append(callback)
-        logger.debug(f"[Telegram] Abonniert: {channel}")
+        logger.debug(f"[Telegram] Subscribed: {channel}")
 
-    # ── Poll-Loop ─────────────────────────────────────────────────────────────
+    # ── Poll loop ─────────────────────────────────────────────────────────────
 
     async def _poll_loop(self) -> None:
         """
-        Pollt Telegram getUpdates und dispatcht Nachrichten.
+        Polls Telegram getUpdates and dispatches messages.
 
-        getUpdates long-polling: Telegram wartet bis zu 30s auf neue Updates.
-        Effektiv: sofortige Benachrichtigung bei neuer Nachricht.
+        getUpdates long-polling: Telegram waits up to 30s for new updates.
+        Effectively: immediate notification on new message.
         """
         while self._running:
             try:
@@ -225,7 +225,7 @@ class TelegramTransport(TransportBase):
                     f"{self._base_url}/getUpdates",
                     params={
                         "offset": self._update_id + 1,
-                        "timeout": 20,  # Long-polling: 20s warten
+                        "timeout": 20,  # Long-polling: wait 20s
                         "allowed_updates": json.dumps(["message"]),
                     },
                     timeout=25.0,
@@ -242,18 +242,18 @@ class TelegramTransport(TransportBase):
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.warning(f"[Telegram] Poll Fehler: {e}")
+                logger.warning(f"[Telegram] Poll error: {e}")
                 await asyncio.sleep(self.poll_interval)
 
     async def _process_update(self, update: dict) -> None:
-        """Verarbeitet ein Telegram-Update und dispatcht Callbacks."""
+        """Processes a Telegram update and dispatches callbacks."""
         msg = update.get("message", {})
         text = msg.get("text", "")
 
         if not text.startswith(MSG_PREFIX):
-            return  # Keine bt4t-Nachricht
+            return  # Not a bt4t message
 
-        # Deduplizierung
+        # Deduplication
         update_id = update["update_id"]
         if update_id in self._seen_ids:
             return
@@ -261,7 +261,7 @@ class TelegramTransport(TransportBase):
         if len(self._seen_ids) > 500:
             self._seen_ids = set(list(self._seen_ids)[-200:])
 
-        # Kanal und Payload extrahieren
+        # Extract channel and payload
         try:
             # Format: "#bt4t:channel {json}"
             without_prefix = text[len(MSG_PREFIX) :]  # "channel {json}"
@@ -271,21 +271,21 @@ class TelegramTransport(TransportBase):
 
             payload = json.loads(json_str)
 
-            # Callbacks aufrufen
+            # Call callbacks
             for cb in self._callbacks.get(channel, []):
                 cb(payload)
 
             logger.debug(f"[Telegram] RECEIVED {channel}")
 
         except (ValueError, json.JSONDecodeError) as e:
-            logger.debug(f"[Telegram] Parse-Fehler: {e} | text={text[:100]}")
+            logger.debug(f"[Telegram] Parse error: {e} | text={text[:100]}")
 
-    # ── Hilfsmethoden ─────────────────────────────────────────────────────────
+    # ── Helper methods ────────────────────────────────────────────────────────
 
     async def send_alert(self, text: str, level: str = "INFO") -> None:
         """
-        Sendet eine menschenlesbare Alert-Nachricht (nicht als bt4t-Kanal).
-        Für manuelle Benachrichtigungen und Kontrolle.
+        Sends a human-readable alert message (not as a bt4t channel).
+        For manual notifications and control.
         """
         emoji = {"INFO": "ℹ️", "WARNING": "⚠️", "CRITICAL": "🚨", "SUCCESS": "✅"}.get(
             level, "📊"
@@ -301,7 +301,7 @@ class TelegramTransport(TransportBase):
 
     @staticmethod
     def from_env() -> "TelegramTransport":
-        """Erstellt Transport aus .env Variablen."""
+        """Creates transport from .env variables."""
         return TelegramTransport(
             bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
             chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),

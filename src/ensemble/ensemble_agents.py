@@ -70,9 +70,13 @@ Note:
 
 import numpy as np
 import torch
-from typing import List, Dict, Optional, Callable
+from typing import TYPE_CHECKING, List, Dict, Optional, Callable
 from dataclasses import dataclass
 from collections import deque
+
+if TYPE_CHECKING:
+    # Imported only for type-checking to avoid circular / optional deps.
+    from src.integration.regime_causal_pipeline import RegimeCausalPipeline
 
 
 @dataclass
@@ -391,6 +395,77 @@ class DynamicEnsemble(AgentEnsemble):
             with torch.no_grad():
                 state_tensor = torch.FloatTensor(state).unsqueeze(0)
                 return agent(state_tensor).cpu().numpy()[0]
+
+    def predict_with_pipeline(
+        self,
+        state: np.ndarray,
+        pipeline: "RegimeCausalPipeline",
+        features_df: Optional["object"] = None,
+    ) -> np.ndarray:
+        """
+        Enrich *state* via the regime-causal pipeline, then route to the
+        regime-appropriate agent (or fall back to the base ensemble).
+
+        Parameters
+        ----------
+        state : np.ndarray
+            Raw 1-D state vector from the environment.
+        pipeline : RegimeCausalPipeline
+            A fitted (or not yet fitted) pipeline instance.
+        features_df : pd.DataFrame, optional
+            If provided, pipeline.transform() is called on this DataFrame to
+            produce the enriched vector.  When None the raw *state* is wrapped
+            into a single-row DataFrame so the pipeline can still run.
+
+        Returns
+        -------
+        np.ndarray
+            Action produced by the selected agent.
+
+        Notes
+        -----
+        * If pipeline enrichment raises for any reason, the method gracefully
+          falls back to the original *state*.
+        * The enriched state is passed to ``self.predict()`` which handles
+          regime routing automatically.
+        """
+        import numpy as _np  # local alias — avoids any outer-scope shadowing
+
+        enriched = state  # default: no enrichment
+
+        try:
+            if features_df is not None:
+                import pandas as _pd
+
+                if not isinstance(features_df, _pd.DataFrame):
+                    raise TypeError("features_df must be a pd.DataFrame")
+                enriched = pipeline.transform(features_df)
+            else:
+                # Wrap the raw state vector into a 1-row DataFrame for the pipeline
+                import pandas as _pd
+
+                state_arr = _np.asarray(state, dtype=_np.float32)
+                cols = [f"f{i}" for i in range(len(state_arr))]
+                df = _pd.DataFrame(state_arr.reshape(1, -1), columns=cols)
+                enriched = pipeline.transform(df)
+
+        except Exception as exc:
+            # Log but never crash — fall back to unenriched state
+            import warnings as _w
+
+            _w.warn(
+                f"DynamicEnsemble.predict_with_pipeline: enrichment failed "
+                f"({exc}); using raw state",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            enriched = state
+
+        # Ensure 1-D float32
+        enriched = _np.asarray(enriched, dtype=_np.float32).flatten()
+
+        # Delegate to the standard regime-aware predict
+        return self.predict(enriched)
 
 
 class ModelSelector:

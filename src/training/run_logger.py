@@ -73,7 +73,7 @@ except ImportError:
         _HAS_TB = False
 
 # Always available (zero extra dependencies)
-from training.experiment_tracker import ExperimentTracker
+from src.training.experiment_tracker import ExperimentTracker
 
 
 class RunLogger:

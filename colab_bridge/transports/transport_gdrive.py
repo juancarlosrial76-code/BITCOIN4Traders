@@ -1,51 +1,51 @@
 """
-Transport Option 3: Google Drive als Nachrichtenbus
-====================================================
+Transport Option 3: Google Drive as message bus
+================================================
 
-Latenz    : 2–15 Sekunden  (Drive-Sync-Intervall)
-Kosten    : $0 (15 GB kostenlos)
-Accounts  : Google-Account (bereits für Colab vorhanden)
-Zuverlässig: Hoch (Google-Infrastruktur)
-Vorteile  : Keine Installation, in Colab bereits verfügbar,
-            bereits im Projekt (drive_manager.py), persistenter Audit-Trail
-Nachteile : 2–15s Latenz (nicht für 1m-Bars geeignet),
-            Drive-API Rate-Limits (300 req/min)
+Latency  : 2–15 seconds  (Drive sync interval)
+Cost     : $0 (15 GB free)
+Accounts : Google account (already available for Colab)
+Reliable : High (Google infrastructure)
+Pros     : No installation needed, already available in Colab,
+           already in project (drive_manager.py), persistent audit trail
+Cons     : 2–15s latency (not suitable for 1m bars),
+           Drive API rate limits (300 req/min)
 
-Architektur:
+Architecture:
 ┌─────────────────────────────────────────────────────────┐
-│  LOKAL                         COLAB                    │
+│  LOCAL                         COLAB                    │
 │                                                         │
 │  drive_manager.py               google.colab.drive      │
-│  schreibt JSON-Dateien          liest JSON-Dateien      │
+│  writes JSON files              reads JSON files        │
 │       │                              │                  │
 │       └──── Google Drive ────────────┘                  │
 │                                                         │
-│  Struktur auf Drive:                                    │
+│  Structure on Drive:                                    │
 │  bt4t/                                                  │
 │    market/                                              │
-│      BTCUSDT_latest.json   ← Lokal schreibt             │
+│      BTCUSDT_latest.json   ← Local writes               │
 │    signals/                                             │
-│      latest.json           ← Colab schreibt             │
+│      latest.json           ← Colab writes               │
 │    health/                                              │
-│      heartbeat.json        ← Colab schreibt             │
+│      heartbeat.json        ← Colab writes               │
 │    control/                                             │
-│      cmd.json              ← Lokal schreibt             │
-│      ack.json              ← Colab schreibt             │
+│      cmd.json              ← Local writes               │
+│      ack.json              ← Colab writes               │
 └─────────────────────────────────────────────────────────┘
 
-Empfehlung: Nur für 1h+ Timeframes verwenden.
-Für 15m-Bars: Latenz grenzwertig.
-Für 1m-Bars: Nicht geeignet.
+Recommendation: Use only for 1h+ timeframes.
+For 15m bars: latency is borderline.
+For 1m bars: not suitable.
 
 Installation:
-  Lokal (für Schreiben auf Drive):
+  Local (for writing to Drive):
     pip install google-auth google-auth-oauthlib google-api-python-client
 
-  Colab: Bereits vorhanden (google.colab.drive)
+  Colab: Already available (google.colab.drive)
 
-Authentifizierung:
-  Lokal: OAuth2 Credentials (einmalig, speichert Token in ~/.config/bt4t/)
-  Colab: drive.mount('/content/drive') — bereits integriert
+Authentication:
+  Local: OAuth2 Credentials (one-time, saves token in ~/.config/bt4t/)
+  Colab: drive.mount('/content/drive') — already integrated
 """
 
 from __future__ import annotations
@@ -68,14 +68,14 @@ except ImportError:
 
 from colab_bridge.transport_base import TransportBase
 
-# ── Pfad-Konfiguration ────────────────────────────────────────────────────────
-# Lokal (gdrive_manager synct diesen Ordner):
+# ── Path configuration ────────────────────────────────────────────────────────
+# Local (gdrive_manager syncs this directory):
 LOCAL_SYNC_DIR = Path(os.getenv("BT4T_DRIVE_SYNC_DIR", "data/drive_sync"))
 
-# In Colab (nach drive.mount):
+# In Colab (after drive.mount):
 COLAB_DRIVE_DIR = Path("/content/drive/MyDrive/BITCOIN4Traders/bt4t_bus")
 
-# Kanal → Dateiname Mapping
+# Channel → filename mapping
 CHANNEL_FILES = {
     "bt4t:market:BTCUSDT": "market/BTCUSDT_latest.json",
     "bt4t:market:ETHUSDT": "market/ETHUSDT_latest.json",
@@ -86,18 +86,18 @@ CHANNEL_FILES = {
     "bt4t:control:ack": "control/ack.json",
 }
 
-POLL_INTERVAL_S = 3.0  # Wie oft auf neue Dateien prüfen
-STALENESS_S = 60.0  # Nachricht älter als N Sekunden → ignorieren
+POLL_INTERVAL_S = 3.0  # How often to check for new files
+STALENESS_S = 60.0  # Message older than N seconds → ignore
 
 
 class DriveTransportLocal(TransportBase):
     """
-    Lokale Seite: Schreibt/liest JSON-Dateien in einen lokalen Ordner,
-    der von Google Drive (drive_manager.py) synchronisiert wird.
+    Local side: Reads/writes JSON files to a local directory
+    that is synchronized by Google Drive (drive_manager.py).
 
-    Verwendung:
+    Usage:
         transport = DriveTransportLocal(
-            sync_dir="data/drive_sync",   # Wird von drive_manager.py synct
+            sync_dir="data/drive_sync",   # Synced by drive_manager.py
         )
         await transport.connect()
         await transport.publish("bt4t:market:BTCUSDT", market_data)
@@ -108,7 +108,7 @@ class DriveTransportLocal(TransportBase):
         self,
         sync_dir: str | Path = LOCAL_SYNC_DIR,
         poll_interval_s: float = POLL_INTERVAL_S,
-        use_drive_api: bool = False,  # True: direkt via Drive API schreiben
+        use_drive_api: bool = False,  # True: write directly via Drive API
     ):
         self.sync_dir = Path(sync_dir)
         self.poll_interval = poll_interval_s
@@ -127,23 +127,23 @@ class DriveTransportLocal(TransportBase):
         return "seconds"  # 2–15s
 
     async def connect(self) -> None:
-        """Erstellt Verzeichnisstruktur."""
+        """Creates directory structure."""
         self._running = True
         for subdir in ["market", "signals", "portfolio", "health", "control"]:
             (self.sync_dir / subdir).mkdir(parents=True, exist_ok=True)
-        logger.success(f"[Drive/Local] Sync-Verzeichnis: {self.sync_dir}")
-        logger.info("[Drive/Local] Stelle sicher dass drive_manager.py läuft!")
+        logger.success(f"[Drive/Local] Sync directory: {self.sync_dir}")
+        logger.info("[Drive/Local] Make sure drive_manager.py is running!")
 
     async def disconnect(self) -> None:
         self._running = False
         for task in self._poll_tasks.values():
             task.cancel()
-        logger.info("[Drive/Local] Getrennt")
+        logger.info("[Drive/Local] Disconnected")
 
     async def publish(self, channel: str, payload: dict) -> None:
         """
-        Schreibt payload als JSON-Datei in sync_dir.
-        Drive-Manager synct die Datei zu Google Drive.
+        Writes payload as JSON file to sync_dir.
+        Drive Manager syncs the file to Google Drive.
         """
         rel_path = CHANNEL_FILES.get(channel)
         if not rel_path:
@@ -152,11 +152,11 @@ class DriveTransportLocal(TransportBase):
         file_path = self.sync_dir / rel_path
         file_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Timestamp hinzufügen für Staleness-Check
+        # Add timestamp for staleness check
         payload["_written_at"] = datetime.now(timezone.utc).isoformat()
         payload["_channel"] = channel
 
-        # Atomares Schreiben (temp file → rename)
+        # Atomic write (temp file → rename)
         tmp = file_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, default=str, indent=2), encoding="utf-8")
         tmp.rename(file_path)
@@ -164,14 +164,14 @@ class DriveTransportLocal(TransportBase):
         logger.debug(f"[Drive/Local] WRITE {file_path}")
 
     async def subscribe(self, channel: str, callback: Callable[[dict], None]) -> None:
-        """Überwacht Datei auf Änderungen (file mtime polling)."""
+        """Watches file for changes (file mtime polling)."""
         self._callbacks[channel].append(callback)
         if channel not in self._poll_tasks:
             self._poll_tasks[channel] = asyncio.create_task(self._watch_file(channel))
-        logger.debug(f"[Drive/Local] Überwache: {channel}")
+        logger.debug(f"[Drive/Local] Watching: {channel}")
 
     async def _watch_file(self, channel: str) -> None:
-        """Pollt Datei-mtime und triggert Callback bei Änderung."""
+        """Polls file mtime and triggers callback on change."""
         rel_path = CHANNEL_FILES.get(channel, f"misc/{channel.replace(':', '_')}.json")
         file_path = self.sync_dir / rel_path
 
@@ -185,7 +185,7 @@ class DriveTransportLocal(TransportBase):
                         self._file_mtimes[channel] = mtime
                         payload = json.loads(file_path.read_text(encoding="utf-8"))
 
-                        # Staleness-Check
+                        # Staleness check
                         written_at_str = payload.get("_written_at", "")
                         if written_at_str:
                             written_at = datetime.fromisoformat(
@@ -203,19 +203,19 @@ class DriveTransportLocal(TransportBase):
                         logger.debug(f"[Drive/Local] UPDATE {channel}")
 
             except Exception as e:
-                logger.warning(f"[Drive/Local] Watch Fehler {channel}: {e}")
+                logger.warning(f"[Drive/Local] Watch error {channel}: {e}")
 
             await asyncio.sleep(self.poll_interval)
 
 
 class DriveTransportColab(TransportBase):
     """
-    Colab-Seite: Liest/schreibt Dateien direkt auf Google Drive
-    (nach drive.mount('/content/drive')).
+    Colab side: Reads/writes files directly on Google Drive
+    (after drive.mount('/content/drive')).
 
-    Kein HTTP-Proxy nötig — Drive ist direkt gemountet.
+    No HTTP proxy needed — Drive is mounted directly.
 
-    Verwendung in Colab:
+    Usage in Colab:
         from google.colab import drive
         drive.mount('/content/drive')
 
@@ -247,18 +247,18 @@ class DriveTransportColab(TransportBase):
         return "seconds"
 
     async def connect(self) -> None:
-        """Prüft Drive-Mountpoint und erstellt Verzeichnisstruktur."""
+        """Checks Drive mountpoint and creates directory structure."""
         self._running = True
         if not Path("/content/drive").exists():
             logger.warning(
-                "[Drive/Colab] /content/drive nicht gemountet!\n"
-                "Führe zuerst aus: from google.colab import drive; drive.mount('/content/drive')"
+                "[Drive/Colab] /content/drive not mounted!\n"
+                "Run first: from google.colab import drive; drive.mount('/content/drive')"
             )
 
         for subdir in ["market", "signals", "portfolio", "health", "control"]:
             (self.drive_dir / subdir).mkdir(parents=True, exist_ok=True)
 
-        logger.success(f"[Drive/Colab] Drive-Verzeichnis: {self.drive_dir}")
+        logger.success(f"[Drive/Colab] Drive directory: {self.drive_dir}")
 
     async def disconnect(self) -> None:
         self._running = False
@@ -266,7 +266,7 @@ class DriveTransportColab(TransportBase):
             task.cancel()
 
     async def publish(self, channel: str, payload: dict) -> None:
-        """Schreibt auf Drive-Datei."""
+        """Writes to Drive file."""
         rel_path = CHANNEL_FILES.get(channel, f"misc/{channel.replace(':', '_')}.json")
         file_path = self.drive_dir / rel_path
         file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -285,7 +285,7 @@ class DriveTransportColab(TransportBase):
             self._poll_tasks[channel] = asyncio.create_task(self._watch_file(channel))
 
     async def _watch_file(self, channel: str) -> None:
-        """Identisch wie DriveTransportLocal._watch_file."""
+        """Identical to DriveTransportLocal._watch_file."""
         rel_path = CHANNEL_FILES.get(channel, f"misc/{channel.replace(':', '_')}.json")
         file_path = self.drive_dir / rel_path
 
@@ -316,6 +316,6 @@ class DriveTransportColab(TransportBase):
                         logger.debug(f"[Drive/Colab] UPDATE {channel}")
 
             except Exception as e:
-                logger.warning(f"[Drive/Colab] Watch Fehler {channel}: {e}")
+                logger.warning(f"[Drive/Colab] Watch error {channel}: {e}")
 
             await asyncio.sleep(self.poll_interval)

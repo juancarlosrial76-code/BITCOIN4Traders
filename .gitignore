@@ -77,6 +77,14 @@ htmlcov/
 .sql
 *.key
 *.secret
+age.keys
+*.keys
+
+# Secure Backups (local only)
+backups/
+*.age.*
+.env.age*
+.env.pre_restore*
 
 # Temporary
 tmp/

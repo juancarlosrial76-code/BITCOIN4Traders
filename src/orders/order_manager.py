@@ -549,7 +549,7 @@ class OrderManager:
         logger.info("Order ACK: %s", order)
         return order
 
-     async def cancel_order(
+    async def cancel_order(
         self, client_order_id: str, max_retries: int = 3, retry_delay_s: float = 1.0
     ) -> Order:
         """Cancel an open order with retry logic.

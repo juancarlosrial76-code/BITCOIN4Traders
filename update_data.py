@@ -1,15 +1,15 @@
 """
-update_data.py — Binance Daten aktuell halten
+update_data.py — Keep Binance data up to date
 ==============================================
-Laedt nur NEUE Bars seit dem letzten gespeicherten Timestamp.
-Laeuft auf dem Linux Local Master (kein Geo-Block).
+Loads only NEW bars since the last saved timestamp.
+Runs on the Linux Local Master (no geo-block).
 
-Aufruf:
-    python3 update_data.py              # Alle Paare aktualisieren
-    python3 update_data.py --push       # Danach automatisch Git-Push
-    python3 update_data.py --symbol BTC # Nur BTC
+Usage:
+    python3 update_data.py              # Update all pairs
+    python3 update_data.py --push       # Then automatically git-push
+    python3 update_data.py --symbol BTC # BTC only
 
-Crontab (taeglich um 00:05 UTC):
+Crontab (daily at 00:05 UTC):
     5 0 * * * cd /home/hp17/Tradingbot/Quantrivo/BITCOIN4Traders && python3 update_data.py --push >> logs/data_update.log 2>&1
 """
 
@@ -34,12 +34,12 @@ except ImportError:
     )
 
 # ---------------------------------------------------------------------------
-# Konfiguration
+# Configuration
 # ---------------------------------------------------------------------------
 CACHE_DIR = Path(__file__).parent / "data" / "cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-# Paare und Timeframes die wir pflegen
+# Pairs and timeframes we maintain
 PAIRS = [
     ("BTC/USDT", "1h"),
     ("BTC/USDT", "4h"),
@@ -66,7 +66,7 @@ def fetch_new_bars(
     timeframe: str,
     since_ms: int,
 ) -> pd.DataFrame:
-    """Laedt alle Bars ab since_ms mit Paginierung."""
+    """Loads all bars from since_ms with pagination."""
     all_ohlcv = []
     limit = 1000
     while True:
@@ -93,32 +93,32 @@ def fetch_new_bars(
 
 def update_pair(exchange: ccxt.Exchange, symbol: str, timeframe: str) -> int:
     """
-    Aktualisiert eine Datei mit neuen Bars.
-    Gibt Anzahl neuer Bars zurueck.
+    Updates a file with new bars.
+    Returns the number of new bars.
     """
     path = parquet_path(symbol, timeframe)
     existing = load_existing(symbol, timeframe)
 
     if existing.empty:
-        # Erstmaliger Download: alles seit Binance-Start
+        # First-time download: everything since Binance launch
         since_ms = exchange.parse8601("2017-08-01T00:00:00Z")
-        logger.info(f"{symbol} {timeframe}: Erstmalig herunterladen...")
+        logger.info(f"{symbol} {timeframe}: Downloading for the first time...")
     else:
-        # Inkrementell: ab letztem Bar + 1 Tick
+        # Incremental: from last bar + 1 tick
         last_ts = existing.index[-1]
         since_ms = int(last_ts.timestamp() * 1000) + 1
         logger.info(
-            f"{symbol} {timeframe}: Update ab {last_ts.date()} "
-            f"({len(existing):,} Bars vorhanden)..."
+            f"{symbol} {timeframe}: Update from {last_ts.date()} "
+            f"({len(existing):,} bars present)..."
         )
 
     new_bars = fetch_new_bars(exchange, symbol, timeframe, since_ms)
 
     if new_bars.empty:
-        logger.info(f"  Keine neuen Bars.")
+        logger.info(f"  No new bars.")
         return 0
 
-    # Zusammenfuehren und Duplikate entfernen
+    # Merge and remove duplicates
     if existing.empty:
         combined = new_bars
     else:
@@ -126,31 +126,31 @@ def update_pair(exchange: ccxt.Exchange, symbol: str, timeframe: str) -> int:
         combined = combined[~combined.index.duplicated(keep="last")].sort_index()
         combined = combined.astype("float64")
 
-    # Speichern
+    # Save
     combined.to_parquet(path, engine="pyarrow", compression="snappy")
     size_mb = path.stat().st_size / 1024**2
 
     n_new = len(new_bars)
     logger.success(
-        f"  {symbol} {timeframe}: +{n_new} neue Bars | "
-        f"Gesamt {len(combined):,} | {size_mb:.2f} MB | "
-        f"bis {combined.index[-1].date()}"
+        f"  {symbol} {timeframe}: +{n_new} new bars | "
+        f"Total {len(combined):,} | {size_mb:.2f} MB | "
+        f"up to {combined.index[-1].date()}"
     )
     return n_new
 
 
 def git_push(n_updated: int) -> None:
-    """Pusht aktualisierte Parquet-Dateien auf GitHub."""
+    """Pushes updated Parquet files to GitHub."""
     repo = Path(__file__).parent
     try:
-        # Nur data/cache/*.parquet stagen
+        # Stage only data/cache/*.parquet
         subprocess.run(
             ["git", "add", "data/cache/*.parquet"],
             cwd=repo,
             check=True,
             capture_output=True,
         )
-        # Pruefen ob etwas zu committen ist
+        # Check if there is anything to commit
         result = subprocess.run(
             ["git", "diff", "--cached", "--name-only"],
             cwd=repo,
@@ -158,7 +158,7 @@ def git_push(n_updated: int) -> None:
             text=True,
         )
         if not result.stdout.strip():
-            logger.info("Git: Keine Aenderungen in data/cache/ - kein Push noetig.")
+            logger.info("Git: No changes in data/cache/ - no push needed.")
             return
 
         msg = f"Data update: {n_updated} new bars ({datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC)"
@@ -168,21 +168,21 @@ def git_push(n_updated: int) -> None:
         subprocess.run(
             ["git", "push", "origin", "main"], cwd=repo, check=True, capture_output=True
         )
-        logger.success(f"Git push erfolgreich: '{msg}'")
+        logger.success(f"Git push successful: '{msg}'")
     except subprocess.CalledProcessError as e:
-        logger.error(f"Git-Fehler: {e.stderr.decode() if e.stderr else e}")
+        logger.error(f"Git error: {e.stderr.decode() if e.stderr else e}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Binance Daten aktualisieren")
+    parser = argparse.ArgumentParser(description="Update Binance data")
     parser.add_argument(
-        "--push", action="store_true", help="Nach Update auf GitHub pushen"
+        "--push", action="store_true", help="Push to GitHub after update"
     )
-    parser.add_argument("--symbol", default=None, help="Nur dieses Symbol (z.B. 'BTC')")
+    parser.add_argument("--symbol", default=None, help="Only this symbol (e.g. 'BTC')")
     args = parser.parse_args()
 
     logger.info("=" * 60)
-    logger.info("  Binance Daten-Update")
+    logger.info("  Binance Data Update")
     logger.info(f"  {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
     logger.info("=" * 60)
 
@@ -198,24 +198,24 @@ def main():
             n = update_pair(exchange, symbol, timeframe)
             total_new += n
         except Exception as e:
-            logger.error(f"{symbol} {timeframe} fehlgeschlagen: {e}")
+            logger.error(f"{symbol} {timeframe} failed: {e}")
 
-    logger.info(f"\nGesamt neue Bars: {total_new:,}")
+    logger.info(f"\nTotal new bars: {total_new:,}")
 
-    # Uebersicht aller Dateien
-    logger.info("\nDateien in data/cache/:")
+    # Overview of all files
+    logger.info("\nFiles in data/cache/:")
     for f in sorted(CACHE_DIR.glob("*_binance.parquet")):
         mb = f.stat().st_size / 1024**2
         df = pd.read_parquet(f)
         logger.info(
-            f"  {f.name:40s} {len(df):>7,} Bars | {mb:.2f} MB | "
+            f"  {f.name:40s} {len(df):>7,} bars | {mb:.2f} MB | "
             f"{df.index[0].date()} - {df.index[-1].date()}"
         )
 
     if args.push and total_new > 0:
         git_push(total_new)
     elif args.push:
-        logger.info("Kein Push (keine neuen Bars).")
+        logger.info("No push (no new bars).")
 
 
 if __name__ == "__main__":

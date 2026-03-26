@@ -78,3 +78,36 @@ def sample_input():
     import torch
 
     return torch.randn(4, 50, 10)  # batch=4, seq=50, features=10
+
+
+@pytest.fixture
+def ohlcv_df():
+    """200-row synthetic OHLCV DataFrame with DatetimeIndex and float64 dtypes."""
+    np.random.seed(42)
+    n = 200
+    prices = 50_000 + np.cumsum(np.random.randn(n) * 200)
+    prices = np.abs(prices) + 1
+    idx = pd.date_range("2022-01-01", periods=n, freq="h")
+    df = pd.DataFrame(
+        {
+            "open": prices * (1 + np.random.randn(n) * 0.001),
+            "high": prices * (1 + np.abs(np.random.randn(n)) * 0.002),
+            "low": prices * (1 - np.abs(np.random.randn(n)) * 0.002),
+            "close": prices,
+            "volume": np.random.uniform(100, 1000, n),
+        },
+        index=idx,
+    )
+    return df.astype("float64")
+
+
+@pytest.fixture
+def sample_trades():
+    """List of trade dicts with entry, exit, size, side keys."""
+    return [
+        {"entry": 40000.0, "exit": 41000.0, "size": 1.0, "side": "long", "pnl": 1000.0},
+        {"entry": 41000.0, "exit": 40500.0, "size": 0.5, "side": "long", "pnl": -250.0},
+        {"entry": 42000.0, "exit": 43500.0, "size": 1.0, "side": "long", "pnl": 1500.0},
+        {"entry": 43000.0, "exit": 42000.0, "size": 0.5, "side": "short", "pnl": 500.0},
+        {"entry": 45000.0, "exit": 44000.0, "size": 0.2, "side": "long", "pnl": -200.0},
+    ]

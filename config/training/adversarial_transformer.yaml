@@ -1,0 +1,87 @@
+# Adversarial Training Configuration — TransformerBackbone
+# =========================================================
+# Tuned for TransformerBackbone instead of GRU/LSTM.
+#
+# Key differences from adversarial.yaml (GRU default):
+#   - Lower learning rates: Transformer needs careful, slow optimisation.
+#   - More PPO epochs per iteration: Transformer generalises better with more
+#     gradient steps per batch (10 → 15).
+#   - Higher entropy coefficient: attention layers collapse faster than GRUs;
+#     extra entropy penalty keeps exploration alive longer.
+#   - transformer_seq_len: 16 (Option B) — full sliding-window sequence context.
+#     Set to 1 for Option A (backbone-swap only, lower compute).
+#   - transformer_nhead: 4 — must evenly divide transformer_d_model.
+#   - transformer_d_model: 128 — decoupled from hidden_dim (can be set higher,
+#     e.g. 256, if you want a wider transformer at the cost of more VRAM).
+#
+# ARCHITECTURE SELECTOR — pick exactly ONE backbone:
+#   Transformer A (fast): use_transformer: true   transformer_seq_len: 1
+#   Transformer B (full): use_transformer: true   transformer_seq_len: 16  ← default
+#   GRU  (baseline)     : use_transformer: false  use_recurrent: true   rnn_type: "GRU"
+#
+# Usage:
+#   python train_transformer_ppo.py --mode B --config config/training/adversarial_transformer.yaml
+#   python train.py --config config/training/adversarial_transformer.yaml
+
+# Main Training Loop
+training:
+  n_iterations: 500
+  steps_per_iteration: 2048
+  save_frequency: 50
+  log_frequency: 10
+  checkpoint_dir: "data/models/transformer_B"
+  adversary_start_iteration: 150 # longer warm-up vs. GRU (was 100)
+  adversary_strength: 0.1
+
+# Trader Agent — TransformerBackbone (Option B)
+trader:
+  # Network Architecture
+  hidden_dim: 128
+  use_recurrent: false # must be false when use_transformer: true
+  rnn_type: "GRU" # ignored when use_transformer: true
+  rnn_layers: 1
+  dropout: 0.1
+  use_layer_norm: true
+
+  # Transformer backbone
+  use_transformer: true
+  transformer_nhead: 4 # attention heads — must divide transformer_d_model
+  transformer_d_model: 128 # transformer internal width
+  transformer_seq_len: 16 # sliding-window length (Option B); set 1 for Option A
+
+  # Learning — slower than GRU to prevent attention collapse
+  actor_lr: 5.0e-5 # GRU default was 1e-4
+  critic_lr: 2.0e-4 # GRU default was 5e-4
+  use_lr_decay: true
+  lr_decay_gamma: 0.998 # GRU default was 0.995 — transformer benefits from slower decay
+
+  # PPO
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_epsilon: 0.2
+  n_epochs: 15 # GRU default was 10
+  batch_size: 64
+  entropy_coef: 0.10 # GRU default was 0.08 — extra exploration for attention
+  value_loss_coef: 0.5
+  max_grad_norm: 0.5
+  target_kl: 0.015
+
+# Adversary Agent — unchanged (GRU is fine for adversary)
+adversary:
+  # Network Architecture
+  hidden_dim: 128
+  use_recurrent: true
+  rnn_type: "GRU"
+
+  # Learning
+  actor_lr: 5.0e-5
+  critic_lr: 2.0e-4
+  use_lr_decay: true
+
+  # PPO
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_epsilon: 0.2
+  n_epochs: 10
+  batch_size: 64
+  entropy_coef: 0.05

@@ -93,7 +93,7 @@ import pandas as pd
 import yaml
 from loguru import logger
 
-from backtesting.strategy_evolution import (
+from src.backtesting.strategy_evolution import (
     SignalBacktester,
     SignalBuilder,
     StrategyResult,

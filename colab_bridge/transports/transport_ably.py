@@ -1,36 +1,36 @@
 """
-Transport Option 4: Ably Pub/Sub (externer Dienst)
-===================================================
+Transport Option 4: Ably Pub/Sub (external service)
+====================================================
 
-Latenz    : 50–150 ms  (Ably Global Edge Network)
-Kosten    : $0 bis 6 Mio. Nachrichten/Monat (Free Tier)
-            @ 1 Msg/30s = ~86.400 Msg/Monat → Free Tier reicht
-Accounts  : Ably-Account nötig (https://ably.com → kostenlos)
-Zuverlässig: Sehr hoch (globales CDN, 99.999% SLA)
-Vorteile  : Kein Tunnel nötig, beide Seiten verbinden nach außen,
-            Nachrichtenpuffer (letzte 100 Msgs), WebSocket-basiert
-Nachteile : Externer Drittanbieter, Account nötig, Internetabhängig
+Latency  : 50–150 ms  (Ably Global Edge Network)
+Cost     : $0 up to 6 million messages/month (Free Tier)
+           @ 1 Msg/30s = ~86,400 Msg/month → Free Tier is sufficient
+Accounts : Ably account required (https://ably.com → free)
+Reliable : Very high (global CDN, 99.999% SLA)
+Pros     : No tunnel needed, both sides connect outward,
+           message buffer (last 100 msgs), WebSocket-based
+Cons     : External third-party, account required, internet-dependent
 
 Free Tier Limits:
-  6 Mio. Nachrichten/Monat
-  100 gleichzeitige Verbindungen
-  Nachrichten-History: letzte 100 pro Kanal
-  Kein SLA im Free Tier (nur paid)
+  6 million messages/month
+  100 concurrent connections
+  Message history: last 100 per channel
+  No SLA in Free Tier (only paid)
 
-Account erstellen:
-  1. https://ably.com → Sign Up (kostenlos)
+Create account:
+  1. https://ably.com → Sign Up (free)
   2. Dashboard → Create App → API Keys
-  3. Root Key kopieren (hat alle Permissions)
-  4. In .env: ABLY_API_KEY=dein_key:dein_secret
+  3. Copy Root Key (has all permissions)
+  4. In .env: ABLY_API_KEY=your_key:your_secret
 
 Installation:
-  pip install ably   (bereits installiert)
+  pip install ably   (already installed)
 
-Achtung: Free Tier Rate-Limit = 250 Requests/Sekunde.
-Bei 30s Poll-Intervall und 5 Kanälen = 0.16 req/s → weit unter Limit.
+Note: Free Tier rate limit = 250 requests/second.
+At 30s poll interval and 5 channels = 0.16 req/s → well below limit.
 
-Dieser Transport ist die einzige Option die OHNE Cloudflare Tunnel auskommt.
-Beide Seiten (lokal + Colab) verbinden sich direkt zum Ably-Server.
+This transport is the only option that works WITHOUT a Cloudflare Tunnel.
+Both sides (local + Colab) connect directly to the Ably server.
 """
 
 from __future__ import annotations
@@ -61,14 +61,14 @@ class AblyTransport(TransportBase):
     """
     Ably Pub/Sub Transport.
 
-    Identisch für BEIDE Seiten (lokal und Colab).
-    Beide Seiten verwenden denselben API Key.
+    Identical for BOTH sides (local and Colab).
+    Both sides use the same API key.
 
-    Datenpfad:
-      Lokal → Ably → Colab  (Marktdaten, ~50–150ms)
-      Colab → Ably → Lokal  (Signale, ~50–150ms)
+    Data path:
+      Local → Ably → Colab  (market data, ~50–150ms)
+      Colab → Ably → Local  (signals, ~50–150ms)
 
-    Verwendung (lokal UND Colab identisch):
+    Usage (local AND Colab identical):
         import os
         transport = AblyTransport(api_key=os.getenv("ABLY_API_KEY"))
         await transport.connect()
@@ -78,15 +78,19 @@ class AblyTransport(TransportBase):
 
     def __init__(self, api_key: str = ""):
         if not _ABLY_OK:
-            raise ImportError("pip install ably\nAccount: https://ably.com (kostenlos)")
+            raise ImportError("pip install ably\nAccount: https://ably.com (free)")
         import os
 
-        self.api_key = api_key or os.getenv("ABLY_API_KEY", "")
+        # Get API key from Secrets Manager (with fallback to environment)
+        from src.config import get_ably_key
+
+        secrets_key = get_ably_key()
+        self.api_key = api_key or secrets_key or os.getenv("ABLY_API_KEY", "")
         if not self.api_key:
             raise ValueError(
-                "ABLY_API_KEY fehlt!\n"
+                "ABLY_API_KEY missing!\n"
                 "1. https://ably.com → Sign Up\n"
-                "2. Dashboard → App → API Keys → Root Key kopieren\n"
+                "2. Dashboard → App → API Keys → Copy Root Key\n"
                 "3. In .env: ABLY_API_KEY=xxxxx:yyyyy"
             )
         self._ably: Optional[AblyRealtime] = None
@@ -103,12 +107,12 @@ class AblyTransport(TransportBase):
     async def connect(self) -> None:
         self._ably = AblyRealtime(self.api_key)
         await self._ably.connection.once_async("connected")
-        logger.success(f"[Ably] Verbunden | Key: {self.api_key[:15]}...")
+        logger.success(f"[Ably] Connected | Key: {self.api_key[:15]}...")
 
     async def disconnect(self) -> None:
         if self._ably:
             await self._ably.close()
-        logger.info("[Ably] Getrennt")
+        logger.info("[Ably] Disconnected")
 
     async def publish(self, channel: str, payload: dict) -> None:
         ch = self._ably.channels.get(channel)
@@ -121,8 +125,8 @@ class AblyTransport(TransportBase):
                 data = self.decode(message.data)
                 callback(data)
             except Exception as e:
-                logger.warning(f"[Ably] Decode Fehler: {e}")
+                logger.warning(f"[Ably] Decode error: {e}")
 
         ch = self._ably.channels.get(channel)
         await ch.subscribe(_wrapper)
-        logger.debug(f"[Ably] Abonniert: {channel}")
+        logger.debug(f"[Ably] Subscribed: {channel}")

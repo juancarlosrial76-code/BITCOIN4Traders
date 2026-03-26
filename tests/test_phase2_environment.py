@@ -29,7 +29,7 @@ def sample_price_data():
     """Create sample price data."""
     np.random.seed(42)
     n_points = 200
-    dates = pd.date_range("2023-01-01", periods=n_points, freq="1H")
+    dates = pd.date_range("2023-01-01", periods=n_points, freq="1h")
 
     close = 50000 + np.cumsum(np.random.randn(n_points) * 100)  # Random walk price
 
@@ -52,7 +52,7 @@ def sample_features():
     """Create sample features."""
     np.random.seed(42)
     n_points = 200
-    dates = pd.date_range("2023-01-01", periods=n_points, freq="1H")
+    dates = pd.date_range("2023-01-01", periods=n_points, freq="1h")
 
     return pd.DataFrame(
         {

@@ -2,121 +2,85 @@
 requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# colab-rl-bridge — eigenständiges PyPI-Paket für colab_bridge/
-# Publiziert als: pip install colab-rl-bridge
-# ─────────────────────────────────────────────────────────────────────────────
 [project]
-name = "colab-rl-bridge"
-version = "1.0.0"
-description = "Kommunikations-Bridge zwischen lokalem Rechner und Google Colab / Cloud RL-Training"
-readme = "colab_bridge/DOKUMENTATION.md"
+name = "bitcoin4traders"
+version = "2.0.0"
+description = "Institutional-Grade Bitcoin Trading System with Deep Reinforcement Learning"
+readme = "README.md"
 license = {file = "LICENSE"}
 authors = [
-    {name = "juancarlosrial76-code", email = "juancarlosrial76@users.noreply.github.com"}
+    {name = "BITCOIN4Traders Team"}
 ]
-keywords = [
-    "reinforcement-learning", "google-colab", "trading", "rl-bridge",
-    "paper-trading", "ably", "colab-extension"
-]
-classifiers = [
-    "Development Status :: 4 - Beta",
-    "Intended Audience :: Science/Research",
-    "Intended Audience :: Developers",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
-    "Topic :: Office/Business :: Financial :: Investment",
-    "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Operating System :: OS Independent",
-]
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 
-# Pflicht-Abhängigkeiten (nur was colab_bridge wirklich braucht)
 dependencies = [
     "numpy>=1.24",
+    "numba>=0.58",
+    "torch>=2.0",
     "pandas>=2.0",
     "loguru>=0.7",
-    "httpx>=0.24",
+    "ccxt>=4.0",
+    "fastapi>=0.100",
+    "scipy>=1.11",
+    "gymnasium>=0.29",
 ]
 
 [project.optional-dependencies]
-# Lokaler Rechner (Module A)
-local = [
-    "ably>=3.1",
-    "ccxt>=4.0",
-]
-# Colab / Cloud (Module B)
-colab = [
-    "ably>=3.1",
-]
-# Control-Plane (FastAPI-Server)
-server = [
-    "fastapi>=0.100",
-    "uvicorn[standard]>=0.23",
-    "httpx>=0.24",
-]
-# RL-Modelle
-torch = [
-    "torch>=2.0",
-]
-sb3 = [
-    "stable-baselines3>=2.0",
-]
-# Alles zusammen
-all = [
-    "ably>=3.1",
-    "ccxt>=4.0",
-    "fastapi>=0.100",
-    "uvicorn[standard]>=0.23",
-    "httpx>=0.24",
-    "torch>=2.0",
-]
-# Entwicklung
 dev = [
     "pytest>=7.4",
-    "pytest-asyncio>=0.23",
-    "black>=23.0",
+    "pytest-cov>=4.1",
     "ruff>=0.1",
+    "mypy>=1.5",
 ]
 
-[project.urls]
-Homepage = "https://github.com/juancarlosrial76-code/BITCOIN4Traders"
-Repository = "https://github.com/juancarlosrial76-code/BITCOIN4Traders"
-Documentation = "https://github.com/juancarlosrial76-code/BITCOIN4Traders/blob/main/colab_bridge/DOKUMENTATION.md"
-"Bug Tracker" = "https://github.com/juancarlosrial76-code/BITCOIN4Traders/issues"
-
-[project.scripts]
-# CLI-Befehle nach pip install
-bt4t-local   = "colab_bridge.module_a_local:main"
-bt4t-colab   = "colab_bridge.module_b_colab:main"
-bt4t-server  = "colab_bridge.control_plane:_cli_server"
-bt4t-tunnel  = "colab_bridge.control_plane:_cli_tunnel"
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Setuptools: welche Packages ins Paket kommen
-# ─────────────────────────────────────────────────────────────────────────────
 [tool.setuptools.packages.find]
-include = ["colab_bridge*"]   # nur colab_bridge/ und colab_bridge/transports/
+where = ["."]
+include = ["src*", "colab_bridge*"]
 
-[tool.setuptools.package-data]
-"colab_bridge" = ["*.md"]
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Entwickler-Tools
-# ─────────────────────────────────────────────────────────────────────────────
-[tool.black]
-line-length = 100
-target-version = ["py39", "py310", "py311"]
-
+# ---------------------------------------------------------------------------
+# ruff
+# ---------------------------------------------------------------------------
 [tool.ruff]
-line-length = 100
+line-length = 88
+
+[tool.ruff.lint]
 select = ["E", "F", "W", "I"]
 ignore = ["E501"]
 
+[tool.ruff.lint.per-file-ignores]
+# Allow unused imports in __init__ re-export files
+"__init__.py" = ["F401"]
+
+# ---------------------------------------------------------------------------
+# mypy
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_any_generics = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+show_error_codes = true
+
+# Third-party libraries without stubs
+[[tool.mypy.overrides]]
+module = [
+    "numba.*",
+    "ccxt.*",
+    "gymnasium.*",
+]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
 [tool.pytest.ini_options]
-asyncio_mode = "auto"
-testpaths = ["tests/colab_bridge"]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-v --tb=short"
