@@ -276,6 +276,8 @@ class MultiTimeframeAnalyzer:
         self, df: pd.DataFrame, tf: Timeframe
     ) -> SignalStrength:
         """Analyze a single timeframe for trend direction and strength."""
+        if "close" not in df.columns:
+            raise ValueError(f"_analyze_single_timeframe: missing 'close' column for {tf}")
         # Calculate EMAs: fast (12-period) and slow (26-period) exponential moving averages
         ema_fast = (
             df["close"].ewm(span=12).mean().iloc[-1]

@@ -705,6 +705,10 @@ class FeatureEngine:
         df : pd.DataFrame
             DataFrame with additional feature columns (unscaled)
         """
+        required_cols = ["open", "high", "low", "close", "volume"]
+        missing = [c for c in required_cols if c not in df.columns]
+        if missing:
+            raise ValueError(f"FeatureEngine._compute_raw_features: missing columns {missing}")
         df = df.copy()
 
         # 1. Log Returns (ensures stationarity): ln(P_t / P_{t-1})
