@@ -83,6 +83,10 @@ def run_experiment(exp_cfg: dict) -> dict:
     ]
 
     t0 = time.time()
+    train_log_dir = WORK_DIR / "logs/training"
+    # Snapshot existing train log files before the run to find the new one after
+    existing_train_logs = set(train_log_dir.glob("train_*.log")) if train_log_dir.exists() else set()
+
     try:
         result = subprocess.run(
             cmd,
@@ -99,7 +103,21 @@ def run_experiment(exp_cfg: dict) -> dict:
             f.write("\nSTDERR:\n")
             f.write(result.stderr)
 
-        metrics = parse_metrics(result.stdout, name)
+        # train.py uses loguru which writes to logs/training/train_*.log, not stdout.
+        # Find the newest train log that appeared during this run.
+        new_train_logs = sorted(
+            set(train_log_dir.glob("train_*.log")) - existing_train_logs,
+            key=lambda p: p.stat().st_mtime,
+        )
+        train_log_content = ""
+        if new_train_logs:
+            try:
+                train_log_content = new_train_logs[-1].read_text(errors="replace")
+            except Exception:
+                pass
+
+        # Parse from loguru file first; fall back to stdout if file is empty
+        metrics = parse_metrics(train_log_content or result.stdout, name)
         metrics["elapsed_s"] = round(elapsed)
         metrics["success"] = result.returncode == 0
         metrics["log"] = str(log_path)
