@@ -1,0 +1,13 @@
+# Experiment B — Balanced (default WinRateAwareReward values)
+name: exp_B_balanced
+description: "Balanced: moderate win bonus, strong loss penalty, flat bonus"
+reward_params:
+  lambda_cost: 1.5
+  lambda_draw: 2.5
+  lambda_regime: 0.8
+  win_bonus: 1.5
+  loss_penalty: 2.5
+  flat_bonus_vol: 0.3
+  win_rate_target: 0.65
+  lambda_winrate: 1.5
+iterations: 50

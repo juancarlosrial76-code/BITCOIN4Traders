@@ -1,0 +1,13 @@
+# Experiment C — Aggressive asymmetry (hard selectivity)
+name: exp_C_aggressive
+description: "Hard asymmetry: big loss penalty forces high-confidence trades only"
+reward_params:
+  lambda_cost: 1.5
+  lambda_draw: 2.0
+  lambda_regime: 1.0
+  win_bonus: 2.0
+  loss_penalty: 4.0
+  flat_bonus_vol: 0.5
+  win_rate_target: 0.70
+  lambda_winrate: 2.0
+iterations: 50

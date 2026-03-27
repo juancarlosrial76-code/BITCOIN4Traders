@@ -1,0 +1,13 @@
+# Experiment E — Pure win-rate focus
+name: exp_E_win_focused
+description: "Maximise win-rate feedback signal, large win bonus"
+reward_params:
+  lambda_cost: 1.0
+  lambda_draw: 2.0
+  lambda_regime: 0.5
+  win_bonus: 3.0
+  loss_penalty: 2.5
+  flat_bonus_vol: 0.2
+  win_rate_target: 0.70
+  lambda_winrate: 3.0
+iterations: 50

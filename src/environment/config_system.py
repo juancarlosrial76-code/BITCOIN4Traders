@@ -572,6 +572,9 @@ class EnvironmentConfig:
     orderbook: OrderBookConfig = field(default_factory=OrderBookConfig)
     reward: RewardConfig = field(default_factory=RewardConfig)
     market: MarketConfig = field(default_factory=MarketConfig)
+    # Optional reward hyperparameter overrides for experiments.
+    # Dict keys match WinRateAwareReward constructor parameters.
+    reward_params: dict = field(default_factory=dict)
 
     @classmethod
     def from_yaml(cls, cfg: DictConfig):

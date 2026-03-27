@@ -1,0 +1,13 @@
+# Experiment A — Baseline (softer asymmetry)
+name: exp_A_baseline
+description: "Soft asymmetry: small win bonus, moderate loss penalty"
+reward_params:
+  lambda_cost: 1.5
+  lambda_draw: 2.5
+  lambda_regime: 0.8
+  win_bonus: 1.0
+  loss_penalty: 2.0
+  flat_bonus_vol: 0.2
+  win_rate_target: 0.60
+  lambda_winrate: 1.0
+iterations: 50

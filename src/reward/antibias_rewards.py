@@ -715,6 +715,129 @@ class RegimeAwareReward(BaseReward):
         self._regime = None
 
 
+class WinRateAwareReward(RegimeAwareReward):
+    """
+    Win-Rate-Optimised reward extending RegimeAwareReward.
+
+    Three additional mechanisms drive the agent toward 70%+ win rate:
+
+    1. TRADE-CLOSE BONUS/PENALTY
+       Every time the agent closes a position (position → 0), a large
+       asymmetric bonus (win) or penalty (loss) is applied.  The
+       penalty is larger than the bonus so the agent learns:
+       "only trade when confidence is high."
+
+    2. FLAT BONUS IN HIGH-VOLATILITY
+       When vol_regime=1 (high volatility) or regime is unclear, a
+       small positive reward is given for staying flat.  This trains
+       the agent to recognise "noisy" bars and abstain.
+
+    3. ROLLING WIN-RATE FEEDBACK
+       A rolling window (last N trades) tracks the win rate.  If the
+       agent's recent win rate drops below target, an extra penalty
+       is added, creating direct gradient pressure toward 70%+.
+
+    Parameters
+    ----------
+    win_bonus : float
+        Bonus added when a trade closes in profit.
+    loss_penalty : float
+        Penalty subtracted when a trade closes at a loss.
+    flat_bonus_vol : float
+        Bonus for holding flat during high-volatility regime.
+    win_rate_target : float
+        Target win rate (default 0.70).  Rewards/penalises deviation.
+    lambda_winrate : float
+        Weight of win-rate feedback signal.
+    winrate_window : int
+        Rolling window size for win-rate tracking.
+    """
+
+    def __init__(
+        self,
+        window: int = 50,
+        lambda_cost: float = 1.5,
+        lambda_draw: float = 2.5,
+        lambda_regime: float = 0.8,
+        cost_rate: float = 0.001,
+        win_bonus: float = 1.5,
+        loss_penalty: float = 2.5,
+        flat_bonus_vol: float = 0.3,
+        win_rate_target: float = 0.65,
+        lambda_winrate: float = 1.5,
+        winrate_window: int = 20,
+    ):
+        super().__init__(window, lambda_cost, lambda_draw, lambda_regime, cost_rate)
+        self.win_bonus = win_bonus
+        self.loss_penalty = loss_penalty
+        self.flat_bonus_vol = flat_bonus_vol
+        self.win_rate_target = win_rate_target
+        self.lambda_winrate = lambda_winrate
+
+        self._entry_equity: Optional[float] = None
+        self._rolling_wins: deque = deque(maxlen=winrate_window)
+
+    def compute(
+        self,
+        pnl: float,
+        position: float,
+        prev_position: float,
+        equity: float,
+        cost_this_bar: float,
+        **kwargs,
+    ) -> float:
+        """Compute win-rate-aware reward."""
+        base = super().compute(pnl, position, prev_position, equity, cost_this_bar)
+        extra = 0.0
+
+        # 1. Trade closed → asymmetric bonus/penalty
+        if prev_position != 0.0 and abs(position) < 0.05:
+            if self._entry_equity is not None:
+                trade_pnl = equity - self._entry_equity
+                if trade_pnl > 0:
+                    extra += self.win_bonus
+                    self._rolling_wins.append(1)
+                else:
+                    extra -= self.loss_penalty
+                    self._rolling_wins.append(0)
+            self._entry_equity = None
+
+        # 2. Trade opened → record entry equity
+        elif abs(prev_position) < 0.05 and abs(position) >= 0.05:
+            self._entry_equity = equity
+
+        # 3. Flat bonus in high-vol or ambiguous regime
+        if abs(position) < 0.05 and self._regime is not None:
+            if self._regime.vol_regime == 1:
+                extra += self.flat_bonus_vol
+            elif (
+                self._regime.regime == 1
+                and self._regime.trend_strength < 0.3
+            ):
+                extra += self.flat_bonus_vol * 0.4
+
+        # 4. Rolling win-rate feedback (enough trades accumulated)
+        if len(self._rolling_wins) >= 5:
+            win_rate = sum(self._rolling_wins) / len(self._rolling_wins)
+            deviation = win_rate - self.win_rate_target
+            extra += deviation * self.lambda_winrate
+
+        return float(np.clip(base + extra, -5, 5))
+
+    def reset(self) -> None:
+        """Reset all state for new episode."""
+        super().reset()
+        self._entry_equity = None
+        self._rolling_wins.clear()
+
+    @property
+    def current_win_rate(self) -> float:
+        """Return the rolling win rate (0–1), or -1 if no trades yet."""
+        if not self._rolling_wins:
+            return -1.0
+        return sum(self._rolling_wins) / len(self._rolling_wins)
+
+
 class RewardAnalyzer:
     """
     Utility class for comparing all reward function variants.

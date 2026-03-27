@@ -16,6 +16,7 @@ python train.py --resume data/models/adversarial/checkpoint_iter_100.pth
 """
 
 import argparse
+import os
 import sys
 import yaml
 from pathlib import Path
@@ -245,6 +246,7 @@ def load_data(args):
 
 def create_environment(price_data, features):
     """Create trading environment."""
+    import json
     logger.info("Creating environment...")
 
     # Load config
@@ -255,6 +257,15 @@ def create_environment(price_data, features):
     else:
         logger.warning("Config not found, using defaults")
         env_config = EnvironmentConfig()
+
+    # Experiment runner can inject reward hyperparameters via REWARD_PARAMS env var
+    reward_params_json = os.environ.get("REWARD_PARAMS", "")
+    if reward_params_json:
+        try:
+            env_config.reward_params = json.loads(reward_params_json)
+            logger.info(f"Reward params override: {env_config.reward_params}")
+        except Exception as e:
+            logger.warning(f"Failed to parse REWARD_PARAMS: {e}")
 
     env = ConfigIntegratedTradingEnv(price_data, features, env_config)
 

@@ -114,7 +114,7 @@ from src.environment.position_actions import (
 
 from src.risk.risk_manager import RiskManager, RiskConfig
 from src.risk.risk_metrics_logger import RiskMetricsLogger
-from src.reward.antibias_rewards import RegimeAwareReward, RegimeState
+from src.reward.antibias_rewards import RegimeAwareReward, RegimeState, WinRateAwareReward
 
 # Feature 2: HMM Regime Probabilities as Observation
 # Optional import — graceful fallback when hmmlearn is not installed
@@ -259,11 +259,19 @@ class ConfigIntegratedTradingEnv(gym.Env):
         self._has_regime_reward = any(
             c.name == "regime_reward" for c in self.config.reward.components
         )
-        self._regime_reward_fn = RegimeAwareReward(
+        # WinRateAwareReward parameters can be overridden via config
+        # (config.reward_params dict) for hyperparameter experiments.
+        _rp = getattr(self.config, "reward_params", {}) or {}
+        self._regime_reward_fn = WinRateAwareReward(
             window=50,
-            lambda_cost=2.0,
-            lambda_draw=3.0,
-            lambda_regime=0.5,
+            lambda_cost=_rp.get("lambda_cost", 1.5),
+            lambda_draw=_rp.get("lambda_draw", 2.5),
+            lambda_regime=_rp.get("lambda_regime", 0.8),
+            win_bonus=_rp.get("win_bonus", 1.5),
+            loss_penalty=_rp.get("loss_penalty", 2.5),
+            flat_bonus_vol=_rp.get("flat_bonus_vol", 0.3),
+            win_rate_target=_rp.get("win_rate_target", 0.65),
+            lambda_winrate=_rp.get("lambda_winrate", 1.5),
         )
         if self._has_regime_reward:
             logger.info(
@@ -1117,6 +1125,9 @@ class ConfigIntegratedTradingEnv(gym.Env):
             "n_trades": len(self.trade_history),
             "drawdown": self._calculate_drawdown(),
             "regime": self.current_regime.name,
+            "win_rate": self._regime_reward_fn.current_win_rate
+            if hasattr(self._regime_reward_fn, "current_win_rate")
+            else -1.0,
         }
 
         return info

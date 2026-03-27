@@ -364,6 +364,7 @@ class AdversarialTrainer:
         episode_rewards = []
         episode_returns = []
         episode_lengths = []
+        episode_trade_winrates = []  # per-trade win rate from WinRateAwareReward
 
         # Track adversary performance
         adversary_episode_rewards = []
@@ -479,6 +480,9 @@ class AdversarialTrainer:
                 episode_rewards.append(episode_reward)
                 episode_returns.append(info.get("return", 0.0))
                 episode_lengths.append(episode_length)
+                wr = info.get("win_rate", -1.0)
+                if wr >= 0:
+                    episode_trade_winrates.append(wr)
 
                 # Track adversary episode reward using per-episode accumulator
                 # (avoids wrong-slice bug when multiple episodes occur in one iteration)
@@ -536,6 +540,7 @@ class AdversarialTrainer:
             "mean_return": np.mean(episode_returns) if episode_returns else 0.0,
             "weighted_return": weighted_return,
             "mean_length": np.mean(episode_lengths) if episode_lengths else 0.0,
+            "trade_win_rate": np.mean(episode_trade_winrates) if episode_trade_winrates else -1.0,
             "next_value": next_value,
             "adversary_next_value": adv_next_value,
             "adversary_episode_rewards": adversary_episode_rewards,
@@ -1322,11 +1327,18 @@ class AdversarialTrainer:
             logger.debug(
                 f"  Success: {adversary_stats.get('adversary_success_rate', 0) * 100:.1f}%"
             )
+        # Per-trade win rate (from WinRateAwareReward rolling tracker)
+        twr = traj_metrics.get("trade_win_rate", -1.0)
+        if twr >= 0:
+            logger.debug(f"  Per-Trade Win Rate: {twr * 100:.1f}%")
+
         # One-line WARNING summary visible on console every log_frequency iterations
+        twr_str = f" | Trade WR {twr * 100:.1f}%" if twr >= 0 else ""
         logger.warning(
             f"Iter {iteration + 1} | "
             f"Return {traj_metrics['mean_return'] * 100:.1f}% | "
             f"Reward {traj_metrics['mean_reward']:.3f}"
+            f"{twr_str}"
         )
 
         # ── RunLogger: unified MLflow + TensorBoard + ExperimentTracker ──
