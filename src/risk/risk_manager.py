@@ -149,6 +149,11 @@ class RiskConfig:
     min_capital_threshold: float = 0.3  # 30% of initial capital (reduced from 50%)
     enable_circuit_breaker: bool = True
 
+    # Training mode: bypasses Kelly so the agent can explore during training.
+    # Set to True during RL training runs; False for live/paper trading.
+    # Can also be activated automatically via the TRAINING_MODE=1 environment variable.
+    training_mode: bool = False
+
 
 @dataclass
 class RiskState:
@@ -288,6 +293,11 @@ class RiskManager:
         self.config = config
         self.initial_capital = initial_capital
 
+        # Allow TRAINING_MODE env var to activate training mode at the process level.
+        # auto_12h_train.py sets this for subprocess runs; live trading leaves it unset.
+        if os.environ.get("TRAINING_MODE", "0") == "1":
+            self.config.training_mode = True
+
         # JSON-based lightweight persistence path — always active, survives restarts
         # without requiring an explicit db_path. Stores critical risk state fields
         # (consecutive_losses, halt status, equity markers) to a small JSON file.
@@ -406,8 +416,12 @@ class RiskManager:
             proposed_size = max_allowed
 
         # Stage 2: Kelly Criterion - dynamic sizing based on edge
-        # Only applies if we have recent trading statistics
-        if win_probability is not None and win_loss_ratio is not None:
+        # Skipped during training so the agent can explore freely.
+        # Kelly is a deployment-time instrument, not a learning enabler.
+        if self.config.training_mode:
+            logger.debug("Training mode active: skipping Kelly Criterion (Stage 2)")
+
+        elif win_probability is not None and win_loss_ratio is not None:
             # win_loss_ratio is already b = avg_win / avg_loss — use directly,
             # bypassing dynamic_kelly() which expects a profit_factor, not b.
             kelly_params = KellyParameters(

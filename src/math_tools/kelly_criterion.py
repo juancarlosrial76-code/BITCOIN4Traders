@@ -23,6 +23,7 @@ Practical Implementation:
 - Position size caps (max 25% of capital per trade)
 """
 
+import os
 import numpy as np
 from typing import Tuple, Optional
 from dataclasses import dataclass
@@ -264,6 +265,29 @@ class KellyCriterion:
         # related by the win/loss rate ratio, so the derivation below is exact.
         loss_rate = 1.0 - recent_win_rate
         win_loss_ratio = recent_profit_factor * loss_rate / recent_win_rate
+
+        # Compute raw Kelly fraction before applying floor so we can detect negative EV.
+        raw_kelly_f = self.calculate_kelly_fraction(recent_win_rate, win_loss_ratio)
+
+        # Adaptive safety net during RL training: when Kelly is negative (agent hasn't
+        # learned yet) apply a tiny floor so positions remain possible for exploration.
+        # Floor = 2% × (1 - win_rate) → shrinks automatically as win_rate improves.
+        # Only active when TRAINING_MODE=1 is set by auto_12h_train.py.
+        if raw_kelly_f < 0 and os.environ.get("TRAINING_MODE", "0") == "1":
+            adaptive_floor = max(0.02 * loss_rate, 0.005)
+            logger.debug(
+                f"Training mode: negative Kelly ({raw_kelly_f:.4f}) — "
+                f"applying adaptive floor {adaptive_floor:.4f}"
+            )
+            # Override: build params with the floor fraction directly
+            params = KellyParameters(
+                win_probability=recent_win_rate,
+                win_loss_ratio=max(win_loss_ratio, 1e-6),
+                kelly_fraction=kelly_fraction,
+                max_position=max_position,
+            )
+            floor_size = capital * adaptive_floor
+            return float(min(floor_size, capital * max_position))
 
         params = KellyParameters(
             win_probability=recent_win_rate,

@@ -95,15 +95,29 @@ def fix_common_errors():
     log("✅ Error check complete")
 
 
-def run_training():
+def parse_win_rate(stdout: str) -> float:
+    """Extract the most recent win rate from training stdout."""
+    last_rate = -1.0
+    for line in stdout.splitlines():
+        if "Win Rate:" in line:
+            try:
+                val = float(line.split("Win Rate:")[1].split("%")[0].strip())
+                last_rate = val / 100.0
+            except Exception:
+                pass
+    return last_rate
+
+
+def run_training(training_mode: bool = True):
     """Launch a single training run as a subprocess and return (success, stdout, stderr)."""
     env = os.environ.copy()
     env["PYTHONPATH"] = str(WORK_DIR / "src")
+    env["TRAINING_MODE"] = "1" if training_mode else "0"
 
-    cmd = ["python", "train.py", "--device", "cpu", "--iterations", "10"]
+    cmd = ["python3", "train.py", "--device", "cpu", "--iterations", "300"]
 
     result = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=1200, env=env, cwd=WORK_DIR
+        cmd, capture_output=True, text=True, timeout=7200, env=env, cwd=WORK_DIR
     )
 
     return result.returncode == 0, result.stdout, result.stderr
@@ -117,6 +131,11 @@ def main():
     start_time = time.time()
     iteration = 0
     last_best = get_best_return()
+    last_win_rate = 0.0
+    # Phase 1: training_mode=True (Kelly bypassed, full exploration)
+    # Phase 2: training_mode=False (adaptive Kelly re-enabled), triggered by win_rate > 18%
+    training_mode = True
+    phase = 1
 
     # Fix any known issues before the first run
     fix_common_errors()
@@ -127,17 +146,34 @@ def main():
         remaining = MAX_RUNTIME - elapsed
 
         log(f"\n{'=' * 40}")
-        log(f"Round {iteration} | Remaining: {remaining / 3600:.1f}h")
+        log(f"Round {iteration} | Phase {phase} | Remaining: {remaining / 3600:.1f}h")
         log(f"{'=' * 40}")
 
         try:
-            success, stdout, stderr = run_training()
+            success, stdout, stderr = run_training(training_mode=training_mode)
 
             if not success:
                 log_error(f"Training failed: {stderr[:500]}")
                 fix_common_errors()
                 time.sleep(30)
                 continue
+
+            # Parse win rate from this run's output
+            run_win_rate = parse_win_rate(stdout)
+            if run_win_rate >= 0:
+                last_win_rate = run_win_rate
+                log(f"📈 Win Rate: {last_win_rate:.1%}")
+
+            # Emergency stop: Kelly still at 0% after 10 rounds despite training mode
+            if iteration > 10 and last_win_rate < 0.005 and phase == 1:
+                log("⛔ NOTSTOP: Win Rate bleibt bei 0% trotz Training-Mode - bitte Win-Rate-Berechnung prüfen")
+                break
+
+            # Phase transition: switch to production Kelly once win rate is stable
+            if phase == 1 and last_win_rate > 0.18:
+                phase = 2
+                training_mode = False
+                log(f"🎯 PHASE 2: Win-Rate {last_win_rate:.1%} > 18% - aktiviere adaptives Kelly")
 
             # Check for improvement
             current_best = get_best_return()
