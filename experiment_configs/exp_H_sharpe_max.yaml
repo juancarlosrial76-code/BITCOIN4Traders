@@ -1,0 +1,14 @@
+# Experiment H — Sharpe Maximierung (Return pro Risiko maximieren)
+# Beste Strategie für "was in der Tasche bleibt nach allen Kosten"
+name: exp_H_sharpe_max
+description: "Sharpe-Max: risikoadjustierter Return, moderate Kosten, balanced WR"
+reward_params:
+  lambda_cost: 2.5      # Hohe Kosten-Awareness
+  lambda_draw: 3.0      # Höhere Drawdown-Strafe = konsistentere Gewinne
+  lambda_regime: 1.0    # Starkes Regime-Alignment
+  win_bonus: 0.4        # Kleiner Win-Bonus
+  loss_penalty: 0.8     # Moderate Verluststrafe
+  flat_bonus_vol: 0.05  # Kein Flat-Bonus
+  win_rate_target: 0.58
+  lambda_winrate: 0.2   # Win-Rate-Feedback minimal
+iterations: 50

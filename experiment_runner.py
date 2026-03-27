@@ -180,25 +180,27 @@ def parse_metrics(stdout: str, name: str) -> dict:
 def score_experiment(metrics: dict) -> float:
     """
     Composite score to rank experiments.
-    Primary: trade_win_rate (most important for our goal)
-    Secondary: mean_return and sharpe
-    Tertiary: episode win_rate
+    PRIMARY:   mean_return (net profit after costs — was in der Tasche bleibt)
+    SECONDARY: sharpe (consistency of returns)
+    TERTIARY:  trade_win_rate (only matters if return is positive)
+
+    Rationale: 95% win rate with tiny wins is WORSE than 60% win rate
+    with large wins. Return after costs is the only thing that matters.
     """
     if not metrics.get("success", True):
         return -999.0
 
-    twr = metrics.get("trade_win_rate", -1.0)
-    wr = metrics.get("win_rate", -1.0)
     ret = metrics.get("mean_return", -999.0)
     sharpe = metrics.get("sharpe", 0.0)
+    twr = metrics.get("trade_win_rate", -1.0)
+    wr = metrics.get("win_rate", -1.0)
 
-    # Use trade_win_rate if available, else fall back to episode win_rate
     primary_wr = twr if twr >= 0 else wr
 
     score = (
-        primary_wr * 3.0        # 3x weight on win rate
-        + max(ret / 100.0, -1.0) * 1.0  # return (scaled, floored)
-        + sharpe * 0.5           # Sharpe bonus
+        max(ret / 100.0, -2.0) * 4.0   # Return is PRIMARY (4x weight)
+        + sharpe * 1.5                  # Sharpe is SECONDARY (consistency)
+        + max(primary_wr, 0) * 0.5      # Win rate is TERTIARY (tie-breaker)
     )
     return score
 
@@ -294,13 +296,28 @@ def main():
         env["PYTHONPATH"] = str(WORK_DIR / "src")
         env["TRAINING_MODE"] = "1"
         env["REWARD_PARAMS"] = json.dumps(best_params)
-        subprocess.Popen(
+        full_log = LOG_DIR / f"full_train_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+        proc = subprocess.Popen(
             ["python3", "auto_12h_train.py"],
             env=env, cwd=WORK_DIR,
-            stdout=open(LOG_DIR / f"full_train_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log", "w"),
+            stdout=open(full_log, "w"),
             stderr=subprocess.STDOUT,
         )
-        log("Full training started in background.")
+        log(f"Full training started in background (PID={proc.pid}).")
+
+        # Wait for training to finish, then auto-deploy best model to paper trading
+        log("Waiting for full training to complete before deploying...")
+        proc.wait()
+        log("Full training finished. Deploying best model to paper trading...")
+        deploy_result = subprocess.run(
+            ["python3", "deploy_model.py", "--restart"],
+            cwd=WORK_DIR, capture_output=True, text=True,
+        )
+        log(deploy_result.stdout)
+        if deploy_result.returncode != 0:
+            log(f"Deploy error: {deploy_result.stderr}")
+        else:
+            log("✓ Best model deployed and paper trading restarted.")
 
 
 if __name__ == "__main__":

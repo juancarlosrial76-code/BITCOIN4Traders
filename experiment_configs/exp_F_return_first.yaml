@@ -1,0 +1,14 @@
+# Experiment F — Return-First (das Geld das am Ende übrig bleibt zählt)
+# Win Rate ist sekundär — Return nach Kosten ist primär
+name: exp_F_return_first
+description: "Return-first: win_bonus klein, loss_penalty klein, Sharpe dominiert"
+reward_params:
+  lambda_cost: 2.0      # Hohe Kostenstrafe → weniger churning, mehr Netto-Gewinn
+  lambda_draw: 2.0      # Moderate Drawdown-Strafe
+  lambda_regime: 0.5    # Regime-Bonus bleibt
+  win_bonus: 0.3        # Kleiner Bonus für gewonnene Trades (Return-Signal reicht)
+  loss_penalty: 0.5     # Niedrige Verluststrafe → Agent handelt auch wenn unsicher
+  flat_bonus_vol: 0.1   # Kleiner Flat-Bonus
+  win_rate_target: 0.55 # Realistisches Ziel
+  lambda_winrate: 0.2   # Win-Rate-Feedback sehr schwach — Return dominiert
+iterations: 50

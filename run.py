@@ -66,8 +66,16 @@ class LivePPOAgent:
     - Runs deterministically (no exploration noise)
     """
 
-    # PPO was trained with 3 actions: 0=flat, 1=long, 2=short
-    _ACTION_MAP = {0: 0, 1: 1, 2: -1}
+    # 7-action space (matches config_integrated_env.py Discrete(7)):
+    #   0: Short 100%  → signal -1
+    #   1: Short 50%   → signal -1
+    #   2: Neutral     → signal  0
+    #   3: Long 33%    → signal +1
+    #   4: Long 50%    → signal +1
+    #   5: Long 75%    → signal +1
+    #   6: Long 100%   → signal +1
+    # Legacy 3-action fallback included (keys 0/1/2 are consistent).
+    _ACTION_MAP = {0: -1, 1: -1, 2: 0, 3: 1, 4: 1, 5: 1, 6: 1}
 
     def __init__(self, model_path: Path, champion_path: Path):
         import torch

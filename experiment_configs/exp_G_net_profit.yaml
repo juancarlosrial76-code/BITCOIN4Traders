@@ -1,0 +1,14 @@
+# Experiment G — Net Profit Focus (Netto-Gewinn nach Kosten maximieren)
+# Hohe Kostenstrafe = weniger Trades aber größere Gewinne pro Trade
+name: exp_G_net_profit
+description: "Netto-Profit: hohe Kostenstrafe verhindert overtrading, moderate WR"
+reward_params:
+  lambda_cost: 3.0      # Sehr hohe Kostenstrafe → nur handeln wenn es sich lohnt
+  lambda_draw: 1.5      # Niedrige Drawdown-Strafe → mehr Spielraum zum Gewinnen
+  lambda_regime: 0.8    # Gutes Regime-Alignment
+  win_bonus: 0.5        # Kleiner Win-Bonus
+  loss_penalty: 1.0     # Moderate Verluststrafe
+  flat_bonus_vol: 0.05  # Fast kein Flat-Bonus → handeln ist besser als warten
+  win_rate_target: 0.55
+  lambda_winrate: 0.3
+iterations: 50

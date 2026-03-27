@@ -717,38 +717,36 @@ class RegimeAwareReward(BaseReward):
 
 class WinRateAwareReward(RegimeAwareReward):
     """
-    Win-Rate-Optimised reward extending RegimeAwareReward.
+    Effective-Profit-Maximising reward extending RegimeAwareReward.
 
-    Three additional mechanisms drive the agent toward 70%+ win rate:
+    PRIMARY objective: maximise effective net profit (return after costs).
+    This is the ONLY thing that matters — what remains in the pocket.
 
-    1. TRADE-CLOSE BONUS/PENALTY
-       Every time the agent closes a position (position → 0), a large
-       asymmetric bonus (win) or penalty (loss) is applied.  The
-       penalty is larger than the bonus so the agent learns:
-       "only trade when confidence is high."
+    Secondary mechanisms (kept small so they don't override return signal):
 
-    2. FLAT BONUS IN HIGH-VOLATILITY
-       When vol_regime=1 (high volatility) or regime is unclear, a
-       small positive reward is given for staying flat.  This trains
-       the agent to recognise "noisy" bars and abstain.
+    1. TRADE-CLOSE SIGNAL (small)
+       Proportional bonus/penalty based on actual trade P&L magnitude,
+       not a fixed binary bonus.  Scales with profit size.
 
-    3. ROLLING WIN-RATE FEEDBACK
-       A rolling window (last N trades) tracks the win rate.  If the
-       agent's recent win rate drops below target, an extra penalty
-       is added, creating direct gradient pressure toward 70%+.
+    2. COST AWARENESS (high lambda_cost)
+       High transaction-cost penalty prevents overtrading (churning),
+       which is the main destroyer of net profit.
+
+    3. WIN-RATE FEEDBACK (very weak)
+       Minor nudge toward consistent wins, but never overrides return.
 
     Parameters
     ----------
     win_bonus : float
-        Bonus added when a trade closes in profit.
+        Small bonus multiplier for winning trade close (scales with PnL).
     loss_penalty : float
-        Penalty subtracted when a trade closes at a loss.
+        Small penalty multiplier for losing trade close (scales with PnL).
     flat_bonus_vol : float
-        Bonus for holding flat during high-volatility regime.
+        Tiny bonus for staying flat in high-volatility (prevents big losses).
     win_rate_target : float
-        Target win rate (default 0.70).  Rewards/penalises deviation.
+        Soft win-rate target — only a minor signal.
     lambda_winrate : float
-        Weight of win-rate feedback signal.
+        Weight of win-rate feedback (keep small, return dominates).
     winrate_window : int
         Rolling window size for win-rate tracking.
     """
@@ -756,15 +754,15 @@ class WinRateAwareReward(RegimeAwareReward):
     def __init__(
         self,
         window: int = 50,
-        lambda_cost: float = 1.5,
-        lambda_draw: float = 2.5,
+        lambda_cost: float = 2.0,   # Higher default: costs are the enemy
+        lambda_draw: float = 2.0,
         lambda_regime: float = 0.8,
         cost_rate: float = 0.001,
-        win_bonus: float = 1.5,
-        loss_penalty: float = 2.5,
-        flat_bonus_vol: float = 0.3,
-        win_rate_target: float = 0.65,
-        lambda_winrate: float = 1.5,
+        win_bonus: float = 0.3,     # Small — return signal already handles this
+        loss_penalty: float = 0.5,  # Small — don't make agent too cautious
+        flat_bonus_vol: float = 0.1,
+        win_rate_target: float = 0.55,
+        lambda_winrate: float = 0.2,  # Very weak — return dominates
         winrate_window: int = 20,
     ):
         super().__init__(window, lambda_cost, lambda_draw, lambda_regime, cost_rate)
@@ -794,11 +792,14 @@ class WinRateAwareReward(RegimeAwareReward):
         if prev_position != 0.0 and abs(position) < 0.05:
             if self._entry_equity is not None:
                 trade_pnl = equity - self._entry_equity
+                # Proportional signal: scales with actual profit magnitude
+                # A 5% win gives 5x more signal than a 1% win
+                pnl_pct = trade_pnl / (self._entry_equity + 1e-8)
                 if trade_pnl > 0:
-                    extra += self.win_bonus
+                    extra += self.win_bonus * (1.0 + abs(pnl_pct) * 10)
                     self._rolling_wins.append(1)
                 else:
-                    extra -= self.loss_penalty
+                    extra -= self.loss_penalty * (1.0 + abs(pnl_pct) * 10)
                     self._rolling_wins.append(0)
             self._entry_equity = None
 
