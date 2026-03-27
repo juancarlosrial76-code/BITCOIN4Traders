@@ -77,23 +77,29 @@ else
     log "Training: no log found yet"
 fi
 
-# ── 5. Auto-deploy: deploy new model if training saved a better one ──
-TRAINER_MODEL="$WORKDIR/data/models/adversarial/best_model_trader.pth"
-DEPLOYED_MODEL="$WORKDIR/data/models/ppo_best.pt"
-if [ -f "$TRAINER_MODEL" ]; then
-    TRAINER_MTIME=$(stat -c %Y "$TRAINER_MODEL")
-    if [ -f "$DEPLOYED_MODEL" ]; then
-        DEPLOYED_MTIME=$(stat -c %Y "$DEPLOYED_MODEL")
-    else
-        DEPLOYED_MTIME=0
-    fi
-    if [ "$TRAINER_MTIME" -gt "$DEPLOYED_MTIME" ]; then
-        log "NEW MODEL detected (trainer newer than deployed) — auto-deploying"
-        python3 deploy_model.py --restart >> "$WATCHLOG" 2>&1
-        log "Auto-deploy complete"
-    else
-        MTIME_H=$(stat -c '%y' "$DEPLOYED_MODEL" | cut -d. -f1)
-        log "Model up-to-date: ppo_best.pt saved at $MTIME_H"
+# ── 5. Auto-deploy: nur wenn automl_loop NICHT läuft ────────────────
+# Wenn automl_loop aktiv ist, entscheidet er selbst wann deployed wird
+# (nur wenn Backtest besser). Blindes Deploy zerstört die Evaluation.
+AUTOML_RUNNING=$(pgrep -f "automl_loop.py" | head -1)
+if [ -n "$AUTOML_RUNNING" ]; then
+    log "Auto-deploy SKIP: automl_loop läuft (PID=$AUTOML_RUNNING) — automl entscheidet"
+else
+    TRAINER_MODEL="$WORKDIR/data/models/adversarial/best_model_trader.pth"
+    DEPLOYED_MODEL="$WORKDIR/data/models/ppo_best.pt"
+    BEST_SCORE_FILE="$WORKDIR/logs/automl/best_params.json"
+
+    if [ -f "$TRAINER_MODEL" ]; then
+        TRAINER_MTIME=$(stat -c %Y "$TRAINER_MODEL")
+        DEPLOYED_MTIME=$([ -f "$DEPLOYED_MODEL" ] && stat -c %Y "$DEPLOYED_MODEL" || echo 0)
+
+        if [ "$TRAINER_MTIME" -gt "$DEPLOYED_MTIME" ]; then
+            log "NEW MODEL detected — auto-deploying (automl not running)"
+            python3 deploy_model.py --restart >> "$WATCHLOG" 2>&1
+            log "Auto-deploy complete"
+        else
+            MTIME_H=$(stat -c '%y' "$DEPLOYED_MODEL" | cut -d. -f1)
+            log "Model up-to-date: ppo_best.pt at $MTIME_H"
+        fi
     fi
 fi
 

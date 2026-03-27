@@ -121,20 +121,29 @@ def validate_in_environment(model_path: Path = None) -> dict:
             checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
             state_dim = env.observation_space.shape[0]
             n_actions = env.action_space.n
-            agent_config = PPOConfig(state_dim=state_dim, n_actions=n_actions, hidden_dim=128)
+            # Support multiple checkpoint formats
+            cfg_ckpt = checkpoint.get("config", None)
+            hd = getattr(cfg_ckpt, "hidden_dim", 128) if cfg_ckpt else 128
+            na = getattr(cfg_ckpt, "n_actions", n_actions) if cfg_ckpt else n_actions
+            agent_config = PPOConfig(state_dim=state_dim, n_actions=na, hidden_dim=hd)
             agent = PPOAgent(agent_config)
-            if "trader_state_dict" in checkpoint:
+            # Try all known key patterns
+            if "actor" in checkpoint:
+                agent.actor.load_state_dict(checkpoint["actor"])
+            elif "trader_state_dict" in checkpoint:
                 agent.actor.load_state_dict(checkpoint["trader_state_dict"])
             elif "state_dict" in checkpoint:
                 agent.actor.load_state_dict(checkpoint["state_dict"])
+            else:
+                raise KeyError(f"Unknown checkpoint keys: {list(checkpoint.keys())}")
             agent.actor.eval()
             log("Model loaded successfully")
         except Exception as e:
             log(f"Failed to load model: {e} — using random agent")
             agent = None
 
-    # Run validation episodes
-    N_EPISODES = 20
+    # Run validation episodes (5 is enough for backtest speed; 20 for final validation)
+    N_EPISODES = int(os.environ.get("N_EPISODES", "5"))
     all_trade_pnls = []
     episode_returns = []
     win_counts = []

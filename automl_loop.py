@@ -262,7 +262,7 @@ def backtest_model(model_dir: Path, params: dict) -> dict:
 
     t0 = time.time()
     result = subprocess.run(
-        ["python3", "experiment_validate.py", "--backtest",
+        ["python3", "experiment_validate.py",
          "--model", str(trader_path)],
         capture_output=True, text=True, timeout=600,
         env=env, cwd=WORK_DIR,
@@ -275,24 +275,28 @@ def backtest_model(model_dir: Path, params: dict) -> dict:
     max_dd = 0.0
 
     for line in output.splitlines():
-        if ("Weighted Return:" in line or "Mean Return:" in line) and "%" in line:
+        # "Mean Return: 52.35%" from validate or "Weighted Return: ..."
+        if ("Weighted Return:" in line or "Mean Return:" in line or
+                "mean_return_pct" in line) and ("%" in line or ":" in line):
             try:
-                key = "Weighted Return:" if "Weighted Return:" in line else "Mean Return:"
-                val = float(line.split(key)[1].split("%")[0].strip())
-                # Umrechnen: episode return → daily return
-                # 236 Tage Test, jede Episode ~50-100 Stunden → ~N Episoden
-                # Einfacher Proxy: return / 236 = täglicher Anteil
+                if "mean_return_pct" in line:
+                    val = float(line.split(":")[-1].strip().rstrip(","))
+                else:
+                    key = "Weighted Return:" if "Weighted Return:" in line else "Mean Return:"
+                    val = float(line.split(key)[1].split("%")[0].strip())
+                # Test set = last 15% ≈ 236 days; episodes cover full test set
+                # daily_return = total_return / 236
                 daily_return = val / 236.0
             except Exception:
                 pass
-        if "Episode Sharpe:" in line:
+        if "Sharpe" in line and ":" in line:
             try:
-                sharpe = float(line.split("Episode Sharpe:")[1].strip())
+                sharpe = float(line.split(":")[-1].strip().rstrip(","))
             except Exception:
                 pass
-        if "Max DD:" in line or "Max Drawdown:" in line or "Mean Max DD:" in line:
+        if ("Max DD" in line or "Max Drawdown" in line) and ":" in line:
             try:
-                dd_str = line.split(":")[-1].strip().replace("%","")
+                dd_str = line.split(":")[-1].strip().replace("%","").rstrip(",")
                 max_dd = float(dd_str)
             except Exception:
                 pass
