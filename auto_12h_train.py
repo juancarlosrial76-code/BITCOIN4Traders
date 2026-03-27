@@ -44,20 +44,24 @@ def log_error(msg):
 
 
 def get_best_return():
-    """Parse all 12h training log files and return the best observed return."""
+    """Parse training log files and return the best observed return."""
     log_dir = WORK_DIR / "logs/training"
-    log_files = sorted(log_dir.glob("12h_*.log"), key=lambda x: x.stat().st_mtime)
+    # Match both auto_12h_*.log and train_*.log (evaluator writes to train_*.log)
+    log_files = sorted(
+        list(log_dir.glob("auto_12h_*.log")) + list(log_dir.glob("train_*.log")),
+        key=lambda x: x.stat().st_mtime,
+    )[-20:]  # Only check the 20 most recent files
 
     best = -999
     for lf in log_files:
         try:
             with open(lf) as f:
                 for line in f:
-                    if "Mean Return:" in line and "%" in line:
+                    # Match both "Mean Return:" and "Weighted Return:"
+                    if ("Mean Return:" in line or "Weighted Return:" in line) and "%" in line:
                         try:
-                            val = float(
-                                line.split("Mean Return:")[1].split("%")[0].strip()
-                            )
+                            key = "Mean Return:" if "Mean Return:" in line else "Weighted Return:"
+                            val = float(line.split(key)[1].split("%")[0].strip())
                             if val > best:
                                 best = val
                         except:
@@ -96,15 +100,41 @@ def fix_common_errors():
 
 
 def parse_win_rate(stdout: str) -> float:
-    """Extract the most recent win rate from training stdout."""
+    """Extract the most recent win rate from training stdout or log files."""
     last_rate = -1.0
+
+    # First try stdout (may be empty if loguru writes to file only)
     for line in stdout.splitlines():
-        if "Win Rate:" in line:
+        if "Win Rate:" in line or "Trade WR" in line:
             try:
-                val = float(line.split("Win Rate:")[1].split("%")[0].strip())
+                if "Trade WR" in line:
+                    val = float(line.split("Trade WR")[1].split("%")[0].strip())
+                else:
+                    val = float(line.split("Win Rate:")[1].split("%")[0].strip())
                 last_rate = val / 100.0
             except Exception:
                 pass
+
+    # Fallback: read from the most recent train_*.log (loguru writes there)
+    if last_rate < 0:
+        log_dir = WORK_DIR / "logs/training"
+        recent_logs = sorted(log_dir.glob("train_*.log"), key=lambda x: x.stat().st_mtime)
+        if recent_logs:
+            try:
+                with open(recent_logs[-1]) as f:
+                    for line in f:
+                        if "Win Rate:" in line or "Trade WR" in line:
+                            try:
+                                if "Trade WR" in line:
+                                    val = float(line.split("Trade WR")[1].split("%")[0].strip())
+                                else:
+                                    val = float(line.split("Win Rate:")[1].split("%")[0].strip())
+                                last_rate = val / 100.0
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
     return last_rate
 
 
