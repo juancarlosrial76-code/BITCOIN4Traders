@@ -144,7 +144,8 @@ def run_training(training_mode: bool = True):
     env["PYTHONPATH"] = str(WORK_DIR / "src")
     env["TRAINING_MODE"] = "1" if training_mode else "0"
 
-    cmd = ["python3", "train.py", "--device", "cpu", "--iterations", "10"]
+    # Use sys.executable so train.py runs in the same Python/conda env as this script
+    cmd = [sys.executable, "train.py", "--device", "cpu", "--iterations", "10"]
 
     result = subprocess.run(
         cmd, capture_output=True, text=True, timeout=7200, env=env, cwd=WORK_DIR
