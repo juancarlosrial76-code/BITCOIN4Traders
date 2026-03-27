@@ -148,9 +148,11 @@ def parse_metrics(stdout: str, name: str) -> dict:
             except Exception:
                 pass
 
-        if "Mean Return:" in line and "%" in line:
+        # Match "Mean Return: 52.35%" OR "Weighted Return: 52.35%  (mean: ...)"
+        if ("Mean Return:" in line or "Weighted Return:" in line) and "%" in line:
             try:
-                val = float(line.split("Mean Return:")[1].split("%")[0].strip())
+                key = "Mean Return:" if "Mean Return:" in line else "Weighted Return:"
+                val = float(line.split(key)[1].split("%")[0].strip())
                 last_return = val
             except Exception:
                 pass

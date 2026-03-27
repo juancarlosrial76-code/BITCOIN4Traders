@@ -34,7 +34,7 @@ print('Reduced to 10 iterations')
     fi
 
     LOG_TS=$(date +%Y%m%d_%H%M%S)
-    nohup python auto_12h_train.py > "logs/training/auto_12h_${LOG_TS}.log" 2>&1 &
+    nohup python3 auto_12h_train.py > "logs/training/auto_12h_${LOG_TS}.log" 2>&1 &
     log "Training restarted PID=$!"
 else
     log "Training OK PID=$TRAIN_PID"
@@ -45,7 +45,7 @@ PAPER_PID=$(pgrep -f "run.py --dry_run" | head -1)
 if [ -z "$PAPER_PID" ]; then
     log "PAPER DEAD — restarting"
     LOG_TS=$(date +%Y%m%d_%H%M%S)
-    nohup python run.py --dry_run > "logs/paper/paper_${LOG_TS}.log" 2>&1 &
+    nohup python3 run.py --dry_run > "logs/paper/paper_${LOG_TS}.log" 2>&1 &
     log "Paper restarted PID=$!"
 else
     log "Paper OK PID=$PAPER_PID"
