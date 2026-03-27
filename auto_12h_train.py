@@ -161,7 +161,7 @@ def main():
     start_time = time.time()
     iteration = 0
     last_best = get_best_return()
-    last_win_rate = 0.0
+    last_win_rate = -1.0  # -1.0 = never measured (avoids false NOTSTOP on parse failure)
     # Phase 1: training_mode=True (Kelly bypassed, full exploration)
     # Phase 2: training_mode=False (adaptive Kelly re-enabled), triggered by win_rate > 18%
     training_mode = True
@@ -195,12 +195,13 @@ def main():
                 log(f"📈 Win Rate: {last_win_rate:.1%}")
 
             # Emergency stop: Kelly still at 0% after 10 rounds despite training mode
-            if iteration > 10 and last_win_rate < 0.005 and phase == 1:
+            # Only trigger if we actually measured a win rate (last_win_rate >= 0)
+            if iteration > 10 and 0 <= last_win_rate < 0.005 and phase == 1:
                 log("⛔ NOTSTOP: Win Rate bleibt bei 0% trotz Training-Mode - bitte Win-Rate-Berechnung prüfen")
                 break
 
             # Phase transition: switch to production Kelly once win rate is stable
-            if phase == 1 and last_win_rate > 0.18:
+            if phase == 1 and last_win_rate > 0.18:  # last_win_rate is -1 if never measured (won't trigger)
                 phase = 2
                 training_mode = False
                 log(f"🎯 PHASE 2: Win-Rate {last_win_rate:.1%} > 18% - aktiviere adaptives Kelly")
