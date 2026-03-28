@@ -44,7 +44,7 @@ if [ -z "$TRAIN_PID" ]; then
     log "TRAINING DEAD — restarting"
     LOG_TS=$(date +%Y%m%d_%H%M%S)
     TRAIN_LOG="$WORKDIR/logs/training/auto_12h_${LOG_TS}.log"
-    nohup python3 auto_12h_train.py > "$TRAIN_LOG" 2>&1 &
+    nohup /home/hp17/miniconda3/bin/python3 auto_12h_train.py > "$TRAIN_LOG" 2>&1 &
     TRAIN_PID=$!
     log "Training restarted PID=$TRAIN_PID log=$TRAIN_LOG"
 else
@@ -57,7 +57,7 @@ if [ -z "$PAPER_PID" ]; then
     log "PAPER DEAD — restarting"
     LOG_TS=$(date +%Y%m%d_%H%M%S)
     PAPER_LOG="$WORKDIR/logs/paper/paper_${LOG_TS}.log"
-    nohup python3 run.py --dry_run > "$PAPER_LOG" 2>&1 &
+    nohup /home/hp17/miniconda3/bin/python3 run.py --dry_run > "$PAPER_LOG" 2>&1 &
     PAPER_PID=$!
     log "Paper restarted PID=$PAPER_PID log=$PAPER_LOG"
 else
@@ -94,7 +94,7 @@ else
 
         if [ "$TRAINER_MTIME" -gt "$DEPLOYED_MTIME" ]; then
             log "NEW MODEL detected — auto-deploying (automl not running)"
-            python3 deploy_model.py --restart >> "$WATCHLOG" 2>&1
+            /home/hp17/miniconda3/bin/python3 deploy_model.py --restart >> "$WATCHLOG" 2>&1
             log "Auto-deploy complete"
         else
             MTIME_H=$(stat -c '%y' "$DEPLOYED_MODEL" | cut -d. -f1)
