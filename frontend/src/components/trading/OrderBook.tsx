@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
 import { Card } from '../ui/Card';
+import { api } from '../../api/client';
 
 interface OrderBookEntry {
   price: number;
   quantity: number;
-  total: number;
+  total: number;    // cumulative total — computed client-side from API data
 }
 
 interface OrderBookProps {
@@ -12,45 +13,49 @@ interface OrderBookProps {
   depth?: number;
 }
 
+/** Enrich raw API price levels with a running cumulative total. */
+function addCumulativeTotals(levels: { price: number; quantity: number }[]): OrderBookEntry[] {
+  let running = 0;
+  return levels.map(({ price, quantity }) => {
+    running += quantity * price;
+    return { price, quantity, total: running };
+  });
+}
+
 export function OrderBook({ symbol = 'BTCUSDT', depth = 10 }: OrderBookProps) {
   const [bids, setBids] = useState<OrderBookEntry[]>([]);
   const [asks, setAsks] = useState<OrderBookEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  // error is shown in the UI instead of falling back to fake data
+  const [error, setError] = useState<string | null>(null);
 
-  // Mock data for demonstration - in production, this would come from WebSocket or API
   useEffect(() => {
-    const generateMockOrderBook = () => {
-      const basePrice = 67000;
+    let cancelled = false;
 
-      // Generate bids (buy orders)
-      const newBids: OrderBookEntry[] = [];
-      let bidTotal = 0;
-      for (let i = 0; i < depth; i++) {
-        const price = basePrice - i * 5;
-        const quantity = Math.random() * 2 + 0.1;
-        bidTotal += quantity * price;
-        newBids.push({ price, quantity, total: bidTotal });
+    const fetchOrderBook = async () => {
+      setError(null);
+      try {
+        const data = await api.orderbook.get(symbol, depth);
+        if (cancelled) return;
+        setBids(addCumulativeTotals(data.bids));
+        setAsks(addCumulativeTotals(data.asks));
+      } catch (e) {
+        if (cancelled) return;
+        const msg = (e as Error).message || 'Failed to load order book';
+        console.error('[OrderBook] fetch failed:', e);
+        setError(msg);
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-      setBids(newBids);
-
-      // Generate asks (sell orders)
-      const newAsks: OrderBookEntry[] = [];
-      let askTotal = 0;
-      for (let i = 0; i < depth; i++) {
-        const price = basePrice + i * 5 + 5;
-        const quantity = Math.random() * 2 + 0.1;
-        askTotal += quantity * price;
-        newAsks.push({ price, quantity, total: askTotal });
-      }
-      setAsks(newAsks);
-      setLoading(false);
     };
 
-    generateMockOrderBook();
-
-    // Refresh every 2 seconds
-    const interval = setInterval(generateMockOrderBook, 2000);
-    return () => clearInterval(interval);
+    fetchOrderBook();
+    // Refresh every 2 seconds — same cadence as the old mock, but real data
+    const interval = setInterval(fetchOrderBook, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
   }, [symbol, depth]);
 
   const maxTotal = Math.max(
@@ -67,18 +72,29 @@ export function OrderBook({ symbol = 'BTCUSDT', depth = 10 }: OrderBookProps) {
     );
   }
 
+  if (error) {
+    return (
+      <Card className="p-4">
+        <h3 className="font-bold mb-4">Order Book — {symbol}</h3>
+        <div className="text-center text-red-400 py-8 text-sm">
+          Order book unavailable: {error}
+        </div>
+      </Card>
+    );
+  }
+
   return (
     <Card className="p-4">
-      <h3 className="font-bold mb-4">Order Book - {symbol}</h3>
+      <h3 className="font-bold mb-4">Order Book — {symbol}</h3>
 
-      {/* Header */}
+      {/* Column headers */}
       <div className="grid grid-cols-3 gap-2 text-xs text-gray-400 mb-2 px-2">
         <div>Price (USDT)</div>
         <div className="text-right">Amount</div>
         <div className="text-right">Total</div>
       </div>
 
-      {/* Asks (Sell Orders) - Red */}
+      {/* Asks (sell orders) — shown in reverse so lowest ask is at the bottom */}
       <div className="space-y-px mb-2">
         {[...asks].reverse().map((ask, index) => (
           <div key={`ask-${index}`} className="relative">
@@ -99,7 +115,9 @@ export function OrderBook({ symbol = 'BTCUSDT', depth = 10 }: OrderBookProps) {
       <div className="py-2 text-center text-sm border-y border-gray-700 my-2">
         <span className="text-gray-400">Spread: </span>
         <span className="font-mono">
-          {asks.length > 0 && bids.length > 0 ? (asks[0].price - bids[0].price).toFixed(2) : '—'}{' '}
+          {asks.length > 0 && bids.length > 0
+            ? (asks[0].price - bids[0].price).toFixed(2)
+            : '—'}{' '}
           USDT
         </span>
         <span className="text-gray-400 ml-2">
@@ -111,7 +129,7 @@ export function OrderBook({ symbol = 'BTCUSDT', depth = 10 }: OrderBookProps) {
         </span>
       </div>
 
-      {/* Bids (Buy Orders) - Green */}
+      {/* Bids (buy orders) */}
       <div className="space-y-px">
         {bids.map((bid, index) => (
           <div key={`bid-${index}`} className="relative">

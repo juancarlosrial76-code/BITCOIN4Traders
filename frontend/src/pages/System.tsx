@@ -1,54 +1,105 @@
 import { useState, useEffect } from 'react';
 import { Card, Button } from '../components/ui';
 import { api } from '../api/client';
-import { Cpu, HardDrive, Activity, RefreshCw, Filter } from 'lucide-react';
+import { Cpu, HardDrive, Activity, RefreshCw, Filter, AlertCircle } from 'lucide-react';
+
+// SystemMetrics shape as returned by GET /api/system/metrics
+interface SystemMetrics {
+  cpu: number;              // CPU usage in percent (0–100)
+  memory: number;           // Memory usage in percent (0–100)
+  disk: number;             // Disk usage in percent (0–100)
+  uptime: number;           // Uptime in seconds
+  activeConnections: number;
+  requestsPerSecond: number;
+  timestamp: string;
+}
+
+// Log entry shape as returned by GET /api/system/logs
+interface LogEntry {
+  id: string;
+  timestamp: string;        // ISO timestamp string
+  level: 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR';
+  message: string;
+  source?: string;
+}
+
+// API endpoint descriptor as returned by GET /api/system/endpoints
+interface EndpointInfo {
+  path: string;             // e.g. "/api/trading/status"
+  method: string;           // e.g. "GET"
+  description: string;
+}
+
+// Environment variable as returned by GET /api/system/env
+interface EnvVariable {
+  key: string;              // variable name
+  value: string;            // variable value (may be masked)
+}
+
+/** Convert uptime seconds to a human-readable "Xd Yh" or "Xh Ym" string. */
+function formatUptime(seconds: number): string {
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return d > 0 ? `${d}d ${h}h` : `${h}h ${m}m`;
+}
 
 export function System() {
-  const [metrics, setMetrics] = useState<any>(null);
-  const [logs, setLogs] = useState<any[]>([]);
-  const [endpoints, setEndpoints] = useState<any[]>([]);
-  const [envVars, setEnvVars] = useState<any[]>([]);
+  const [metrics, setMetrics] = useState<SystemMetrics | null>(null);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [endpoints, setEndpoints] = useState<EndpointInfo[]>([]);
+  const [envVars, setEnvVars] = useState<EnvVariable[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadAll = async () => {
+    setError(null);
+    try {
+      const [metricsData, logsData, endpointsData, envData] = await Promise.all([
+        api.system.getMetrics(),
+        api.system.getLogs(),
+        api.system.getEndpoints(),
+        api.system.getEnv(),
+      ]);
+      setMetrics(metricsData as unknown as SystemMetrics);
+      setLogs(logsData as unknown as LogEntry[]);
+      setEndpoints(endpointsData as unknown as EndpointInfo[]);
+      setEnvVars(envData as unknown as EnvVariable[]);
+    } catch (e) {
+      const msg = (e as Error).message || 'Failed to load system data';
+      console.error('[System] fetch failed:', e);
+      setError(msg);
+    }
+  };
 
   useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const [metricsData, logsData, endpointsData, envData] = await Promise.all([
-          api.system.getMetrics(),
-          api.system.getLogs(),
-          api.system.getEndpoints(),
-          api.system.getEnv(),
-        ]);
-        setMetrics(metricsData);
-        setLogs(logsData);
-        setEndpoints(endpointsData);
-        setEnvVars(envData);
-      } catch (e) {
-        console.error('Failed to fetch system data:', e);
-      }
-    };
-    fetchData();
-    const interval = setInterval(fetchData, 10000);
+    loadAll();
+    // Auto-refresh every 10 seconds
+    const interval = setInterval(loadAll, 10000);
     return () => clearInterval(interval);
   }, []);
 
   const handleRefresh = async () => {
+    setError(null);
     try {
       const [metricsData, logsData] = await Promise.all([
         api.system.getMetrics(),
         api.system.getLogs(),
       ]);
-      setMetrics(metricsData);
-      setLogs(logsData);
+      setMetrics(metricsData as unknown as SystemMetrics);
+      setLogs(logsData as unknown as LogEntry[]);
     } catch (e) {
-      console.error('Failed to refresh:', e);
+      const msg = (e as Error).message || 'Refresh failed';
+      console.error('[System] refresh failed:', e);
+      setError(msg);
     }
   };
 
+  // Map API fields to display cards — all field names match SystemMetrics interface
   const systemMetrics = [
-    { label: 'CPU Usage', value: `${metrics?.cpu_usage || 0}%`, icon: Cpu },
-    { label: 'Memory', value: metrics?.memory || '0 GB', icon: HardDrive },
-    { label: 'Latency', value: `${metrics?.latency || 0}ms`, icon: Activity },
-    { label: 'Uptime', value: metrics?.uptime || '0d 0h', icon: Activity },
+    { label: 'CPU Usage', value: `${metrics?.cpu ?? 0}%`, icon: Cpu },
+    { label: 'Memory', value: `${metrics?.memory ?? 0}%`, icon: HardDrive },
+    { label: 'Req/s', value: `${metrics?.requestsPerSecond ?? 0}`, icon: Activity },
+    { label: 'Uptime', value: metrics ? formatUptime(metrics.uptime) : '0h 0m', icon: Activity },
   ];
 
   return (
@@ -65,6 +116,14 @@ export function System() {
           </Button>
         </div>
       </div>
+
+      {/* Error banner */}
+      {error && (
+        <div className="flex items-center gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-sm">
+          <AlertCircle size={16} className="shrink-0" />
+          <span>System data unavailable: {error}</span>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {systemMetrics.map((metric) => {
@@ -95,12 +154,13 @@ export function System() {
           <div className="bg-black rounded-lg p-4 font-mono text-sm h-80 overflow-y-auto">
             {logs.map((log, i) => (
               <div key={i} className="mb-1">
-                <span className="text-text-muted">[{log.time}]</span>{' '}
+                {/* Use log.timestamp — matches LogEntry interface */}
+                <span className="text-text-muted">[{log.timestamp}]</span>{' '}
                 <span
                   className={
                     log.level === 'ERROR'
                       ? 'text-red-400'
-                      : log.level === 'WARN'
+                      : log.level === 'WARNING'
                       ? 'text-yellow-400'
                       : 'text-green-400'
                   }
@@ -110,31 +170,36 @@ export function System() {
                 <span className="text-text-primary">{log.message}</span>
               </div>
             ))}
+            {logs.length === 0 && (
+              <p className="text-text-muted text-center py-8">No logs available</p>
+            )}
           </div>
         </Card>
 
         <Card title="API Endpoints">
           <div className="space-y-3 max-h-80 overflow-y-auto">
-            {endpoints.map((api, i) => (
+            {endpoints.map((ep, i) => (
               <div key={i} className="flex items-center justify-between p-3 bg-background rounded-lg">
                 <div className="flex items-center gap-3">
                   <span
                     className={`px-2 py-1 text-xs font-medium rounded ${
-                      api.method === 'GET'
+                      ep.method === 'GET'
                         ? 'bg-blue-500/10 text-blue-400'
                         : 'bg-green-500/10 text-green-400'
                     }`}
                   >
-                    {api.method}
+                    {ep.method}
                   </span>
-                  <span className="text-text-primary font-mono text-sm">{api.endpoint}</span>
+                  {/* Use ep.path — matches EndpointInfo interface */}
+                  <span className="text-text-primary font-mono text-sm">{ep.path}</span>
                 </div>
-                <div className="flex items-center gap-4 text-sm">
-                  <span className="text-green-400">{api.status}</span>
-                  <span className="text-text-muted">{api.latency}</span>
-                </div>
+                {/* description is the only extra field in EndpointInfo */}
+                <span className="text-text-muted text-xs truncate max-w-[120px]">{ep.description}</span>
               </div>
             ))}
+            {endpoints.length === 0 && (
+              <p className="text-text-secondary text-sm text-center py-4">No endpoints available</p>
+            )}
           </div>
         </Card>
       </div>
@@ -152,15 +217,24 @@ export function System() {
             <tbody>
               {envVars.map((env, i) => (
                 <tr key={i} className="border-b border-border/50">
-                  <td className="py-3 px-4 text-sm text-text-primary font-mono">{env.name}</td>
+                  {/* Use env.key — matches EnvVariable interface */}
+                  <td className="py-3 px-4 text-sm text-text-primary font-mono">{env.key}</td>
                   <td className="py-3 px-4 text-sm text-text-secondary font-mono">{env.value}</td>
                   <td className="py-3 px-4">
+                    {/* EnvVariable has no status field — show static "set" badge */}
                     <span className="px-2 py-1 text-xs font-medium bg-green-500/10 text-green-400 rounded">
-                      {env.status}
+                      set
                     </span>
                   </td>
                 </tr>
               ))}
+              {envVars.length === 0 && (
+                <tr>
+                  <td colSpan={3} className="py-4 text-center text-text-secondary text-sm">
+                    No environment variables available
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>

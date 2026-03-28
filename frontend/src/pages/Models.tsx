@@ -1,24 +1,56 @@
 import { useState, useEffect } from 'react';
 import { Card, Button } from '../components/ui';
 import { api } from '../api/client';
-import { Brain, Upload, Download, Trash2, Play, Clock, HardDrive, TrendingUp } from 'lucide-react';
+import { Brain, Upload, Download, Trash2, Play, Clock, HardDrive, TrendingUp, AlertCircle } from 'lucide-react';
+
+// Local model type matching the API response from client.ts
+interface Model {
+  id: number;
+  name: string;
+  type: string;
+  created: string;
+  size: string;
+  status: 'active' | 'trained' | 'not_trained';
+  // sharpe is optional — the API may not return it for all models
+  sharpe?: number;
+  source: string;
+}
+
+// Training history entry matching the TrainingJob type from client.ts
+interface TrainingJob {
+  id: string;
+  modelName: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  progress: number;
+  startTime: string;
+  endTime?: string;
+  metrics?: {
+    loss: number;
+    reward: number;
+    sharpe?: number;
+  };
+}
 
 export function Models() {
-  const [models, setModels] = useState<any[]>([]);
-  const [trainingHistory, setTrainingHistory] = useState<any[]>([]);
+  const [models, setModels] = useState<Model[]>([]);
+  const [trainingHistory, setTrainingHistory] = useState<TrainingJob[]>([]);
   const [isTraining, setIsTraining] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchData = async () => {
+      setError(null);
       try {
         const [modelsData, historyData] = await Promise.all([
           api.models.list(),
           api.models.getTrainingHistory(),
         ]);
-        setModels(modelsData);
-        setTrainingHistory(historyData);
+        setModels(modelsData as unknown as Model[]);
+        setTrainingHistory(historyData as unknown as TrainingJob[]);
       } catch (e) {
-        console.error('Failed to fetch models:', e);
+        const msg = (e as Error).message || 'Failed to load models';
+        console.error('[Models] fetch failed:', e);
+        setError(msg);
       }
     };
     fetchData();
@@ -26,12 +58,15 @@ export function Models() {
 
   const handleTrain = async () => {
     setIsTraining(true);
+    setError(null);
     try {
       await api.models.train();
       const modelsData = await api.models.list();
-      setModels(modelsData);
+      setModels(modelsData as unknown as Model[]);
     } catch (e) {
-      console.error('Failed to train model:', e);
+      const msg = (e as Error).message || 'Training failed';
+      console.error('[Models] train failed:', e);
+      setError(msg);
     }
     setIsTraining(false);
   };
@@ -41,12 +76,20 @@ export function Models() {
       await api.models.delete(id);
       setModels(models.filter(m => m.id !== id));
     } catch (e) {
-      console.error('Failed to delete model:', e);
+      const msg = (e as Error).message || 'Delete failed';
+      console.error('[Models] delete failed:', e);
+      setError(msg);
     }
   };
 
   const totalModels = models.length;
-  const totalSize = models.reduce((acc, m) => acc + parseFloat(m.size), 0);
+  // parseFloat handles size strings like "1.2" — non-numeric values default to 0
+  const totalSize = models.reduce((acc, m) => acc + (parseFloat(m.size) || 0), 0);
+  // Guard against empty array and undefined sharpe values
+  const bestSharpe =
+    models.length > 0
+      ? Math.max(...models.map(m => m.sharpe ?? 0))
+      : 0;
 
   return (
     <div className="space-y-6">
@@ -67,6 +110,14 @@ export function Models() {
         </div>
       </div>
 
+      {/* Error banner */}
+      {error && (
+        <div className="flex items-center gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-sm">
+          <AlertCircle size={16} className="shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <Card className="text-center">
           <Brain size={32} className="mx-auto mb-2 text-bitcoin-orange" />
@@ -85,9 +136,7 @@ export function Models() {
         </Card>
         <Card className="text-center">
           <TrendingUp size={32} className="mx-auto mb-2 text-purple-400" />
-          <p className="text-2xl font-bold text-text-primary">
-            {models.length > 0 ? Math.max(...models.map(m => m.sharpe)).toFixed(2) : '0'}
-          </p>
+          <p className="text-2xl font-bold text-text-primary">{bestSharpe.toFixed(2)}</p>
           <p className="text-sm text-text-secondary">Best Sharpe</p>
         </Card>
       </div>
@@ -118,7 +167,10 @@ export function Models() {
                   <td className="py-3 px-4 text-sm text-text-secondary">{model.type}</td>
                   <td className="py-3 px-4 text-sm text-text-secondary">{model.created}</td>
                   <td className="py-3 px-4 text-sm text-text-secondary">{model.size}</td>
-                  <td className="py-3 px-4 text-sm text-green-400">{model.sharpe.toFixed(2)}</td>
+                  {/* sharpe is optional — show '—' when not available */}
+                  <td className="py-3 px-4 text-sm text-green-400">
+                    {model.sharpe != null ? model.sharpe.toFixed(2) : '—'}
+                  </td>
                   <td className="py-3 px-4">
                     <span
                       className={`px-2 py-1 text-xs font-medium rounded ${
@@ -140,9 +192,9 @@ export function Models() {
                       <Button variant="ghost" size="sm">
                         <Download size={16} />
                       </Button>
-                      <Button 
-                        variant="ghost" 
-                        size="sm" 
+                      <Button
+                        variant="ghost"
+                        size="sm"
                         className="text-red-400 hover:text-red-300"
                         onClick={() => handleDelete(model.id)}
                       >
@@ -159,20 +211,29 @@ export function Models() {
 
       <Card title="Training History">
         <div className="space-y-3">
-          {trainingHistory.map((training, i) => (
-            <div key={i} className="flex items-center justify-between p-3 bg-background rounded-lg">
+          {trainingHistory.map((job) => (
+            <div key={job.id} className="flex items-center justify-between p-3 bg-background rounded-lg">
               <div>
-                <p className="text-text-primary font-medium">{training.model}</p>
+                <p className="text-text-primary font-medium">{job.modelName}</p>
                 <p className="text-text-secondary text-sm">
-                  {training.start} - {training.end}
+                  {job.startTime}
+                  {job.endTime ? ` — ${job.endTime}` : ' — in progress'}
                 </p>
               </div>
               <div className="text-right">
-                <p className="text-green-400 text-sm">{training.result}</p>
-                <p className="text-text-muted text-xs">{training.status}</p>
+                {/* Show reward metric if available, otherwise status */}
+                <p className="text-green-400 text-sm">
+                  {job.metrics?.reward != null
+                    ? `Reward: ${job.metrics.reward.toFixed(3)}`
+                    : job.status}
+                </p>
+                <p className="text-text-muted text-xs">{job.status}</p>
               </div>
             </div>
           ))}
+          {trainingHistory.length === 0 && (
+            <p className="text-text-secondary text-sm text-center py-4">No training history yet</p>
+          )}
         </div>
       </Card>
     </div>

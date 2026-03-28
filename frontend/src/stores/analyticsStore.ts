@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import { PerformanceMetrics, EquityCurvePoint } from '../types';
 
 interface AnalyticsStore {
@@ -29,11 +30,22 @@ const defaultMetrics: PerformanceMetrics = {
   avgHoldingPeriod: 0,
 };
 
-export const useAnalyticsStore = create<AnalyticsStore>((set) => ({
-  metrics: defaultMetrics,
-  equityCurve: [],
-  isLoading: false,
-  setMetrics: (metrics) => set({ metrics }),
-  setEquityCurve: (equityCurve) => set({ equityCurve }),
-  setIsLoading: (isLoading) => set({ isLoading }),
-}));
+export const useAnalyticsStore = create<AnalyticsStore>()(
+  persist(
+    (set) => ({
+      metrics: defaultMetrics,
+      equityCurve: [],
+      isLoading: false,
+      setMetrics: (metrics) => set({ metrics }),
+      setEquityCurve: (equityCurve) => set({ equityCurve }),
+      setIsLoading: (isLoading) => set({ isLoading }),
+    }),
+    {
+      name: 'analytics-storage', // persisted in localStorage (FE-029)
+      partialize: (state) => ({
+        metrics: state.metrics,
+        equityCurve: state.equityCurve,
+      }),
+    }
+  )
+);

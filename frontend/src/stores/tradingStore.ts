@@ -2,6 +2,24 @@ import { create } from 'zustand';
 import { devtools, persist, subscribeWithSelector } from 'zustand/middleware';
 import { api } from '../api/client';
 
+/** Map all backend order status strings to the frontend union type. */
+function mapOrderStatus(apiStatus: string): 'pending' | 'filled' | 'cancelled' {
+  const map: Record<string, 'pending' | 'filled' | 'cancelled'> = {
+    open: 'pending',
+    new: 'pending',
+    partially_filled: 'pending',
+    filled: 'filled',
+    cancelled: 'cancelled',
+    canceled: 'cancelled',   // US spelling variant
+    expired: 'cancelled',
+    rejected: 'cancelled',
+  };
+  if (!(apiStatus in map)) {
+    console.warn(`[tradingStore] Unknown order status from API: "${apiStatus}" — defaulting to "pending"`);
+  }
+  return map[apiStatus] ?? 'pending';
+}
+
 interface Position {
   id: string;
   symbol: string;
@@ -42,6 +60,7 @@ interface TradingState {
   currentPrice: number;
   priceHistory: { timestamp: number; price: number }[];
   balance: { USDT: number; BTC: number; totalUSD: number };
+  selectedSymbol: string;
   isLoading: boolean;
   error: string | null;
   lastUpdated: number | null;
@@ -73,7 +92,7 @@ type TradingStore = TradingState & TradingActions;
 interface PlaceOrderRequest {
   symbol: string;
   side: 'buy' | 'sell';
-  type: 'market' | 'limit';
+  order_type: 'market' | 'limit';
   quantity: number;
   price?: number;
 }
@@ -93,6 +112,7 @@ const initialState: TradingState = {
   currentPrice: 0,
   priceHistory: [],
   balance: { USDT: 10000, BTC: 0, totalUSD: 10000 },
+  selectedSymbol: 'BTCUSDT',
   isLoading: false,
   error: null,
   lastUpdated: null,
@@ -141,7 +161,6 @@ export const useTradingStore = create<TradingStore>()(
               set(
                 {
                   isRunning: status.is_running,
-                  currentPrice: status.current_position * 43000,
                   isLoading: false,
                   lastUpdated: Date.now(),
                 },
@@ -162,8 +181,8 @@ export const useTradingStore = create<TradingStore>()(
 
           fetchBalance: async () => {
             try {
-              const balance = await api.trading.getBalance();
-              set({ balance }, false, 'fetchBalance');
+              const bal = await api.trading.getBalance();
+              set({ balance: bal.balance }, false, 'fetchBalance');
             } catch (e) {
               console.error('Failed to fetch balance:', e);
             }
@@ -240,8 +259,26 @@ export const useTradingStore = create<TradingStore>()(
 
           fetchOrders: async () => {
             try {
-              const orders = await api.trading.getOrders();
-              set({ orders: orders as Order[], lastUpdated: Date.now() }, false, 'fetchOrders');
+              const apiOrders = await api.trading.getOrders();
+              const orders: Order[] = apiOrders.map(o => ({
+                id: o.id,
+                symbol: o.symbol,
+                side: o.side,
+                type: o.type,
+                quantity: o.quantity,
+                price: o.price,
+                // Map all backend status values to the frontend union type.
+                // Backend can return: 'open', 'new', 'partially_filled' → 'pending'
+                //                     'filled'                           → 'filled'
+                //                     'cancelled', 'canceled', 'expired', 'rejected' → 'cancelled'
+                status: mapOrderStatus(o.status),
+                createdAt: o.created_at,
+              }));
+              set(
+                { orders, lastUpdated: Date.now() },
+                false,
+                'fetchOrders'
+              );
             } catch (e) {
               console.error('Failed to fetch orders:', e);
             }
@@ -249,8 +286,15 @@ export const useTradingStore = create<TradingStore>()(
 
           fetchConfig: async () => {
             try {
-              const config = await api.trading.getConfig();
-              set({ config: config as TradingConfig }, false, 'fetchConfig');
+              const apiConfig = await api.trading.getConfig();
+              const config: TradingConfig = {
+                maxPositionSize: 0.1,
+                stopLoss: 0.02,
+                takeProfit: 0.05,
+                riskPerTrade: 0.02,
+                leverage: apiConfig.leverage || 1,
+              };
+              set({ config }, false, 'fetchConfig');
             } catch (e) {
               console.error('Failed to fetch config:', e);
             }

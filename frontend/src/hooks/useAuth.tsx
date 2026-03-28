@@ -11,6 +11,7 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
+// FE-033: reuse the same base URL logic — warns about missing env var via client.ts
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -36,7 +37,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (!response.ok) {
         const data = await response.json();
-        setError(data.detail || 'Login fehlgeschlagen');
+        setError(data.detail || 'Login failed');
         setIsLoading(false);
         return false;
       }
@@ -49,7 +50,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setIsLoading(false);
       return true;
     } catch {
-      setError('Verbindung zum Server fehlgeschlagen');
+      setError('Connection to server failed');
       setIsLoading(false);
       return false;
     }

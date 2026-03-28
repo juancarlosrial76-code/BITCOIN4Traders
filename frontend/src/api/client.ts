@@ -1,3 +1,17 @@
+// FE-033: Warn loudly when VITE_API_URL is missing in production builds.
+// In development, falling back to localhost is acceptable.
+// In production, a missing env var means the app will hit the wrong host.
+if (!import.meta.env.VITE_API_URL) {
+  if (import.meta.env.PROD) {
+    console.error(
+      '[api/client] CRITICAL: VITE_API_URL is not set in production build. ' +
+      'All API calls will fail. Set VITE_API_URL in your .env file before building.'
+    );
+  } else {
+    console.warn('[api/client] VITE_API_URL not set — using http://localhost:8000 (dev only)');
+  }
+}
+
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export interface ApiError extends Error {
@@ -69,7 +83,7 @@ export async function fetchWithRetry<T>(
   options: RequestInit,
   retryConfig: RetryConfig = defaultRetryConfig
 ): Promise<T> {
-  let lastError: ApiError;
+  let lastError: ApiError = new Error('Unknown error') as ApiError;
 
   for (let attempt = 0; attempt <= retryConfig.maxRetries; attempt++) {
     try {
@@ -128,7 +142,8 @@ export async function fetchWithRetry<T>(
     } catch (error) {
       lastError = error as ApiError;
 
-      const shouldRetry = attempt < retryConfig.maxRetries && retryConfig.retryCondition(lastError);
+      const shouldRetry =
+        attempt < retryConfig.maxRetries && retryConfig.retryCondition?.(lastError);
 
       if (shouldRetry) {
         const delay = calculateRetryDelay(attempt, retryConfig.retryDelay);
@@ -234,6 +249,12 @@ export const api = {
     getEndpoints: () => fetchWithRetry<EndpointInfo[]>('/api/system/endpoints', {}),
     getEnv: () => fetchWithRetry<EnvVariable[]>('/api/system/env', {}),
   },
+
+  // FE-038: real order book endpoint — replaces mock data in OrderBook component
+  orderbook: {
+    get: (symbol: string, depth = 10) =>
+      fetchWithRetry<OrderBookSnapshot>(`/api/orderbook/${symbol}?depth=${depth}`, {}),
+  },
 };
 
 interface TradingStatus {
@@ -243,6 +264,7 @@ interface TradingStatus {
   timestamp: string;
   champion_signal?: string;
   champion_name?: string;
+  mode?: string;
 }
 
 interface Order {
@@ -277,9 +299,11 @@ interface TradingConfig {
 }
 
 interface Balance {
-  USDT: number;
-  BTC: number;
-  totalUSD: number;
+  balance: {
+    USDT: number;
+    BTC: number;
+    totalUSD: number;
+  };
   mode: string;
 }
 
@@ -406,4 +430,16 @@ interface EndpointInfo {
 interface EnvVariable {
   key: string;
   value: string;
+}
+
+/** One price level in the order book (bids or asks). */
+interface OrderBookLevel {
+  price: number;
+  quantity: number;
+}
+
+/** Full order book snapshot as returned by GET /api/orderbook/{symbol}?depth=N */
+interface OrderBookSnapshot {
+  bids: OrderBookLevel[];
+  asks: OrderBookLevel[];
 }
