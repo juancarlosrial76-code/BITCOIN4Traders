@@ -1,6 +1,5 @@
 import React, { useState, FormEvent } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import './i18n';
 import { ErrorBoundary } from './components/error/ErrorBoundary';
 import { Layout } from './components/layout/Layout';
@@ -12,17 +11,15 @@ import { Models } from './pages/Models';
 import { System } from './pages/System';
 import { Portfolio } from './pages/Portfolio';
 import { History } from './pages/History';
+import { FAQ } from './pages/FAQ';
+import { Docs } from './pages/Docs';
+import { Quickstart } from './pages/Quickstart';
+import { TradingGuide } from './pages/TradingGuide';
+import { ApiDocs } from './pages/ApiDocs';
+import { Glossary } from './pages/Glossary';
+import { Troubleshooting } from './pages/Troubleshooting';
 import { AuthProvider, useAuth } from './hooks/useAuth';
 import { RegisterPage } from './pages/RegisterPage';
-
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 5000,
-      refetchOnWindowFocus: false,
-    },
-  },
-});
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth();
@@ -48,7 +45,7 @@ function Login() {
   const [password, setPassword] = useState('');
   const navigate = useNavigate();
 
-  // Bereits eingeloggt -> direkt weiterleiten
+  // Already logged in -> redirect directly
   if (isAuthenticated) {
     return <Navigate to="/dashboard" replace />;
   }
@@ -146,9 +143,9 @@ function Login() {
           <span className="text-text-secondary font-mono">admin123</span>
         </p>
         <p className="text-center text-xs text-text-muted mt-3">
-          Neu hier?{' '}
+          New here?{' '}
           <a href="/register" className="text-bitcoin-orange hover:underline">
-            Jetzt registrieren & Risikoprofil erstellen
+            Register now & create risk profile
           </a>
         </p>
       </div>
@@ -178,6 +175,14 @@ function AppRoutes() {
         <Route path="analytics" element={<Analytics />} />
         <Route path="models" element={<Models />} />
         <Route path="system" element={<System />} />
+        <Route path="faq" element={<FAQ />} />
+        {/* Documentation pages — replaces static /manual/*.html files */}
+        <Route path="docs" element={<Docs />} />
+        <Route path="docs/quickstart" element={<Quickstart />} />
+        <Route path="docs/trading-guide" element={<TradingGuide />} />
+        <Route path="docs/api" element={<ApiDocs />} />
+        <Route path="docs/glossary" element={<Glossary />} />
+        <Route path="docs/troubleshooting" element={<Troubleshooting />} />
       </Route>
     </Routes>
   );
@@ -186,14 +191,12 @@ function AppRoutes() {
 export default function App() {
   return (
     <ErrorBoundary>
-      <QueryClientProvider client={queryClient}>
-        {/* BrowserRouter muss außen sein damit useNavigate überall funktioniert */}
-        <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-          <AuthProvider>
-            <AppRoutes />
-          </AuthProvider>
-        </BrowserRouter>
-      </QueryClientProvider>
+      {/* BrowserRouter must be outer so useNavigate works everywhere */}
+      <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <AuthProvider>
+          <AppRoutes />
+        </AuthProvider>
+      </BrowserRouter>
     </ErrorBoundary>
   );
 }

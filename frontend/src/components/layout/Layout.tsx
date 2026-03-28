@@ -1,11 +1,15 @@
-import { useState, useEffect } from 'react';
-import { Outlet, NavLink, useLocation } from 'react-router-dom';
+import { useState, useEffect, useMemo } from 'react';
+import { Outlet, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
+import { useTranslation } from 'react-i18next';
 import { Button } from '../ui/Button';
+import { LanguageSwitcher } from '../ui/LanguageSwitcher';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/Tooltip';
 import {
   LayoutDashboard,
   LineChart,
+  Wallet,
+  History,
   Settings,
   BarChart3,
   Brain,
@@ -19,87 +23,107 @@ import {
   Code,
   BookOpen,
   ChevronRight,
-  ExternalLink,
 } from 'lucide-react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 
-const navItems = [
-  { 
-    path: '/dashboard', 
-    label: 'Dashboard', 
-    icon: LayoutDashboard,
-    description: 'Übersicht und wichtigste Metriken'
-  },
-  { 
-    path: '/trading', 
-    label: 'Trading', 
-    icon: LineChart,
-    description: 'Live Trading und Order-Management'
-  },
-  { 
-    path: '/configuration', 
-    label: 'Konfiguration', 
-    icon: Settings,
-    description: 'Bot-Parameter und Einstellungen'
-  },
-  { 
-    path: '/analytics', 
-    label: 'Analysen', 
-    icon: BarChart3,
-    description: 'Performance-Charts und Metriken'
-  },
-  { 
-    path: '/models', 
-    label: 'Modelle', 
-    icon: Brain,
-    description: 'ML-Modelle und Training'
-  },
-  { 
-    path: '/system', 
-    label: 'System', 
-    icon: Monitor,
-    description: 'Server-Status und Logs'
-  },
-];
-
-const helpItems = [
-  { 
-    label: '📖 Dokumentation', 
-    icon: Book,
-    description: 'Vollständige Dokumentation lesen',
-    action: () => window.open('/manual/index.html', '_blank')
-  },
-  { 
-    label: '🚀 Schnellstart', 
-    icon: ChevronRight,
-    description: 'In 5 Minuten starten',
-    action: () => window.open('/manual/quickstart.html', '_blank')
-  },
-  { 
-    label: '❓ FAQ', 
-    icon: FileQuestion,
-    description: 'Häufig gestellte Fragen',
-    action: () => window.open('/manual/faq.html', '_blank')
-  },
-  { 
-    label: '🔧 API Referenz', 
-    icon: Code,
-    description: 'API-Endpunkte dokumentation',
-    action: () => window.open('/manual/api.html', '_blank')
-  },
-  { 
-    label: '📊 Glossar', 
-    icon: BookOpen,
-    description: 'Trading-Begriffe erklärt',
-    action: () => window.open('/manual/glossary.html', '_blank')
-  },
-];
-
 export function Layout() {
+  const { t } = useTranslation();
   const { username, logout } = useAuth();
   const location = useLocation();
+  const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  const navItems = useMemo(
+    () => [
+      {
+        path: '/dashboard',
+        label: t('nav.dashboard', 'Dashboard'),
+        icon: LayoutDashboard,
+        description: t('nav.dashboardDesc', 'Overview and quick stats'),
+      },
+      {
+        path: '/trading',
+        label: t('nav.trading', 'Trading'),
+        icon: LineChart,
+        description: t('nav.tradingDesc', 'Live trading and positions'),
+      },
+      {
+        path: '/portfolio',
+        label: t('nav.portfolio', 'Portfolio'),
+        icon: Wallet,
+        description: t('nav.portfolioDesc', 'Assets and allocation'),
+      },
+      {
+        path: '/history',
+        label: t('nav.history', 'History'),
+        icon: History,
+        description: t('nav.historyDesc', 'Trade history and logs'),
+      },
+      {
+        path: '/configuration',
+        label: t('nav.configuration', 'Configuration'),
+        icon: Settings,
+        description: t('nav.configurationDesc', 'Bot parameters and settings'),
+      },
+      {
+        path: '/analytics',
+        label: t('nav.analytics', 'Analytics'),
+        icon: BarChart3,
+        description: t('nav.analyticsDesc', 'Performance charts and metrics'),
+      },
+      {
+        path: '/models',
+        label: t('nav.models', 'Models'),
+        icon: Brain,
+        description: t('nav.modelsDesc', 'ML models and training'),
+      },
+      {
+        path: '/system',
+        label: t('nav.system', 'System'),
+        icon: Monitor,
+        description: t('nav.systemDesc', 'Server status and logs'),
+      },
+    ],
+    [t]
+  );
+
+  // All docs are now React routes — use navigate() instead of window.open()
+  const helpItems = useMemo(
+    () => [
+      {
+        label: t('help.faq', '❓ FAQ'),
+        icon: FileQuestion,
+        description: t('help.faqDesc', 'Frequently asked questions'),
+        action: () => navigate('/faq'),
+      },
+      {
+        label: t('help.documentation', '📖 Documentation'),
+        icon: Book,
+        description: t('help.documentationDesc', 'Read full documentation'),
+        action: () => navigate('/docs'),
+      },
+      {
+        label: t('help.quickstart', '🚀 Quickstart'),
+        icon: ChevronRight,
+        description: t('help.quickstartDesc', 'Get started in 5 minutes'),
+        action: () => navigate('/docs/quickstart'),
+      },
+      {
+        label: t('help.api', '🔧 API Reference'),
+        icon: Code,
+        description: t('help.apiDesc', 'API endpoints documentation'),
+        action: () => navigate('/docs/api'),
+      },
+      {
+        label: t('help.glossary', '📊 Glossary'),
+        icon: BookOpen,
+        description: t('help.glossaryDesc', 'Trading terms explained'),
+        action: () => navigate('/docs/glossary'),
+      },
+    ],
+    [t, navigate]
+  );
 
   useEffect(() => {
     const handleResize = () => {
@@ -120,7 +144,7 @@ export function Layout() {
     <TooltipProvider delayDuration={300}>
       <div className="min-h-screen bg-background flex">
         {/* Sidebar - Desktop */}
-        <aside 
+        <aside
           className={`fixed inset-y-0 left-0 z-40 bg-card border-r border-border transition-all duration-300 ${
             sidebarOpen ? 'w-64' : 'w-16'
           } hidden lg:flex flex-col`}
@@ -143,13 +167,16 @@ export function Layout() {
               onClick={() => setSidebarOpen(!sidebarOpen)}
               className="text-text-secondary hover:text-text-primary"
             >
-              <ChevronRight className={`transition-transform ${sidebarOpen ? 'rotate-180' : ''}`} size={16} />
+              <ChevronRight
+                className={`transition-transform ${sidebarOpen ? 'rotate-180' : ''}`}
+                size={16}
+              />
             </Button>
           </div>
 
           {/* Navigation */}
           <nav className="flex-1 py-4 px-2 space-y-1 overflow-y-auto">
-            {navItems.map((item) => {
+            {navItems.map(item => {
               const Icon = item.icon;
               const isActive = location.pathname === item.path;
               return (
@@ -195,35 +222,37 @@ export function Layout() {
                   }`}
                 >
                   <HelpCircle size={20} />
-                  {sidebarOpen && <span>Hilfe & Dokumentation</span>}
+                  {sidebarOpen && <span>{t('nav.help', 'Help & Documentation')}</span>}
                 </button>
               </DropdownMenu.Trigger>
               <DropdownMenu.Portal>
-                <DropdownMenu.Content 
+                <DropdownMenu.Content
                   className="min-w-[220px] bg-card border border-border rounded-lg p-1 shadow-xl z-50"
                   sideOffset={5}
                   align="start"
                 >
-                  {helpItems.map((item, index) => (
-                    <DropdownMenu.Item
-                      key={index}
-                      className="flex items-center gap-3 px-3 py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-background rounded-md cursor-pointer outline-none"
-                      onSelect={item.action}
-                    >
-                      <item.icon size={16} />
-                      <div className="flex flex-col">
-                        <span>{item.label}</span>
-                        <span className="text-xs text-text-muted">{item.description}</span>
-                      </div>
-                    </DropdownMenu.Item>
-                  ))}
+                  {helpItems.map((item, index) => {
+                    return (
+                      <DropdownMenu.Item
+                        key={index}
+                        className="flex items-center gap-3 px-3 py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-background rounded-md cursor-pointer outline-none"
+                        onSelect={item.action}
+                      >
+                        <item.icon size={16} />
+                        <div className="flex flex-col">
+                          <span>{item.label}</span>
+                          <span className="text-xs text-text-muted">{item.description}</span>
+                        </div>
+                      </DropdownMenu.Item>
+                    );
+                  })}
                   <DropdownMenu.Separator className="h-px bg-border my-1" />
                   <DropdownMenu.Item
                     className="flex items-center gap-3 px-3 py-2 text-sm text-bitcoin-orange hover:bg-background rounded-md cursor-pointer outline-none"
-                    onSelect={() => window.open('https://t.me/+your_link', '_blank')}
+                    onSelect={() => navigate('/docs/troubleshooting')}
                   >
-                    <ExternalLink size={16} />
-                    <span>Community Support</span>
+                    <HelpCircle size={16} />
+                    <span>Troubleshooting</span>
                   </DropdownMenu.Item>
                 </DropdownMenu.Content>
               </DropdownMenu.Portal>
@@ -232,7 +261,9 @@ export function Layout() {
 
           {/* User Section */}
           <div className="p-2 border-t border-border">
-            <div className={`flex items-center gap-3 px-3 py-2 ${!sidebarOpen ? 'justify-center' : ''}`}>
+            <div
+              className={`flex items-center gap-3 px-3 py-2 ${!sidebarOpen ? 'justify-center' : ''}`}
+            >
               <div className="w-8 h-8 bg-bitcoin-orange/20 rounded-full flex items-center justify-center flex-shrink-0">
                 <span className="text-bitcoin-orange text-sm font-bold">
                   {username?.charAt(0).toUpperCase() || 'U'}
@@ -252,6 +283,10 @@ export function Layout() {
               >
                 <LogOut size={18} />
               </Button>
+            </div>
+            {/* Language Switcher */}
+            <div className={`px-3 py-2 ${!sidebarOpen ? 'hidden' : ''}`}>
+              <LanguageSwitcher variant="dropdown" showName size="sm" />
             </div>
           </div>
         </aside>
@@ -278,7 +313,7 @@ export function Layout() {
           {mobileMenuOpen && (
             <div className="absolute top-16 left-0 right-0 bg-card border-b border-border p-2 shadow-xl">
               <nav className="space-y-1">
-                {navItems.map((item) => {
+                {navItems.map(item => {
                   const Icon = item.icon;
                   const isActive = location.pathname === item.path;
                   return (
@@ -302,11 +337,16 @@ export function Layout() {
                 })}
               </nav>
               <div className="border-t border-border mt-2 pt-2">
-                <p className="px-3 py-1 text-xs text-text-muted uppercase">Hilfe</p>
+                <p className="px-3 py-1 text-xs text-text-muted uppercase">
+                  {t('nav.help', 'Help')}
+                </p>
                 {helpItems.slice(0, 3).map((item, index) => (
                   <button
                     key={index}
-                    onClick={() => { item.action(); setMobileMenuOpen(false); }}
+                    onClick={() => {
+                      item.action?.();
+                      setMobileMenuOpen(false);
+                    }}
                     className="w-full flex items-center gap-3 px-3 py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-background rounded-lg"
                   >
                     <item.icon size={18} />
@@ -319,7 +359,7 @@ export function Layout() {
         </header>
 
         {/* Main Content */}
-        <main 
+        <main
           className={`flex-1 transition-all duration-300 ${
             sidebarOpen ? 'lg:ml-64' : 'lg:ml-16'
           } pt-16 lg:pt-0`}
@@ -331,7 +371,9 @@ export function Layout() {
                 Home
               </NavLink>
               <ChevronRight size={14} className="text-text-muted" />
-              <span className="text-text-primary font-medium">{currentPage?.label || 'Dashboard'}</span>
+              <span className="text-text-primary font-medium">
+                {currentPage?.label || 'Dashboard'}
+              </span>
             </div>
           </div>
 

@@ -1,4 +1,4 @@
-import { useLocation, Link } from 'react-router-dom';
+import { useLocation, Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { Button, LanguageSelector } from '../ui';
 import {
@@ -29,17 +29,21 @@ const navItems = [
   { path: '/history', label: 'History', icon: History },
 ];
 
-const helpItems = [
-  { label: '📖 Documentation', href: '/manual/index.html', external: true },
-  { label: '🚀 Quick Start', href: '/manual/quickstart.html', external: true },
-  { label: '❓ FAQ', href: '/manual/troubleshooting.html', external: true },
-  { label: '🔧 API Reference', href: '/manual/api.html', external: true },
-  { label: '📊 Glossary', href: '/manual/glossary.html', external: true },
+// All docs pages are now React routes — no more window.open / static HTML
+const helpRoutes = [
+  { label: '📖 Documentation', to: '/docs' },
+  { label: '🚀 Quick Start', to: '/docs/quickstart' },
+  { label: '📈 Trading Guide', to: '/docs/trading-guide' },
+  { label: '🔧 API Reference', to: '/docs/api' },
+  { label: '📊 Glossary', to: '/docs/glossary' },
+  { label: '🛠 Troubleshooting', to: '/docs/troubleshooting' },
+  { label: '❓ FAQ', to: '/faq' },
 ];
 
 export function Header() {
   const { username, logout } = useAuth();
   const location = useLocation();
+  const navigate = useNavigate();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   return (
@@ -103,15 +107,11 @@ export function Header() {
                 sideOffset={5}
                 align="end"
               >
-                {helpItems.map((item, index) => (
+                {helpRoutes.map((item, index) => (
                   <DropdownMenu.Item
                     key={index}
                     className="flex items-center gap-2 px-3 py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-background rounded-md cursor-pointer outline-none"
-                    onSelect={() => {
-                      if (item.external) {
-                        window.open(item.href, '_blank');
-                      }
-                    }}
+                    onSelect={() => navigate(item.to)}
                   >
                     {item.label}
                   </DropdownMenu.Item>
@@ -166,11 +166,11 @@ export function Header() {
           })}
           <div className="border-t border-border mt-2 pt-2">
             <p className="px-3 py-1 text-xs text-text-muted uppercase">Help</p>
-            {helpItems.map((item, index) => (
+            {helpRoutes.map((item, index) => (
               <button
                 key={index}
                 onClick={() => {
-                  window.open(item.href, '_blank');
+                  navigate(item.to);
                   setMobileMenuOpen(false);
                 }}
                 className="w-full flex items-center gap-3 px-3 py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-background rounded-lg"
